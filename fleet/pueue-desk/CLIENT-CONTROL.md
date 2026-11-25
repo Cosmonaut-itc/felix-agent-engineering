@@ -1015,7 +1015,8 @@ inerte y los adaptadores, en `unsupported` hasta P2.
   `Pueue.deadline`. Q se lee sólo tras un sello `success` y nombra su
   `receipt`. `settle` aplica `rpc_verdict`. El efecto atribuido guarda
   `attribution={dispatch, seal_receipt, exclusion}`. R− y N2 cierran el hold
-  inicial y difieren las demás fases. S3, S4 y un `success` sin Q quedan
+  inicial. Para las demás fases, R− rechaza con `stale_state` y N2 difiere.
+  S3, S4 y un `success` sin Q quedan
   `unknown`, con `uncertain:false` y la reserva abierta. El rc del CLI y la
   arista ya no confirman nada: queda corregido el defecto latente.
 - **CC2.** Una fase del emisor en `unknown` se recoge con `collect_stock`,

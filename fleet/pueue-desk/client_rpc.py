@@ -292,7 +292,9 @@ def socket_talk(plan, socket_path, secret_path, birth):
         connection.settimeout(LIFE_POLL_SECONDS)
         try:
             length = struct.unpack('>Q', receive(connection, 8, wait))[0]
-            reply = 'unrecognized' if length > REPLY_MAX_BYTES else reply_class(receive(connection, length, wait))
+            if length > REPLY_MAX_BYTES:
+                raise Abort()  # The local limit prevents reading a complete frame.
+            reply = reply_class(receive(connection, length, wait))
         except Closed:
             return dict(peer=peer, outcome='closed', reply=None, reason=None)
         except OSError:

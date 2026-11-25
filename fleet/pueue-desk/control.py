@@ -924,11 +924,12 @@ def validate_queue(value):
     return value
 
 
-def default_data(home=None):
-    home = home or Path.home()
+def default_data(home=None, env=None):
+    env = os.environ if env is None else env
+    home = home or Path(env.get('HOME') or Path.home())
     if sys.platform == "darwin":
         return home / "Library/Application Support/pueue"
-    return Path(os.environ.get("XDG_DATA_HOME", str(home / ".local/share"))) / "pueue"
+    return Path(env.get("XDG_DATA_HOME", str(home / ".local/share"))) / "pueue"
 
 
 MANAGER_KEYS = ('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR', 'PUEUE_CONFIG_PATH')
@@ -966,8 +967,7 @@ def validate_configuration(home=None, config_path=None, data=None, pid_file=None
     home = home or Path.home()
     env = os.environ if env is None else env
     cwd = Path.cwd() if cwd is None else Path(cwd)
-    data = data or (default_data(home) if sys.platform == 'darwin' else
-                    Path(env.get('XDG_DATA_HOME', str(home / '.local/share'))) / 'pueue')
+    data = data or default_data(home, env)
     runtime = env.get('XDG_RUNTIME_DIR') if sys.platform != 'darwin' else None
     pid_file = pid_file or (Path(runtime) if runtime else data) / 'pueue.pid'
     pueue = pueue or home / '.local/bin/pueue'
@@ -1214,6 +1214,7 @@ def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, bo
     assert_offline(engine.pueue, config['pid_file'])
     if dry_run:
         return image
+    state['pueue_data'] = str(Path(config['data']).absolute())
     with engine.connect(write=True) as db:
         engine.store(db, state)
     boundary('intent')
@@ -1402,6 +1403,8 @@ class MiniControl:
                 or value['actor'] != 'Felix' or type(value['at']) not in (int, float)
                 or not math.isfinite(value['at'])):
             raise ValueError('Autoridad inválida')
+        if 'pueue_data' in value and (type(value['pueue_data']) is not str or not Path(value['pueue_data']).is_absolute()):
+            raise ValueError('Directorio de datos Pueue inválido')
         validate_vector(value['desired'], self.host)
         overrides = value['overrides']
         if type(overrides) is not dict or not set(overrides) <= set(self.profile):
@@ -1796,11 +1799,18 @@ class MiniControl:
         return getattr(self, 'client_birth', None) or priority_helper().birth
 
     def rpc_endpoint(self, authority):
-        # Fixed local socket and secret of the daemon named by pid_file, as in
-        # reorder_config. The emitter checks the peer life before frame 1.
-        data = Path(authority['pid_file']).parent
+        # The runtime directory follows the accredited PID; the secret follows
+        # the data directory validated by preparar. Older authorities use the
+        # same stock defaults as validate_configuration until the next startup.
+        runtime = Path(authority['pid_file']).parent
+        if 'pueue_data' in authority:
+            data = Path(authority['pueue_data'])
+        else:
+            data = runtime if self.host == 'mini' else default_data(env=self.pueue.context.get('env'))
+        if not data.is_absolute():
+            raise ValueError('Directorio de datos Pueue inválido')
         user = __import__('pwd').getpwuid(os.getuid()).pw_name
-        return data / ('pueue_' + user + '.socket'), data / 'shared_secret'
+        return runtime / ('pueue_' + user + '.socket'), data / 'shared_secret'
 
     def reconcile_clients(self, offline=None):
         # No table means no extra dependency, process, clock read or state change.
@@ -2111,13 +2121,14 @@ class MiniControl:
         target = self.directory/('reorder-'+action['request']['action_id']+'.json')
         if target.exists():
             return target
-        data = Path(authority['pid_file']).parent
-        settings = dict(shared=dict(pueue_directory=str(data), runtime_directory=str(data),
-                         pid_path=str(data/'pueue.pid'), unix_socket_path=str(data/('pueue_'+__import__('pwd').getpwuid(os.getuid()).pw_name+'.socket')),
-                         shared_secret_path=str(data/'shared_secret')), client=dict(edit_mode='toml'))
         if hasattr(self.pueue, 'edit_settings'):
             settings = deepcopy(self.pueue.edit_settings)  # private harness seam, no wire input
             settings.setdefault('client', {})['edit_mode'] = 'toml'
+        else:
+            socket_path, secret_path = self.rpc_endpoint(authority)
+            settings = dict(shared=dict(pueue_directory=str(secret_path.parent), runtime_directory=str(socket_path.parent),
+                                        pid_path=authority['pid_file'], unix_socket_path=str(socket_path),
+                                        shared_secret_path=str(secret_path)), client=dict(edit_mode='toml'))
         atomic_json(target, settings)
         return target
 

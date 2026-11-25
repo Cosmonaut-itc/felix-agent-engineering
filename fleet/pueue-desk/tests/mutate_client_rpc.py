@@ -71,6 +71,18 @@ CASES = [
      '    for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGPIPE):',
      '    for number in (signal.SIGHUP, signal.SIGINT, signal.SIGPIPE):',
      W+'test_term_during_reply_wait_still_seals'),
+    ('secret follows the data directory', 'control.py',
+     "        return runtime / ('pueue_' + user + '.socket'), data / 'shared_secret'",
+     "        return runtime / ('pueue_' + user + '.socket'), runtime / 'shared_secret'",
+     'test_client_rpc.EndpointTests.test_separate_runtime_and_data_paths'),
+    ('reused id cannot displace the attributed retirement identity', 'client_actions.py',
+     "        if stock and record['response']['status'] == 'retired':",
+     '        if False:', W+'test_retired_receipt_survives_reused_id_and_finish'),
+    ('oversized reply header alone never seals replied', 'client_rpc.py',
+     "            if length > REPLY_MAX_BYTES:\n                raise Abort()  # The local limit prevents reading a complete frame.\n"
+     '            reply = reply_class(receive(connection, length, wait))',
+     "            reply = 'unrecognized' if length > REPLY_MAX_BYTES else reply_class(receive(connection, length, wait))",
+     W+'test_oversized_reply_header_without_body_never_seals'),
 ]
 
 

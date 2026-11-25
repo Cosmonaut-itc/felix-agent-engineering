@@ -785,6 +785,12 @@ class Reconciler:
         observed = evidence['observation']
         c.keys(observed, 'group identity')
         c.identity(observed['identity'])
+        if stock and record['response']['status'] == 'retired':
+            # The attributed retirement already established Absent of X. Use
+            # that identity for finish even if status now shows a reused id.
+            identity = c.rpc_effect_identity(r['op'], r['expected'], observed['identity'])
+            if identity == record['response']['identity'] and identity != observed['identity']:
+                observed = dict(group=reservation['group'], identity=identity)
         if (observed['group'] != reservation['group'] or
                 not self.actions.same_attempt(reservation['identity'], observed['identity'])):
             raise Unavailable('identity')
