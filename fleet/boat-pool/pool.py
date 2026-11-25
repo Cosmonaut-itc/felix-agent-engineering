@@ -504,8 +504,11 @@ class Pool:
         if len(matching) != 1 or matching[0].get('id') != vm.id:
             raise Unavailable('api', 'VM de Boat no coincide con el registro')
 
-    def sandbox_info(self, vm):
-        self.validate(vm)
+    def sandbox_info(self, vm, *, record=True):
+        if record:
+            self.validate(vm)
+        else:
+            vm.validate(self.now())
         info = self.boat.sandbox(vm.id)
         if not isinstance(info, dict) or (info.get('id'), info.get('name')) != (vm.id, vm.name):
             raise Unavailable('api', 'VM de Boat no coincide con el registro')
@@ -655,6 +658,38 @@ class Pool:
                 waiting.append(turn)
         return sorted(waiting, key=lambda item: (PRIORITY[item['prioridad']], item['orden'], item['turno']))
 
+    def ask_order(self, candidates, kind):
+        if len(candidates) < 2:
+            return candidates
+        now = self.now()
+        loads = {}
+        fitting = []
+        for vm in candidates:
+            try:
+                with lock(vm.path / 'lock', wait=False) as acquired:
+                    if not acquired:
+                        continue
+                    leases = vm.leases(now)
+            except (OSError, KeyError, TypeError, ValueError, OverflowError):
+                continue
+            loads[vm.name] = len(leases) / vm.places
+            if vm.fits(leases, kind):
+                fitting.append(vm)
+
+        ready = set()
+        if len(fitting) > 1:
+            for vm in fitting:
+                try:
+                    info = self.sandbox_info(vm, record=False)
+                except (OSError, Unavailable, BoatError):
+                    continue
+                state, stop = info.get('state'), info.get('stop')
+                if isinstance(state, str) and state in READY and not (
+                    isinstance(stop, dict) and stop.get('status') in ('pending', 'failing')
+                ):
+                    ready.add(vm.name)
+        return sorted(candidates, key=lambda vm: (vm.name not in ready, loads.get(vm.name, math.inf)))
+
     def claim(self, candidates, turn, path, locks):
         contended = False
         eligible = False
@@ -715,8 +750,9 @@ class Pool:
         rechecked = False
         try:
             while candidates:
+                ordered = self.ask_order(candidates, turn['clase'])
                 with ExitStack() as locks:
-                    vm, leases, contended, eligible = self.claim(candidates, turn, path, locks)
+                    vm, leases, contended, eligible = self.claim(ordered, turn, path, locks)
                     if vm is not None:
                         try:
                             self.check_identity(vm)

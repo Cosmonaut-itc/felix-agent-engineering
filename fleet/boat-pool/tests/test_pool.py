@@ -205,9 +205,12 @@ class Harness(unittest.TestCase):
         return 'pedir', '--repo', REPO, '--corrida', run, '--clase', kind, *extra
 
     def get_lease(self, *args):
+        return self.get_grant(*args)['arriendo']
+
+    def get_grant(self, *args):
         code, output, stderr = self.run_cli(*self.args(*args))
         self.assertEqual(code, 0, stderr)
-        return json.loads(output)['arriendo']
+        return json.loads(output)
 
     def assert_unavailable(self, cause, *args, **kwargs):
         code, output, stderr = self.run_cli(*args, **kwargs)
@@ -369,6 +372,58 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.run_cli('latido', lease, '--ttl', '3600')[0], 0)
         data = pool.read_json(self.state / 'vms' / NAME / 'arriendos' / (lease + '.json'))
         self.assertEqual(pool.epoch(data['vence']), self.api.now + 3600)
+
+    def test_pedir_reparte_dos_corridas_entre_vms(self):
+        self.config['vms'][0]['lugares'] = 2
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'), places=2)
+        self.assertEqual(self.get_grant('primera')['vm'], NAME)
+        self.assertEqual(self.get_grant('segunda')['vm'], other)
+
+    def test_pedir_elige_la_primera_si_la_segunda_esta_llena(self):
+        first = self.config['vms'].pop()
+        first['lugares'] = 2
+        self.add_vm('vm-otra', fake_id('efgh2345'), places=2)
+        self.get_lease('ocupante-uno')
+        self.get_lease('ocupante-dos')
+        self.config['vms'].insert(0, first)
+        self.assertEqual(self.get_grant('siguiente')['vm'], NAME)
+
+    def test_pedir_desempata_por_orden_del_pool(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.add_vm('vm-antes-alfabeticamente', fake_id('efgh2345'), places=2)
+        self.assertEqual(self.get_grant()['vm'], NAME)
+
+    def test_pedir_respeta_limite_de_clase_en_la_vm_menos_cargada(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato')
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'), places=3)
+        self.config['vms'].reverse()
+        self.assertEqual(self.get_grant('e2e-activa', 'e2e')['vm'], other)
+        self.assertEqual(self.get_grant('e2e-nueva', 'e2e')['vm'], NAME)
+
+    def test_pedir_compara_la_proporcion_de_lugares_ocupados(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('ocupante')
+        other = 'vm-grande'
+        self.add_vm(other, fake_id('efgh2345'), places=5)
+        for i in range(3):
+            self.assertEqual(self.get_grant(f'corrida-{i}')['vm'], other)
+        self.assertEqual(self.get_grant('siguiente')['vm'], NAME)
+
+    def test_pedir_prefiere_la_vm_encendida_con_cupo(self):
+        other = 'vm-encendida'
+        self.add_vm(other, fake_id('efgh2345'), places=2)
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.assertEqual(self.get_grant('primera')['vm'], other)
+        self.assertEqual(self.get_grant('segunda')['vm'], other)
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.get_grant('tercera')['vm'], NAME)
+        self.assertEqual(self.writes(), [
+            ('POST', '/sandboxes/' + FAKE_ID + '/resume',
+             {'noEnv': True, 'type': 'large', 'ttlSeconds': 9000}),
+        ])
 
     def test_arriendo_vencido_y_soltar_idempotente(self):
         lease = self.get_lease('caduca', 'contract', '--ttl', '300')
