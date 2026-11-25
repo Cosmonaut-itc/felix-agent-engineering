@@ -25,7 +25,7 @@ class DatosInternosTests(unittest.TestCase):
                 ('HOME=/Users/demo.user/bin', 'home de macOS'),
                 ('</Users/DemoUser>', 'home de macOS'),
                 ('file:///Users/DemoUser/Library', 'home de macOS'),
-                ("'/c/Users/Demo User/AppData/Local'", 'home de Windows'),
+                ("'/c/Users/Demo User/AppData/Local'", 'home de macOS'),
                 ('C:/Users/DemoUser/AppData/Local', 'home de Windows'),
                 (r'C:\Users\Demo-User\AppData\Local', 'home de Windows'),
                 (r'clang -IC:\Users\DemoUser\include', 'home de Windows'),

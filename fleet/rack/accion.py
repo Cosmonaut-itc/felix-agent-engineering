@@ -1,4 +1,6 @@
 """Cancelación por lanzador y diario durable. Python 3.9, biblioteca estándar."""
+import ctypes
+import errno
 import importlib.util
 from contextlib import contextmanager
 import hashlib
@@ -11,6 +13,7 @@ import signal  # compatibility for process-group tests
 import sqlite3
 import stat
 import subprocess
+import sys
 import threading
 import time
 
@@ -71,6 +74,33 @@ class DeskDestinationError(ValueError):
     """The desk transport could not get its destination before dispatch."""
 
 
+def _has_no_extended_acl(fd):
+    if sys.platform == 'darwin':
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            get_acl = libc.acl_get_fd_np
+            free_acl = libc.acl_free
+        except AttributeError:
+            return False
+        get_acl.argtypes = (ctypes.c_int, ctypes.c_int)
+        get_acl.restype = ctypes.c_void_p
+        free_acl.argtypes = (ctypes.c_void_p,)
+        free_acl.restype = ctypes.c_int
+        acl_type_extended = 0x00000100  # ACL_TYPE_EXTENDED in <sys/acl.h>
+        ctypes.set_errno(0)
+        acl = get_acl(fd, acl_type_extended)
+        if acl:
+            free_acl(acl)
+            return False
+        return ctypes.get_errno() == errno.ENOENT
+    if sys.platform == 'linux':
+        try:
+            return 'system.posix_acl_access' not in os.listxattr(fd)
+        except OSError as error:
+            return error.errno == errno.ENOTSUP
+    return False
+
+
 def desk_destination():
     """Read the private, fixed user@hostname used by both desk channels."""
     try:
@@ -79,7 +109,8 @@ def desk_destination():
         try:
             info = os.fstat(fd)
             if (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
-                    and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+                    and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                    and _has_no_extended_acl(fd)):
                 with os.fdopen(fd, encoding='ascii', closefd=False) as stream:
                     destination = stream.read().rstrip('\r\n')
                 if _DESTINATION.fullmatch(destination):

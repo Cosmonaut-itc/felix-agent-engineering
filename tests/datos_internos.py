@@ -26,20 +26,12 @@ WINDOWS_ALLOWED_USERS = SYNTHETIC_USERS | {'public'}
 FQDN = re.compile(r'([A-Za-z0-9-]+)\.ts\.net(?![A-Za-z0-9-])', re.IGNORECASE)
 IPV4 = re.compile(r'(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2}))?(?![0-9]|\.[0-9])')
 HOME = re.compile(r'(?<![A-Za-z0-9_.~$-])/home/([a-z_][a-z0-9_-]*)(?![a-z0-9_-])')
-WINDOWS_LOCATION = r'''
-    (?:
-        (?:/[A-Z]|(?<![\w.-])[A-Z]:|//[\w.-]+/[A-Z]\$)/Users/
-        | (?:[A-Z]:|\\{2,}[\w.-]+\\+[A-Z]\$)\\+Users\\+
-    )
-'''
-# Windows va primero para contar una sola vez el segmento /Users de una unidad.
-PROFILE_HOME = re.compile(rf'''
-    (?P<quote>['"]){WINDOWS_LOCATION}
-        (?P<quoted_user>[\w][\w.-]*(?:\ +[\w.-]+)*)(?=[/\\]|(?P=quote))
-    | {WINDOWS_LOCATION}(?P<windows_user>[\w][\w.-]*)
-    | (?:file://(?:localhost)?|(?<![\w./-])-[A-Z]+|/System/Volumes/Data|(?<![\w./\\~$-]))
-        /Users/(?P<mac_user>[\w][\w.-]*)
+PROFILE_HOME = re.compile(r'''
+    (?P<windows>(?a:[A-Z]):|[/\\]{2,}[\w.-]+[/\\]+(?a:[A-Z])\$)?
+    [/\\]+Users(?=[/\\]+(?P<user>[\w][\w.-]*))
 ''', re.IGNORECASE | re.VERBOSE)
+QUOTED_PATH = re.compile(r""" '[^']*' | "[^"]*" """, re.VERBOSE)
+QUOTED_USER = re.compile(r'[\w][\w.-]*(?: +[\w.-]+)*(?=[/\\]|$)')
 WSL_USER = re.compile(r'\bwsl\b(?:(?!\s--(?:\s|$)).)*?\s(?:-u|--user)\s+([a-z_][a-z0-9_-]*)(?![a-z0-9_<>-])')
 
 
@@ -54,6 +46,28 @@ def tailnet_ip(text, prefix):
     return ip in TAILNET and ip not in SYNTHETIC_NET
 
 
+def profile_kinds(line):
+    line = line.replace(r'\/', '/')
+    quotes = list(QUOTED_PATH.finditer(line))
+    kinds = set()
+    for profile in PROFILE_HOME.finditer(line):
+        user = profile['user']
+        start = profile.start('user')
+        for quote in quotes:
+            if quote.start() < start < quote.end() - 1:
+                name = QUOTED_USER.match(line, start, quote.end() - 1)
+                if name:
+                    user = name[0]
+                break
+        user = user.rstrip('.').lower()
+        if profile['windows']:
+            if user not in WINDOWS_ALLOWED_USERS:
+                kinds.add('home de Windows')
+        elif user not in MAC_ALLOWED_USERS:
+            kinds.add('home de macOS')
+    return [kind for kind in ('home de macOS', 'home de Windows') if kind in kinds]
+
+
 def findings(text):
     """Devuelve (línea, tipo) por cada dato interno de text."""
     found = []
@@ -64,13 +78,7 @@ def findings(text):
             found.append((number, 'IP de tailnet'))
         if any(m[1] not in SYNTHETIC_USERS for m in HOME.finditer(line)):
             found.append((number, 'home de usuario'))
-        profiles = list(PROFILE_HOME.finditer(line.replace(r'\/', '/')))
-        if any(m['mac_user'] and m['mac_user'].rstrip('.').lower() not in MAC_ALLOWED_USERS
-               for m in profiles):
-            found.append((number, 'home de macOS'))
-        if any(user.rstrip('.').lower() not in WINDOWS_ALLOWED_USERS
-               for m in profiles if (user := m['quoted_user'] or m['windows_user'])):
-            found.append((number, 'home de Windows'))
+        found.extend((number, kind) for kind in profile_kinds(line))
         if any(m[1] not in SYNTHETIC_USERS for m in WSL_USER.finditer(line)):
             found.append((number, 'cuenta de WSL'))
     return found

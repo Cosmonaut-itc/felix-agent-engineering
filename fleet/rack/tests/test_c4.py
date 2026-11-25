@@ -1,6 +1,7 @@
 """C4: fixed desk dispatcher, exact SSH boundary and desk UI; only /tmp fakes."""
 import safety
 import copy
+import errno
 import json
 import os
 import pwd
@@ -393,6 +394,12 @@ class SSHTests(unittest.TestCase):
             return ['system.posix_acl_access']
 
         with patch.object(os, 'listxattr', side_effect=listxattr):
+            with self.assertRaises(accion.DeskDestinationError):
+                accion.desk_destination()
+
+        with patch.object(os, 'listxattr', side_effect=OSError(errno.ENOTSUP, 'no ACL')):
+            self.assertEqual(accion.desk_destination(), safety.DESK_DESTINATION)
+        with patch.object(os, 'listxattr', side_effect=OSError(errno.EACCES, 'no access')):
             with self.assertRaises(accion.DeskDestinationError):
                 accion.desk_destination()
 
