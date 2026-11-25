@@ -188,7 +188,7 @@ def test_success_seal_attributes_hold_with_one_frame(self):
     self.assertEqual((seal['outcome'], seal['reply'], seal['peer']['pid']),
                      ('replied', 'success', self.daemons[-1][0].pid))
     record, reserve = self.actions.record(self.r), self.actions.reservation(self.r)
-    self.assertEqual(record['attribution'], dict(dispatch=self.process()['dispatch'],
+    self.assertEqual(record.get('attribution'), dict(dispatch=self.process()['dispatch'],
                                                  seal_receipt=seal['receipt'], exclusion='filtered'))
     self.assertEqual((reserve['hold_identity'], reserve['uncertain'], reserve['open']), (self.after, False, True))
     self.assertEqual(self.requests(), [rpc.request_payload('stash', 77).hex()])
@@ -250,7 +250,7 @@ def test_success_without_q_stays_retriable_until_cc2_reads_q(self):
     self.assertEqual(self.reconcile(), 1)
     record, reserve = self.actions.record(self.r), self.actions.reservation(self.r)
     self.assertEqual(record['response']['status'], 'held')
-    self.assertEqual(record['attribution']['seal_receipt'], self.seal()['receipt'])
+    self.assertEqual(record.get('attribution', {}).get('seal_receipt'), self.seal()['receipt'])
     self.assertEqual((reserve['hold_identity'], reserve['uncertain']), (self.after, False))
 
 
@@ -268,7 +268,7 @@ def test_cc2_relay_retains_on_deadline_and_retries_incompatible_q(self):
     self.evidence.identity = copy.deepcopy(self.after)  # N+2 reaches the action again.
     self.assertEqual(self.reconcile(), 1)
     record = self.actions.record(self.r)
-    self.assertEqual((record['response']['status'], record['attribution']['seal_receipt']),
+    self.assertEqual((record['response']['status'], record.get('attribution', {}).get('seal_receipt')),
                      ('held', self.seal()['receipt']))
     self.assertEqual(self.actions.reservation(self.r)['hold_identity'], self.after)
 
