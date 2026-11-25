@@ -284,6 +284,20 @@ class VM:
         if current != (self.id, self.prepared, self.apt):
             raise Unavailable('sin_vm', 'registro de VM cambió')
 
+    def read_power_operation(self):
+        try:
+            operation = read_json(self.path / 'operacion.json')
+        except FileNotFoundError:
+            return None
+        sandbox_id = operation['sandbox_id']
+        check_id(sandbox_id)
+        if sandbox_id == self.id:
+            label(operation['id'])
+            if operation['accion'] not in ('resume', 'stop'):
+                raise ValueError('acción inválida')
+            epoch(operation['desde'])
+        return operation
+
     def event(self, kind, when, **fields):
         identity = {'id': self.id} if self.id else {}
         return {'evento': kind, 'en': stamp(when), 'vm': self.name, 'tipo': self.tipo, **identity, **fields}
@@ -504,11 +518,8 @@ class Pool:
         if len(matching) != 1 or matching[0].get('id') != vm.id:
             raise Unavailable('api', 'VM de Boat no coincide con el registro')
 
-    def sandbox_info(self, vm, *, record=True):
-        if record:
-            self.validate(vm)
-        else:
-            vm.validate(self.now())
+    def sandbox_info(self, vm):
+        self.validate(vm)
         info = self.boat.sandbox(vm.id)
         if not isinstance(info, dict) or (info.get('id'), info.get('name')) != (vm.id, vm.name):
             raise Unavailable('api', 'VM de Boat no coincide con el registro')
@@ -528,39 +539,32 @@ class Pool:
         pending = self.power_operation(vm)
         if pending and pending['accion'] == 'resume' and state in READY | STARTING:
             self.record_power_event(vm, pending, 'arranque', epoch(pending['desde']))
-        if pending and pending['accion'] == 'stop':
-            if state in STOPPED:
-                self.record_power_event(vm, pending, 'apagada', self.now())
-                remove(vm.path / 'operacion.json')
-            elif state in READY and (pending.get('credenciales')
-                                     or self.now() - epoch(pending['desde']) < POWER_TIMEOUT):
-                return 'archiving'
+        if pending and pending['accion'] == 'stop' and state in STOPPED:
+            self.record_power_event(vm, pending, 'apagada', self.now())
+            remove(vm.path / 'operacion.json')
+        if state in READY and self.stop_pending(pending):
+            return 'archiving'
         stop = info.get('stop')
         if state in READY and isinstance(stop, dict) and stop.get('status') in ('pending', 'failing'):
             return 'archiving'
         return state
 
+    def stop_pending(self, operation):
+        return bool(operation and operation['accion'] == 'stop' and (
+            operation.get('credenciales') or self.now() - epoch(operation['desde']) < POWER_TIMEOUT
+        ))
+
     def power_operation(self, vm):
         path = vm.path / 'operacion.json'
         marker = vm.path / 'aviso-operacion.json'
         try:
-            operation = read_json(path)
-            sandbox_id = operation['sandbox_id']
-            check_id(sandbox_id)
-            if sandbox_id == vm.id:
-                label(operation['id'])
-                if operation['accion'] not in ('resume', 'stop'):
-                    raise ValueError('acción inválida')
-                epoch(operation['desde'])
-        except FileNotFoundError:
-            remove(marker)
-            return None
+            operation = vm.read_power_operation()
         except (OSError, KeyError, TypeError, ValueError, OverflowError):
             message = 'Operación pendiente sin identificar en ' + vm.name
             self.warn_vm(vm, 'operacion', message)
             raise BoatError(message) from None
         remove(marker)
-        if sandbox_id == vm.id:
+        if operation is None or operation['sandbox_id'] == vm.id:
             return operation
         append_event(vm.journal, vm.event('operacion_descartada', self.now(), operacion=operation.get('id')))
         remove(path)
@@ -662,33 +666,21 @@ class Pool:
         if len(candidates) < 2:
             return candidates
         now = self.now()
-        loads = {}
-        fitting = []
+        order = {}
         for vm in candidates:
             try:
                 with lock(vm.path / 'lock', wait=False) as acquired:
                     if not acquired:
                         continue
                     leases = vm.leases(now)
+                    fits = vm.fits(leases, kind)
+                    operation = vm.read_power_operation()
+                    stopping = (operation is not None and operation['sandbox_id'] == vm.id
+                                and self.stop_pending(operation))
+                    order[vm.name] = (not fits, stopping, len(leases) / vm.places)
             except (OSError, KeyError, TypeError, ValueError, OverflowError):
                 continue
-            loads[vm.name] = len(leases) / vm.places
-            if vm.fits(leases, kind):
-                fitting.append(vm)
-
-        ready = set()
-        if len(fitting) > 1:
-            for vm in fitting:
-                try:
-                    info = self.sandbox_info(vm, record=False)
-                except (OSError, Unavailable, BoatError):
-                    continue
-                state, stop = info.get('state'), info.get('stop')
-                if isinstance(state, str) and state in READY and not (
-                    isinstance(stop, dict) and stop.get('status') in ('pending', 'failing')
-                ):
-                    ready.add(vm.name)
-        return sorted(candidates, key=lambda vm: (vm.name not in ready, loads.get(vm.name, math.inf)))
+        return sorted(candidates, key=lambda vm: order.get(vm.name, (True, True, math.inf)))
 
     def claim(self, candidates, turn, path, locks):
         contended = False

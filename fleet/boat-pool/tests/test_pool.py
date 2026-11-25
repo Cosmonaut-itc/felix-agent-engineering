@@ -416,14 +416,104 @@ class Harness(unittest.TestCase):
         other = 'vm-encendida'
         self.add_vm(other, fake_id('efgh2345'), places=2)
         self.api.sandbox(FAKE_ID, state='archived')
+        marker = self.state / 'vms' / NAME / 'operacion.json'
+        pool.atomic_json(marker, {
+            'id': 'apagado-local', 'sandbox_id': FAKE_ID, 'accion': 'stop', 'desde': pool.stamp(NOW),
+        })
         self.assertEqual(self.get_grant('primera')['vm'], other)
         self.assertEqual(self.get_grant('segunda')['vm'], other)
         self.assertEqual(self.writes(), [])
+        self.assertTrue(marker.exists())
         self.assertEqual(self.get_grant('tercera')['vm'], NAME)
+        self.assertFalse(marker.exists())
         self.assertEqual(self.writes(), [
             ('POST', '/sandboxes/' + FAKE_ID + '/resume',
              {'noEnv': True, 'type': 'large', 'ttlSeconds': 9000}),
         ])
+
+    def test_pedir_concede_sin_sondear_otra_vm_lenta(self):
+        other = fake_id('efgh2345')
+        self.add_vm('vm-otra', other)
+        transport = self.api.transport
+
+        def slow_transport(method, route, headers, body, timeout):
+            if method == 'GET' and route == '/sandboxes/' + other:
+                self.api.now += timeout
+                raise TimeoutError('agotó su plazo la consulta de la otra VM')
+            return transport(method, route, headers, body, timeout)
+
+        ask_order = pool.Pool.ask_order
+        queries = []
+
+        def record_order(instance, candidates, kind):
+            before = mocked_transport.call_count
+            ordered = ask_order(instance, candidates, kind)
+            queries.append(mocked_transport.call_count - before)
+            return ordered
+
+        with patch.object(self.api, 'transport', side_effect=slow_transport) as mocked_transport, \
+                patch.object(pool.Pool, 'ask_order', record_order), \
+                patch.object(pool.time, 'monotonic', side_effect=lambda: self.api.now - NOW):
+            for wait in (0, 1800):
+                with self.subTest(esperar=wait):
+                    queries.clear()
+                    before = self.api.now
+                    code, output, stderr = self.run_cli(*self.args(
+                        'solicitud', 'e2e', '--esperar', str(wait)))
+                    vm = json.loads(output)['vm'] if output else None
+                    self.assertEqual((code, vm, self.api.now - before), (0, NAME, 0), stderr)
+                    self.assertEqual(queries, [0])
+                    self.assertEqual(self.run_cli('soltar', json.loads(output)['arriendo'])[0], 0)
+
+    def test_pedir_prefiere_una_vm_lista_a_un_apagado_local_pendiente(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = fake_id('efgh2345')
+        self.add_vm('vm-otra', other, created=NOW - 1800)
+        transport = self.api.transport
+        delayed_stop = False
+
+        def accept_stop(method, route, headers, body, timeout):
+            nonlocal delayed_stop
+            if method == 'POST' and route == '/sandboxes/' + other + '/stop':
+                delayed_stop = True
+                return {'ok': True}
+            return transport(method, route, headers, body, timeout)
+
+        sleep = self.api.sleep
+
+        def finish_stop_on_poll(seconds):
+            nonlocal delayed_stop
+            if delayed_stop:
+                delayed_stop = False
+                self.api.sandbox(other, state='archived')
+            sleep(seconds)
+
+        with patch.object(self.api, 'transport', side_effect=accept_stop), \
+                patch.object(self.api, 'sleep', side_effect=finish_stop_on_poll):
+            self.assertEqual(self.run_cli('vigilar')[0], 0)
+            self.assertTrue(delayed_stop)
+            local = self.state / 'vms' / 'vm-otra' / 'operacion.json'
+            self.assertEqual(pool.read_json(local)['accion'], 'stop')
+            remote = pool.read_json(self.api.path)[other]
+            self.assertEqual(remote['state'], 'ready')
+            self.assertNotIn('stop', remote)
+            self.api.calls.clear()
+            grant = self.get_grant('fragmento', 'e2e')
+
+        resumes = sum(method == 'POST' and route.endswith('/resume')
+                      for method, route, _ in self.api.calls)
+        self.assertEqual((grant['vm'], resumes), (NAME, 0))
+
+    def test_pedir_pospone_la_vm_con_un_arriendo_sin_clase(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('ocupante')
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'), places=3)
+        leases = pool.private_dir(self.state / 'vms' / other / 'arriendos')
+        pool.atomic_json(leases / 'dañado.json', {'vence': pool.stamp(NOW + 900)})
+
+        self.assertEqual(self.get_grant('siguiente')['vm'], NAME)
 
     def test_arriendo_vencido_y_soltar_idempotente(self):
         lease = self.get_lease('caduca', 'contract', '--ttl', '300')
