@@ -149,6 +149,18 @@ class DeskChannelTests(unittest.TestCase):
         self.assertNotIn('launcher',envelope)
         self.assertNotIn(wire['action_id'],' '.join(argv))
 
+    def test_missing_destination_rejects_host_mutation_without_sending(self):
+        accion._desk_config_path().unlink()
+        runner = Mock()
+        self.actions.executor = accion.Executor(runner=runner, home=self.root)
+        request = self.request()
+        _, answer = self.actions.post(request)
+        self.assertEqual(answer['status'], 'rejected')
+        self.assertEqual(answer['error']['code'], 'preflight_unavailable')
+        self.assertIs(answer.get('effects'), False)
+        self.assertEqual(self.actions.get(request['action_id'])[1], answer)
+        runner.assert_not_called()
+
     def test_dispatcher_fixed_controller_and_closed_envelope_and_status_disabled(self):
         desk=accion.desk_channel
         controller=self.root/'control.py'

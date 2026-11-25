@@ -63,6 +63,45 @@ class DatosInternosTests(unittest.TestCase):
         found = datos.findings('primera\nhttp://a.tail0.ts.net\n/home/ana 100.64.0.9\n')
         self.assertEqual(found, [(2, 'FQDN de tailnet'), (3, 'IP de tailnet'), (3, 'home de usuario')])
 
+    def test_rejects_alternate_mac_homes(self):
+        for text in (
+                '/users/DemoUser/bin',
+                'file://localhost/Users/DemoUser/bin',
+                'clang -I/Users/DemoUser/include',
+                'rsync host.example:22:/Users/DemoUser/bin',
+                '/System/Volumes/Data/Users/DemoUser/bin',
+                r'"\/Users\/DemoUser\/bin"'):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(text), ['home de macOS'])
+
+    def test_rejects_windows_admin_shares(self):
+        for text in (r'\\host.example\c$\Users\DemoUser\bin',
+                     '//host.example/c$/Users/DemoUser/bin'):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(text), ['home de Windows'])
+
+    def test_allows_public_profiles_and_prose_after_synthetic_profiles(self):
+        for text in (
+                '/Users/Shared/work',
+                r'C:\Users\Public\Documents',
+                r'El perfil C:\Users\u usa un marcador',
+                'C:/Users/u y /c/Users/<usuario>',
+                '/c/Users/u y otra cosa',
+                r'C:\Users\u '):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(text), [])
+
+    def test_profile_boundaries(self):
+        self.assertEqual(kinds(r'"C:\Users\u example\bin"'), ['home de Windows'])
+        self.assertEqual(kinds('/Users/SharedFixture/x'), ['home de macOS'])
+        self.assertEqual(kinds(r'C:\Users\PublicFixture\x'), ['home de Windows'])
+        self.assertEqual(kinds(r'/Users/DemoUser/x C:\Users\DemoUser\x'),
+                         ['home de macOS', 'home de Windows'])
+        for text in ('HOME=~demo/bin', '$HOME/Users/demo/bin', '/tmp/Users/demo/bin',
+                     r'//host.example/c$/Users/U/bin'):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(text), [])
+
 
 if __name__ == '__main__':
     unittest.main()

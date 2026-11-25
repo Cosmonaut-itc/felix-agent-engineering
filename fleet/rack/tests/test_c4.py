@@ -294,6 +294,76 @@ class SSHTests(unittest.TestCase):
                     accion.Executor(runner=self.runner)(self.host, 'remote-run', wire())
         self.assertEqual(self.calls, [])
 
+    def test_unsafe_destination_files_are_rejected(self):
+        path = accion._desk_config_path()
+        target = path.with_name('target')
+        installed = path.with_name('legacy.json')
+        legacy = copy.deepcopy(self.host)
+        legacy['argv'][-1] = legacy['actions']['argv'][-1] = 'u@prior.example'
+        installed.write_text(json.dumps([legacy]))
+        executor = accion.Executor(runner=self.runner, home=path.parent)
+
+        def outcome(operation):
+            try:
+                return operation()
+            except ValueError as error:
+                self.assertIn('Configura pao/rack-desk-ssh', str(error))
+                return 'rechazado'
+
+        for label, mode, link in (
+                ('archivo 0666', 0o666, False),
+                ('archivo 0620', 0o620, False),
+                ('archivo 0602', 0o602, False),
+                ('enlace a 0600', 0o600, True),
+                ('enlace a 0666', 0o666, True),
+                ('enlace roto', None, True),
+                ('dueño distinto', 0o600, False)):
+            path.unlink()
+            if target.exists():
+                target.unlink()
+            file = target if link else path
+            if mode is not None:
+                file.write_text(safety.DESK_DESTINATION + '\n')
+                file.chmod(mode)
+            if link:
+                path.symlink_to(target)
+            uid = os.getuid() + (label == 'dueño distinto')
+            with patch.object(os, 'getuid', return_value=uid), \
+                    patch.object(serve.subprocess, 'run', return_value=SimpleNamespace(stdout='{}')) as run, \
+                    patch.object(serve, 'validate_snapshot'), \
+                    patch.object(accion.desk_channel, 'exchange', return_value=(0, {})) as exchange:
+                for channel, operation in (
+                        ('archivo', accion.desk_destination),
+                        ('adopción', lambda: accion.adopt_desk_destination(installed)),
+                        ('lectura', lambda: serve.fetch_host(self.host)),
+                        ('cancelación', lambda: executor(self.host, 'remote-run', wire())),
+                        ('host-control', lambda: executor(self.host, 'host-control', {}))):
+                    with self.subTest(case=label, channel=channel):
+                        self.assertEqual(outcome(operation), 'rechazado')
+                with self.subTest(case=label):
+                    run.assert_not_called()
+                    exchange.assert_not_called()
+
+        path.chmod(0o600)
+        info = SimpleNamespace(st_uid=os.getuid(), st_mode=stat.S_IFIFO | 0o600)
+        with self.subTest(case='archivo no regular'), patch.object(os, 'fstat', return_value=info):
+            self.assertEqual(outcome(accion.desk_destination), 'rechazado')
+        self.assertEqual(accion.adopt_desk_destination(installed), safety.DESK_DESTINATION)
+        self.assertEqual(executor(self.host, 'remote-run', wire())['status'], 'cancelled')
+
+    def test_missing_destination_rejects_cancel_without_sending(self):
+        accion._desk_config_path().unlink()
+        data = payload()
+        data['hosts'][0]['id'] = 'desk'
+        actions = accion.Actions([self.host], accion._desk_config_path().parent,
+                                 lambda: data, accion.Executor(runner=self.runner), clock=lambda: 1000)
+        body = request(host='desk')
+        _, answer = actions.post(body)
+        self.assertEqual(answer['status'], 'rejected')
+        self.assertEqual(answer['error']['code'], 'preflight_unavailable')
+        self.assertEqual(actions.get(body['action_id'])[1], answer)
+        self.assertEqual(self.calls, [])
+
     def test_exact_ssh_argv_stdin_only_environment_and_budget(self):
         self.assertEqual(self.host['actions']['argv'], [*SSH[:-1], '<usuario>@<host-desk>'])
         with patch.dict(os.environ,{'SSH_AUTH_SOCK':'secret','GH_TOKEN':'secret'}):
