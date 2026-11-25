@@ -29,9 +29,6 @@ El LaunchAgent usa los valores del entorno de launchd.
 
 - `pedir --repo R --corrida ID --clase C [--prioridad P] [--esperar S] [--ttl S]`
   devuelve un JSON con el arriendo, nombre de VM, ID en Boat y vencimiento.
-  Entre las VMs con cupo, `pedir` prefiere las que no tienen un apagado
-  pendiente en el estado local. Elige por menor proporción de arriendos
-  vivos por lugar y desempata en el orden de `pool.json`.
   Los valores predeterminados son prioridad `otra`, espera de cero segundos
   para un lugar y arriendo de 900 segundos. La espera admite de 0 a 7200 s
   y el arriendo de 300 a 3600 s. Una reanudación tiene su propio plazo.
