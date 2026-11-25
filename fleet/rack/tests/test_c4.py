@@ -350,6 +350,11 @@ class SSHTests(unittest.TestCase):
             self.assertEqual(outcome(accion.desk_destination), 'rechazado')
         self.assertEqual(accion.adopt_desk_destination(installed), safety.DESK_DESTINATION)
         self.assertEqual(executor(self.host, 'remote-run', wire())['status'], 'cancelled')
+        path.unlink()
+        path.mkdir()
+        with patch.object(os, 'close', wraps=os.close) as close:
+            self.assertEqual(outcome(accion.desk_destination), 'rechazado')
+        close.assert_called_once()
 
     def test_missing_destination_rejects_cancel_without_sending(self):
         accion._desk_config_path().unlink()

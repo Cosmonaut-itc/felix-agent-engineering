@@ -28,6 +28,7 @@ class DatosInternosTests(unittest.TestCase):
                 ("'/c/Users/Demo User/AppData/Local'", 'home de Windows'),
                 ('C:/Users/DemoUser/AppData/Local', 'home de Windows'),
                 (r'C:\Users\Demo-User\AppData\Local', 'home de Windows'),
+                (r'clang -IC:\Users\DemoUser\include', 'home de Windows'),
                 ('"AllowedIPs": ["100.64.1.2/32"]', 'IP de tailnet'),
                 ('HTTP://MINI.TAIL0A1B2C.TS.NET:8788', 'FQDN de tailnet'),
                 ('wsl -d Ubuntu -u ana -- ~/.local/bin/x', 'cuenta de WSL'),

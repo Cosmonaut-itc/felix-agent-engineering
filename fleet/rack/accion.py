@@ -76,13 +76,16 @@ def desk_destination():
     try:
         # Check the opened file itself. No symlink traversal or blocking on FIFOs.
         fd = os.open(_desk_config_path(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, encoding='ascii') as stream:
-            info = os.fstat(stream.fileno())
+        try:
+            info = os.fstat(fd)
             if (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
                     and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
-                destination = stream.read().rstrip('\r\n')
+                with os.fdopen(fd, encoding='ascii', closefd=False) as stream:
+                    destination = stream.read().rstrip('\r\n')
                 if _DESTINATION.fullmatch(destination):
                     return destination
+        finally:
+            os.close(fd)
     except (OSError, UnicodeError):
         pass
     raise DeskDestinationError('Configura pao/rack-desk-ssh con la cuenta y el hostname SSH del desk')

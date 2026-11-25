@@ -29,7 +29,7 @@ HOME = re.compile(r'(?<![A-Za-z0-9_.~$-])/home/([a-z_][a-z0-9_-]*)(?![a-z0-9_-])
 WINDOWS_LOCATION = r'''
     (?:
         (?:/[A-Z]|(?<![\w.-])[A-Z]:|//[\w.-]+/[A-Z]\$)/Users/
-        | (?:(?<![\w.-])[A-Z]:|\\{2,}[\w.-]+\\+[A-Z]\$)\\+Users\\+
+        | (?:[A-Z]:|\\{2,}[\w.-]+\\+[A-Z]\$)\\+Users\\+
     )
 '''
 # Windows va primero para contar una sola vez el segmento /Users de una unidad.
