@@ -169,7 +169,7 @@ Resultado: 174 pruebas / 0 fallos / 0 errores / 0 omitidas; CLI 6, contrato 28,
 identidad/ámbito/U1 8, desk 113, Mini 4 y almacén 15. Las tres regresiones
 B-G1/B-G2/B-G3 dieron rojo sobre `3f8ce69` en la misma corrida y verde sobre
 `dad5ef8`. Evidencia:
-`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/9df0741daa4d4a629ac47bf2c4b6be5a/lanzador.log`.
+`<home>/.claude/encargos/mini-carga/evidencia-hostgate-sol/9df0741daa4d4a629ac47bf2c4b6be5a/lanzador.log`.
 Suite verde sobre ese SHA no equivale a aceptación técnica; las dos reviews
 posteriores y el encargo r3 mandan sobre el trabajo aún pendiente.
 
@@ -216,7 +216,7 @@ pruebas escritas antes del código, ejecución posterior en Mini con snapshot te
 El guion conserva las seis familias y exige exactamente 113 casos desk.
 
 Evidencia completa, sin recortes:
-`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/495ef06ee60541bd8626124333b1b7f4/remoto.log`.
+`<home>/.claude/encargos/mini-carga/evidencia-hostgate-sol/495ef06ee60541bd8626124333b1b7f4/remoto.log`.
 En el mismo directorio: `lanzador.log`, `script.sh`, `recibo.json` y `terminal.json`;
 recibo completo, resultado y salida del lanzador 0, turno liberado. Los procesos
 propios del lanzador terminaron; los helpers propios concluyeron en la suite.
@@ -226,7 +226,7 @@ al igual que las interfaces F. A-M1 se resuelve por adopción r4, registrada aba
 
 
 Adopción A-M1, 2026-10-23 (America/Mexico_City): copia byte a byte de
-`/Users/felixddhs/.claude/encargos/desktop-carga/lector-numero-am1/artifact/lector_desk.py`,
+`<home>/.claude/encargos/desktop-carga/lector-numero-am1/artifact/lector_desk.py`,
 Desktop `d21312b1`, empaquetado en `ca44846d`. Blob verificado antes del commit:
 `1ef0465d847836129dc155a80bf34fac8e169a4a`. Desktop acreditó en Mini los runs
 `20261023-205755-d82822` (112/112 en base y corregido; regresiones 22 fallos en base
@@ -284,7 +284,7 @@ symlink, commit/ACK/cierre con OSError/PermissionError/RuntimeError y recuperaci
 con un solo débito, además de JSON ±10**400 por el adaptador de salud.
 
 Evidencia completa, sin recortes:
-`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/a746e9d92e33413eb68e93a22172e296/remoto.log`.
+`<home>/.claude/encargos/mini-carga/evidencia-hostgate-sol/a746e9d92e33413eb68e93a22172e296/remoto.log`.
 En ese directorio: `lanzador.log`, `script.sh`, `recibo.json` y `terminal.json`.
 Recibo con `evidencia_completa=true`; resultado, start y salida del lanzador 0;
 turno liberado. Lanzador terminado; helpers propios concluyeron en la suite.

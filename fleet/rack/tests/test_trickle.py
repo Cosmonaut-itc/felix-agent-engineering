@@ -135,7 +135,7 @@ class MergedCellTests(unittest.TestCase):
     def fixture(self):
         fixture=json.loads((BASE/'tests/rack-fixture.json').read_text())
         fixture['now']=NOW
-        entry=fixture['hosts'][0];fixture['hosts']=[entry];entry.update(id='desk',name='Felix DESKTOP',fresh=True)
+        entry=fixture['hosts'][0];fixture['hosts']=[entry];entry.update(id='desk',name='Desk · WSL',fresh=True)
         host=entry['snapshot']
         host.update(host='desk',taken=NOW,tasks=[dict(id=101,group='jale',state='Running',priority=0,start=NOW-300,name='Dirigida',ticket='SEN-6417'),dict(id=102,group='jale',state='Queued',priority=0,start=None,enqueued=NOW-120,name='Dirigida',ticket='SEN-6417')],control=dict(pause_reasons={'jale':['pressure']}),
                     groups=[dict(name='jale',status='Paused',slots=5)])

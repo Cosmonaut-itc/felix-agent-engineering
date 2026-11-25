@@ -214,7 +214,7 @@ así que otra carpeta también sirve. El clon debe estar en `main`. `manifest` d
 runtimes al clon. Respalda los archivos y directorios reales antes de
 reemplazarlos, aunque su contenido sea idéntico. Informa la ruta de cada
 respaldo. Una segunda instalación conserva los enlaces que ya están bien.
-No instala `configs/opencode/` ni `outputs/`.
+No instala `configs/opencode/`. Los artefactos locales de `outputs/` quedan fuera del control de versiones y de la instalación.
 
 El estado vive en `${XDG_STATE_HOME:-$HOME/.local/state}/pao/`. Allí están
 `env`, `status`, las últimas 2000 líneas de `update.log` y `backups/`.

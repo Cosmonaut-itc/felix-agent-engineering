@@ -1,6 +1,7 @@
 """C4: fixed desk dispatcher, exact SSH boundary and desk UI; only /tmp fakes."""
 import safety
 import copy
+import errno
 import json
 import os
 import pwd
@@ -9,6 +10,7 @@ import shutil
 import stat
 from types import SimpleNamespace
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -24,7 +26,7 @@ SSH = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
        '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=~/.ssh/known_hosts',
        '-o', 'ClearAllForwardings=yes', '-o', 'PermitLocalCommand=no',
        '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
-       '-i', '~/.ssh/id_ed25519_pao_rack_accion', 'Felix@felix-desktop']
+       '-i', '~/.ssh/id_ed25519_pao_rack_accion', safety.DESK_DESTINATION]
 
 
 def wire(launcher='remote-run', op='cancel'):
@@ -247,14 +249,202 @@ class FakeProcess:
 
 class SSHTests(unittest.TestCase):
     def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir='/tmp')
+        self.addCleanup(temp.cleanup)
+        safety.desk_config(self, Path(temp.name))
         self.host = serve.load_hosts(BASE/'hosts.json')[1]
         self.calls=[]
     def runner(self,argv,**options):
         self.calls.append((argv,options))
         return FakeProcess(receipt(wire()),0,self.calls)
 
+    def test_snapshot_read_uses_same_configured_destination(self):
+        template = self.host['argv']
+        self.assertEqual(template[-1], '<usuario>@<host-desk>')
+        with patch.object(serve.subprocess, 'run', return_value=SimpleNamespace(stdout='{}')) as run:
+            with patch.object(serve, 'validate_snapshot') as validate:
+                self.assertIs(serve.fetch_host(self.host), validate.return_value)
+            self.assertEqual(run.call_args.args[0], [
+                '/usr/bin/ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
+                '-o', 'IdentitiesOnly=yes', '-i', '~/.ssh/id_ed25519_pao_rack', safety.DESK_DESTINATION])
+        self.assertEqual(template[-1], '<usuario>@<host-desk>')
+
+    def test_migration_uses_legacy_endpoint_and_keeps_local_override(self):
+        config = accion._desk_config_path()
+        config.unlink()
+        installed = config.parent / 'hosts.json'
+        desk = copy.deepcopy(self.host)
+        desk['argv'][-1] = 'u@prior.example'
+        desk['actions']['argv'][-1] = desk['argv'][-1]
+        installed.write_text(json.dumps([desk]))
+        installed.chmod(0o600)
+        self.assertEqual(accion.adopt_desk_destination(installed), 'u@prior.example')
+        self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
+        config.write_text(safety.DESK_DESTINATION + '\n')
+        self.assertEqual(accion.adopt_desk_destination(installed), safety.DESK_DESTINATION)
+
+    def test_migration_rejects_untrusted_legacy_file(self):
+        config = accion._desk_config_path()
+        config.unlink()
+        desk = copy.deepcopy(self.host)
+        desk['argv'][-1] = desk['actions']['argv'][-1] = 'u@prior.example'
+        legacy = config.with_name('hosts.json')
+        legacy.write_text(json.dumps([desk]))
+        legacy.chmod(0o666)
+        link = legacy.with_name('linked-hosts.json')
+        link.symlink_to(legacy)
+
+        for label, source, mode, uid in (
+                ('escritura compartida', legacy, 0o666, os.getuid()),
+                ('enlace a 0600', link, 0o600, os.getuid()),
+                ('dueño distinto', legacy, 0o600, os.getuid() + 1)):
+            with self.subTest(case=label):
+                legacy.chmod(mode)
+                try:
+                    with patch.object(os, 'getuid', return_value=uid):
+                        with self.assertRaisesRegex(accion.DeskDestinationError, 'Configura pao/rack-desk-ssh'):
+                            accion.adopt_desk_destination(source)
+                    self.assertFalse(config.exists())
+                finally:
+                    if config.exists():
+                        config.unlink()
+
+    def test_missing_or_invalid_destination_cannot_launch_ssh(self):
+        config = accion._desk_config_path()
+        config.unlink()
+        with patch.object(serve.subprocess, 'run') as run:
+            with self.assertRaises(ValueError):
+                serve.fetch_host(self.host)
+            run.assert_not_called()
+        for value in ('-oProxyCommand=bad', 'u@-invalid', 'u@desk.example\nextra'):
+            with self.subTest(value=value):
+                config.write_text(value)
+                with self.assertRaises(ValueError):
+                    accion.Executor(runner=self.runner)(self.host, 'remote-run', wire())
+        self.assertEqual(self.calls, [])
+
+    def test_unsafe_destination_files_are_rejected(self):
+        path = accion._desk_config_path()
+        target = path.with_name('target')
+        installed = path.with_name('legacy.json')
+        legacy = copy.deepcopy(self.host)
+        legacy['argv'][-1] = legacy['actions']['argv'][-1] = 'u@prior.example'
+        installed.write_text(json.dumps([legacy]))
+        executor = accion.Executor(runner=self.runner, home=path.parent)
+
+        def outcome(operation):
+            try:
+                return operation()
+            except ValueError as error:
+                self.assertIn('Configura pao/rack-desk-ssh', str(error))
+                return 'rechazado'
+
+        for label, mode, link in (
+                ('archivo 0666', 0o666, False),
+                ('archivo 0620', 0o620, False),
+                ('archivo 0602', 0o602, False),
+                ('enlace a 0600', 0o600, True),
+                ('enlace a 0666', 0o666, True),
+                ('enlace roto', None, True),
+                ('dueño distinto', 0o600, False)):
+            path.unlink()
+            if target.exists():
+                target.unlink()
+            file = target if link else path
+            if mode is not None:
+                file.write_text(safety.DESK_DESTINATION + '\n')
+                file.chmod(mode)
+            if link:
+                path.symlink_to(target)
+            uid = os.getuid() + (label == 'dueño distinto')
+            with patch.object(os, 'getuid', return_value=uid), \
+                    patch.object(serve.subprocess, 'run', return_value=SimpleNamespace(stdout='{}')) as run, \
+                    patch.object(serve, 'validate_snapshot'), \
+                    patch.object(accion.desk_channel, 'exchange', return_value=(0, {})) as exchange:
+                for channel, operation in (
+                        ('archivo', accion.desk_destination),
+                        ('adopción', lambda: accion.adopt_desk_destination(installed)),
+                        ('lectura', lambda: serve.fetch_host(self.host)),
+                        ('cancelación', lambda: executor(self.host, 'remote-run', wire())),
+                        ('host-control', lambda: executor(self.host, 'host-control', {}))):
+                    with self.subTest(case=label, channel=channel):
+                        self.assertEqual(outcome(operation), 'rechazado')
+                with self.subTest(case=label):
+                    run.assert_not_called()
+                    exchange.assert_not_called()
+
+        path.chmod(0o600)
+        info = SimpleNamespace(st_uid=os.getuid(), st_mode=stat.S_IFIFO | 0o600)
+        with self.subTest(case='archivo no regular'), patch.object(os, 'fstat', return_value=info):
+            self.assertEqual(outcome(accion.desk_destination), 'rechazado')
+        self.assertEqual(accion.adopt_desk_destination(installed), safety.DESK_DESTINATION)
+        self.assertEqual(executor(self.host, 'remote-run', wire())['status'], 'cancelled')
+        path.unlink()
+        path.mkdir()
+        with patch.object(os, 'close', wraps=os.close) as close:
+            self.assertEqual(outcome(accion.desk_destination), 'rechazado')
+        close.assert_called_once()
+
+    def test_extended_acl_rejects_destination(self):
+        path = accion._desk_config_path()
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(accion.desk_destination(), safety.DESK_DESTINATION)
+
+        if sys.platform == 'darwin':
+            subprocess.run(['/bin/chmod', '+a', 'everyone allow write', str(path)], check=True)
+        elif sys.platform == 'linux':
+            setfacl = shutil.which('setfacl')
+            if setfacl is None:
+                self.skipTest('setfacl no está disponible')
+            subprocess.run([setfacl, '-m', 'u:nobody:w', str(path)], check=True)
+            # Keep the existing POSIX mode so the ACL check itself is exercised.
+            subprocess.run([setfacl, '-m', 'm::---', str(path)], check=True)
+        else:
+            self.skipTest('plataforma sin fixture de ACL')
+
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        with self.assertRaises(accion.DeskDestinationError):
+            accion.desk_destination()
+
+        if sys.platform == 'darwin':
+            subprocess.run(['/bin/chmod', '-N', str(path)], check=True)
+        else:
+            subprocess.run([setfacl, '-b', str(path)], check=True)
+        self.assertEqual(accion.desk_destination(), safety.DESK_DESTINATION)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'ACL POSIX de Linux')
+    def test_linux_acl_is_checked_on_the_open_descriptor(self):
+        path = accion._desk_config_path()
+
+        def listxattr(fd):
+            self.assertTrue(os.path.samestat(os.fstat(fd), path.stat()))
+            return ['system.posix_acl_access']
+
+        with patch.object(os, 'listxattr', side_effect=listxattr):
+            with self.assertRaises(accion.DeskDestinationError):
+                accion.desk_destination()
+
+        with patch.object(os, 'listxattr', side_effect=OSError(errno.ENOTSUP, 'no ACL')):
+            self.assertEqual(accion.desk_destination(), safety.DESK_DESTINATION)
+        with patch.object(os, 'listxattr', side_effect=OSError(errno.EACCES, 'no access')):
+            with self.assertRaises(accion.DeskDestinationError):
+                accion.desk_destination()
+
+    def test_missing_destination_rejects_cancel_without_sending(self):
+        accion._desk_config_path().unlink()
+        data = payload()
+        data['hosts'][0]['id'] = 'desk'
+        actions = accion.Actions([self.host], accion._desk_config_path().parent,
+                                 lambda: data, accion.Executor(runner=self.runner), clock=lambda: 1000)
+        body = request(host='desk')
+        _, answer = actions.post(body)
+        self.assertEqual(answer['status'], 'rejected')
+        self.assertEqual(answer['error']['code'], 'preflight_unavailable')
+        self.assertEqual(actions.get(body['action_id'])[1], answer)
+        self.assertEqual(self.calls, [])
+
     def test_exact_ssh_argv_stdin_only_environment_and_budget(self):
-        self.assertEqual(self.host['actions']['argv'],SSH)
+        self.assertEqual(self.host['actions']['argv'], [*SSH[:-1], '<usuario>@<host-desk>'])
         with patch.dict(os.environ,{'SSH_AUTH_SOCK':'secret','GH_TOKEN':'secret'}):
             answer=accion.Executor(runner=self.runner,home='/synthetic-home')(self.host,'remote-run',wire())
         argv,options=self.calls[0]
@@ -335,6 +525,7 @@ class IntegrationTests(unittest.TestCase):
 
     def test_panel_dispatcher_both_launchers_and_switch(self):
         from browser_fixture import write_ssh_shim, fixture
+        safety.desk_config(self, self.root)
         shim = write_ssh_shim(self.root, self.controllers)
         calls = []
         def runner(argv, **options):
@@ -372,7 +563,7 @@ class DeskUITests(unittest.TestCase):
         hosts=serve.load_hosts(BASE/'hosts.json')
         self.assertIsNone(accion.transport_reason(hosts[1],'remote-run'))
         self.assertIsNone(accion.transport_reason(hosts[1],'jale'))
-        data=payload();data['hosts'][0].update(id='desk',name='Felix DESKTOP',actions={'reason':None})
+        data=payload();data['hosts'][0].update(id='desk',name='Desk · WSL',actions={'reason':None})
         data['hosts'][0]['snapshot']['groups'][0]['status']='Paused'
         harness=(BASE/'tests/ui-check.js').read_text().split('(async()=>{',1)[0]
         probe=r'''
@@ -394,7 +585,7 @@ class DeskUITests(unittest.TestCase):
   await run('prepareCancel(menu,found)');assert.equal(button.disabled,false);
   assert.equal(sent[0].host,'desk');assert.equal(sent[0].launcher,launcher);
   context.fetch=async()=>({json:async()=>({schema:'rack-action@1',status:'cancelling'})});
-  run(`confirmCancel(found);`);assert.match(dialog.paragraph.textContent,/Felix DESKTOP/);dialog.close('si');
+  run(`confirmCancel(found);`);assert.match(dialog.paragraph.textContent,/Desk · WSL/);dialog.close('si');
   await Promise.resolve();await Promise.resolve();
   assert.match(elements.app.innerHTML,/Cancelando…/);
   run(`{const [key,action]=[...PENDING][0];acceptAction(key,action,{status:'cancelled',result:{exit:130}})}`);

@@ -87,10 +87,12 @@ print(json.dumps(a))
         # Fake only the SSH connection: the production Executor still sends its exact
         # argv and stdin envelope, and the real dispatcher runs both fake controllers.
         shim=write_ssh_shim(root, {'remote-run':str(control),'jale':str(jale)})
+        os.environ.update(safety.write_desk_config(root))
         processes=[]
         def runner(argv,**options):
             if argv and argv[0]=='/usr/bin/ssh':
-                if argv!=serve.accion.DESK_ARGV:raise AssertionError('Unexpected SSH argv')
+                if argv!=[*serve.accion.DESK_ARGV[:-1], safety.DESK_DESTINATION]:
+                    raise AssertionError('Unexpected SSH argv')
                 argv=['/usr/bin/python3','-I',str(shim)]
             process=subprocess.Popen(argv,**options);processes.append(process);return process
         executor=serve.accion.Executor(home=root,runner=runner)

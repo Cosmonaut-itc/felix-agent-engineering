@@ -6,9 +6,9 @@ Revisión documental preestable de 2026-10-24 del contrato `fleet/desk-snapshot-
 
 ## Productor y archivo
 
-Productor instalado de Desktop `a6c1010f`, PR 16, tarea `\PAO desktop vigilante`. La ruta Windows acordada es `C:\Users\felix\AppData\Local\pao\desktop-vigilante\state\ultimo.json`. La tarea instalada aplica el override real `state`; no se usa el default de un script.
+Productor instalado de Desktop `a6c1010f`, PR 16, tarea `\PAO desktop vigilante`. La ruta Windows acordada es `C:\Users\<usuario>\AppData\Local\pao\desktop-vigilante\state\ultimo.json`. El valor de `<usuario>` en esta ruta es el nombre del directorio del perfil que figura en el override `state` de la tarea instalada. Desktop toma de ese override la ruta exacta que se certifica.
 
-La ruta de Git Bash es exactamente `/c/Users/felix/AppData/Local/pao/desktop-vigilante/state/ultimo.json`. No es parámetro del trabajo ni se obtiene de su entorno. El archivo contiene un único objeto JSON UTF-8 sin BOM. Puede no terminar en newline. Es compacto y no es JSONL. Su esquema es `desktop-vigilante/muestra@1`; los campos superiores acordados son `schema`, `ts`, `host`, `boot`, `status`, `metrics`, `volumes`, `guestRuntime`, `persist` y `errors`. Se toleran ampliaciones aditivas conforme al lector puro existente.
+La ruta de Git Bash es exactamente `/c/Users/<usuario>/AppData/Local/pao/desktop-vigilante/state/ultimo.json`. No es parámetro del trabajo ni se obtiene de su entorno. El archivo contiene un único objeto JSON UTF-8 sin BOM. Puede no terminar en newline. Es compacto y no es JSONL. Su esquema es `desktop-vigilante/muestra@1`; los campos superiores acordados son `schema`, `ts`, `host`, `boot`, `status`, `metrics`, `volumes`, `guestRuntime`, `persist` y `errors`. Se toleran ampliaciones aditivas conforme al lector puro existente.
 
 Desktop publica mediante temporal GUID en el mismo directorio y reemplazo atómico `File.Replace` o `File.Move`, sin promesa de fsync. Un fallo puede conservar la muestra anterior. PT1M, IgnoreNew y StartWhenAvailable no garantizan una publicación cada minuto. Una actualización de persist puede conservar el mismo ts. El tamaño observado de 2182 bytes no es una cota del productor.
 
@@ -17,16 +17,16 @@ Desktop publica mediante temporal GUID en el mismo directorio y reemplazo atómi
 El único string remoto enviado como argumento de SSH es:
 
 ```sh
-exec /usr/bin/head -c 65537 -- '/c/Users/felix/AppData/Local/pao/desktop-vigilante/state/ultimo.json'
+exec /usr/bin/head -c 65537 -- '/c/Users/<usuario>/AppData/Local/pao/desktop-vigilante/state/ultimo.json'
 ```
 
 La invocación nativa desde MacBook es este argv, representado en shell sólo para poder leerlo:
 
 ```sh
-/usr/bin/ssh -T -n -o BatchMode=yes -o ProxyCommand=none -o ProxyJump=none -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=5 -o ConnectionAttempts=1 Felix@felix-desktop "exec /usr/bin/head -c 65537 -- '/c/Users/felix/AppData/Local/pao/desktop-vigilante/state/ultimo.json'"
+/usr/bin/ssh -T -n -o BatchMode=yes -o ProxyCommand=none -o ProxyJump=none -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=5 -o ConnectionAttempts=1 <usuario>@<host-desk> "exec /usr/bin/head -c 65537 -- '/c/Users/<usuario>/AppData/Local/pao/desktop-vigilante/state/ultimo.json'"
 ```
 
-Fleet construye un argv local literal y un único argumento remoto con esos bytes. No usa shell local. El DefaultShell nativo de sshd es Git Bash; su manejo de CommandOption, quoting y wrappers forma parte del gate que Desktop mide. El builtin exec solicita reemplazar el shell por head; no se presume que esto acredite cierre de procesos en Windows.
+En el destino SSH, `<usuario>` es la cuenta de OpenSSH de Windows y `<host-desk>` es el hostname del desk en el tailnet, según los datos de conexión locales acordados. En el argumento remoto, `<usuario>` se sustituye por el directorio de perfil indicado arriba. Fleet construye un argv local literal y un único argumento remoto con los valores acordados. No usa shell local. El DefaultShell nativo de sshd es Git Bash; su manejo de CommandOption, quoting y wrappers forma parte del gate que Desktop mide. El builtin exec solicita reemplazar el shell por head; no se presume que esto acredite cierre de procesos en Windows.
 
 Sólo se lee ese archivo una vez por evaluación. No hay pipelines, reintentos, lecturas auxiliares, cat alternativo, stat, wc, scripts, source, eval, PowerShell, cmd, CIM, WMI ni WSL en el comando. El alias desk no se usa. La puerta no arranca el monitor ni WSL si no están disponibles. La instalación de Git debe aportar `/usr/bin/head` con `-c` y `--`; si H2 no confirma esa interfaz exacta, no hay fallback y esta versión no pasa el gate.
 
@@ -48,7 +48,7 @@ El presupuesto para aceptar una respuesta completa es **cinco segundos de reloj 
 
 El consumidor publica una sola causa de transporte bajo `health-invalid`, con esta precedencia: limpieza anterior pendiente (sin spawn), timeout, exceso, lectura fallida, JSON inválido y, por último, evaluación de salud o boot. Las razones independientes `default-shell-unverified` y `boot-unverified` que aporte el adaptador se conservan y no se suprimen por elegir una causa de transporte. Los buffers permanecen acotados a 65 536 bytes de stdout más el byte centinela y 4096 bytes de stderr. Al alcanzar sus cotas, el consumidor sigue drenando y descarta el exceso hasta que termine el proceso o venza el plazo.
 
-Tras una lectura completa con salida cero y JSON válido, la interfaz sigue siendo `fleet/hostgate/salud/lector_desk.py:evaluar(muestra, ahora, boot_actual)`, función pura sin E/S. El lector adoptado es el blob `1ef0465d847836129dc155a80bf34fac8e169a4a`. El adaptador convierte sus motivos según el contrato hostgate existente; no sustituye ni duplica las reglas de sano.
+Tras una lectura completa con salida cero y JSON válido, el adaptador llama a `fleet/hostgate/salud/lector_desk.py:evaluar(muestra, ahora, boot_actual, host_esperado)`, función pura sin E/S. El valor exacto de `host_esperado` sale de `snapshotHost` en la configuración local de hostgate y corresponde al campo `host` que identifica al productor de Windows. El adaptador convierte los motivos del lector según el contrato hostgate existente.
 
 `ahora` es la hora UTC del lector al evaluar tras la lectura. `boot_actual` procede de una interfaz independiente aceptada de Desktop, todavía pendiente. La ventana de ts es inclusiva, `-60 <= ahora - ts <= 180`. Los fallos anteriores dejan desk no sano; un boot no verificable tampoco permite elegirlo degradado. Ningún fallo cambia drenado, libera capacidad ni descarta duda observada. Los motivos nuevos propuestos aquí son detalles bajo `health-invalid`, no nuevos reason codes públicos del protocolo host-reservation.
 

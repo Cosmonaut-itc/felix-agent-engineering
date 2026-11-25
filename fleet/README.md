@@ -878,7 +878,7 @@ La suite no lo busca ni monta.
 Las dos precondiciones h1 no hacen skip: falta de base sensible, FS incorrecto o
 ruta externa incompatible con los secretos reales fallan explícitamente. Cuenta
 y host mantienen sus valores reales y el estado vive en la raíz externa; el
-prefijo `/Users/cosmonaut` de la corrida de evidencia no provoca skip. Los otros
+prefijo `<home>` de la corrida de evidencia no provoca skip. Los otros
 skips históricos de aliases no cambian ni acreditan cobertura.
 La matriz, selector rojo/verde y fronteras sin fixture están en
 [`tests/COVERAGE.md`](tests/COVERAGE.md).
@@ -919,7 +919,7 @@ La evidencia posterior h3 `893160c4` consta en
 `D/reports/SEN-3821-suite-r1-diagnostico.md`, SHA256
 `9c1de08ffe45a2f2b8377d1682be0a4a08f07bac56bafe86cce60b9fda7c2b9e`:
 3.9.6 obtuvo 97 pass/4 fail/0 error/0 skip; 3.14.7, 101/0/0/0.
-`D=/Users/felixddhs/.claude/orchestrate/fleet-pruebas`.
+`D=<home>/.claude/orchestrate/fleet-pruebas`.
 El custodio PAO075b50e8 leyó metadatos a **18:25Z del 2026-10-26**, recogidos en
 `D/reports/metadatos-sqlite-075b50e8.md`, SHA256
 `052d7024e2cc51d8de80847f90c6cc15e37ba58ecd4763f295b74347908a8f08`:

@@ -30,7 +30,7 @@ jobs:
             echo '::error::Un caso ejecutado como condición de if ignora set -e. Usa: (set -e; caso) > log; result=$?; if [ "$result" = 0 ]; then ...'
             exit 1
           fi
-      - name: Reject internal access data in fleet
+      - name: Reject internal access data in fleet and scripts
         if: runner.os == 'Linux'
         run: |
           python3 -I -m unittest discover -s tests -p 'test_datos_internos.py' -v

@@ -312,6 +312,8 @@ def fetch_host(host):
     argv = host['argv']
     if host['transport'] == 'local':
         argv = [a.replace('{rack_dir}', str(BASE)) for a in argv]
+    elif host['id'] == 'desk' and argv[-1] == accion.DESK_DESTINATION:
+        argv = [*argv[:-1], accion.desk_destination()]
     result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=25, check=True)
     return validate_snapshot(json.loads(result.stdout), host['id'])
 

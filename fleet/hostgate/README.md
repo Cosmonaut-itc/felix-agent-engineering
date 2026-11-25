@@ -203,7 +203,9 @@ de provisión, no requisito oculto para probar sombra.
 se ejecutan con parametrización stdlib en `tests/support/cases.py`. `lector_mini`
 implementa el contrato U4; recibe boot independiente por parámetro. Usa la ventana
 [-60,180] s de B, propuesta del consumidor que U4 no especifica y debe aceptar Fleet.
-La identidad del host y ncpu se contrastan con configuración. Sin SEN-3853 el desk no
+El nombre del productor se contrasta con `snapshotHost` en la configuración
+local. En el desk se usa el nombre exacto publicado por Desktop. En la Mini
+también se contrasta ncpu con la configuración. Sin SEN-3853 el desk no
 es sano ni degradado; DefaultShell pendiente/fallido implica cero llamadas al transporte.
 No se implementa transporte. Ninguna consulta dispara sondas ni intenta obtener testigo.
 A-M1 queda resuelto por la adopción del lector Desktop corregido. La captura de
@@ -249,7 +251,7 @@ La tercera corrida, run `20261023-192300-c75aef`, probó exactamente
 `dad5ef88158daffe76a2a47566fec4924502da5d`: 174 pruebas, 0 fallos, 0 errores,
 0 omitidas. Incluyó el rojo retrospectivo de B-G1/B-G2/B-G3 sobre `3f8ce69` en la
 misma corrida. Evidencia completa:
-`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/9df0741daa4d4a629ac47bf2c4b6be5a/lanzador.log`.
+`<home>/.claude/encargos/mini-carga/evidencia-hostgate-sol/9df0741daa4d4a629ac47bf2c4b6be5a/lanzador.log`.
 Esa suite verde acredita ese SHA, incluida la aserción corregida; no equivale a
 aceptación técnica: las revisiones posteriores identificaron A-I1 y los puntos
 de esta ronda.
@@ -266,7 +268,7 @@ las dos regresiones A-I1 fallaron sobre `dad5ef8` (2 fallos, 0 errores, ambos
 `5 != 0` al reintentar el dueño) y pasaron sobre el SHA corregido. El replay B-G2
 y el rechazo durable con salud recuperada también pasaron.
 Evidencia completa:
-`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/495ef06ee60541bd8626124333b1b7f4/remoto.log`,
+`<home>/.claude/encargos/mini-carga/evidencia-hostgate-sol/495ef06ee60541bd8626124333b1b7f4/remoto.log`,
 con `lanzador.log`, `script.sh`, `recibo.json` y `terminal.json` en ese directorio.
 Una corrida de las dos permitidas; no se usó la segunda. Lanzador terminado y
 turno liberado, salida 0. El commit posterior sólo actualiza README y COBERTURA;
@@ -289,7 +291,7 @@ recuperación explícita permanecen pendientes. Ningún fixture acredita activac
 
 
 Adopción A-M1, 2026-10-23 (America/Mexico_City): copia byte a byte de
-`/Users/felixddhs/.claude/encargos/desktop-carga/lector-numero-am1/artifact/lector_desk.py`,
+`<home>/.claude/encargos/desktop-carga/lector-numero-am1/artifact/lector_desk.py`,
 Desktop `d21312b1`, empaquetado en `ca44846d`. Blob verificado antes del commit:
 `1ef0465d847836129dc155a80bf34fac8e169a4a`. Desktop acreditó en Mini los runs
 `20261023-205755-d82822` (112/112 en base y corregido; regresiones 22 fallos en base
@@ -349,7 +351,7 @@ symlink, commit/ACK/cierre con OSError/PermissionError/RuntimeError y recuperaci
 con un solo débito, además de JSON ±10**400 por el adaptador de salud.
 
 Evidencia completa, sin recortes:
-`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/a746e9d92e33413eb68e93a22172e296/remoto.log`.
+`<home>/.claude/encargos/mini-carga/evidencia-hostgate-sol/a746e9d92e33413eb68e93a22172e296/remoto.log`.
 En ese directorio: `lanzador.log`, `script.sh`, `recibo.json` y `terminal.json`.
 Recibo con `evidencia_completa=true`; resultado, start y salida del lanzador 0;
 turno liberado. Lanzador terminado; helpers propios concluyeron en la suite.

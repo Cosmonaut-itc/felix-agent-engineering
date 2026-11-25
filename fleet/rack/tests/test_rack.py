@@ -85,7 +85,7 @@ class SnapshotTests(unittest.TestCase):
         fixture = json.loads((BASE / 'tests/mini-pueue.json').read_text())
         run = self.root / 'run'
         run.mkdir()
-        (run / 'meta').write_text('src=/Users/felix/.t3/worktrees/SEN-CheckIn/t3-sen-4822\nmirror=remote-run/work/suite-sen-4822-sol-aabbccdd\n')
+        (run / 'meta').write_text('src=/local/u/.t3/worktrees/SEN-CheckIn/t3-sen-4822\nmirror=remote-run/work/suite-sen-4822-sol-aabbccdd\n')
         for task in fixture['tasks'].values():
             task['path'] = str(run)
         pueue = self.fake_pueue(fixture['tasks'])
@@ -101,11 +101,11 @@ class SnapshotTests(unittest.TestCase):
                 for v in obj:
                     keys(v)
         keys(data)
-        (run / 'meta').write_text('src=/Users/felix/REPOS/comprador./x\nmirror=remote-run/work/diag-x-1234abcd\n')
+        (run / 'meta').write_text('src=/local/u/REPOS/comprador./x\nmirror=remote-run/work/diag-x-1234abcd\n')
         self.assertEqual(snapshot.mini_metadata({'path': str(run)})['project'], 'comprador')
-        (run / 'meta').write_text('src=/Users/felix/VSCODE/REPOS/apotheca.-desk-pueue\nmirror=remote-run/work/suite-u15-1234abcd\n')
+        (run / 'meta').write_text('src=/local/u/VSCODE/REPOS/apotheca.-desk-pueue\nmirror=remote-run/work/suite-u15-1234abcd\n')
         self.assertEqual(snapshot.mini_metadata({'path': str(run)})['project'], 'apotheca')
-        (run / 'meta').write_text('src=/Users/felix/VSCODE/REPOS/.apotheca-exhib/sen-5957-sol\nmirror=remote-run/work/suite-sen-5957-1234abcd\n')
+        (run / 'meta').write_text('src=/local/u/VSCODE/REPOS/.apotheca-exhib/sen-5957-sol\nmirror=remote-run/work/suite-sen-5957-1234abcd\n')
         self.assertIsNone(snapshot.mini_metadata({'path': str(run)})['project'])
         self.assertEqual(snapshot.mini_metadata({'path': str(run), 'label': 'apotheca-remote-run'})['project'], 'apotheca')
 
@@ -135,7 +135,7 @@ class SnapshotTests(unittest.TestCase):
                         'commit', '--allow-empty', '-qm', 'Descripción <arbitraria>'], check=True)
         run = self.root / 'run'
         run.mkdir()
-        (run / 'meta').write_text('src=/Users/test/REPOS/proyecto/work\nmirror=mirror\ncmd=GH_T=secreto-no-exportar\nmirror=secreto-en-cmd\n')
+        (run / 'meta').write_text('src=/local/u/REPOS/proyecto/work\nmirror=mirror\ncmd=GH_T=secreto-no-exportar\nmirror=secreto-en-cmd\n')
         # Un grupo cualquiera: la lectura depende del tipo de corrida, no del grupo.
         raw = dict(id=8, group='otros', priority=9, status='Queued', path=str(run))
         for mode, host in (('macos', 'mini'), ('linux', 'desk')):
@@ -145,7 +145,7 @@ class SnapshotTests(unittest.TestCase):
                              ('codex/SEN-234-prueba', 'Descripción <arbitraria>', 'proyecto', 9))
             self.assertNotIn('cmd', json.dumps(data))
             self.assertNotIn('secreto', json.dumps(data))
-        (run / 'meta').write_text('src=/Users/test/REPOS/proyecto\n')
+        (run / 'meta').write_text('src=/local/u/REPOS/proyecto\n')
         # Sin nombre propio del espejo, la rama proporciona el nombre.
         with patch.object(snapshot, 'command', return_value='codex/rama\n'):
             (run / 'meta').write_text('mirror=.\n')

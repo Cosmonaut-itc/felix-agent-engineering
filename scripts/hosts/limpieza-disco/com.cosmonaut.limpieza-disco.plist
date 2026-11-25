@@ -4,12 +4,12 @@
 <dict>
   <key>Label</key><string>com.cosmonaut.limpieza-disco</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/bash</string><string>/Users/cosmonaut/bin/limpieza-disco.sh</string></array>
+  <array><string>/bin/bash</string><string>@HOME@/bin/limpieza-disco.sh</string></array>
   <key>StartInterval</key><integer>3600</integer>
   <key>RunAtLoad</key><true/>
   <key>LowPriorityIO</key><true/>
   <key>Nice</key><integer>10</integer>
-  <key>StandardOutPath</key><string>/Users/cosmonaut/Library/Logs/limpieza-disco.log</string>
-  <key>StandardErrorPath</key><string>/Users/cosmonaut/Library/Logs/limpieza-disco.log</string>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/limpieza-disco.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/limpieza-disco.log</string>
 </dict>
 </plist>

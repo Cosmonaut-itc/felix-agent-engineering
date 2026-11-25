@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 from hostgate.salud import lector_desk
 from hostgate.salud.lector_desk import _ts
@@ -6,13 +7,17 @@ from hostgate.tests.support.world import FIXTURES
 
 
 class DesktopAdoption(Harness):
-    def huge_sample(self, value):
+    def healthy_sample(self):
+        self.gate.config = replace(self.gate.config, snapshot_host='DESK-FIXTURE')
         self.world.health_kind = 'desk'
         self.world.witness = self.world.default_shell = True
         self.world.sample = json.loads((FIXTURES / 'health/desk.json').read_text())
         self.world.sample_boot = self.world.sample['boot']['bootId']
         self.world.utc = _ts(self.world.sample['ts']) + 30
         self.assertEqual(self.gate._health(), [])
+
+    def huge_sample(self, value):
+        self.healthy_sample()
         self.world.sample['metrics']['commitBytes']['value'] = value
         self.world.sample = json.loads(json.dumps(self.world.sample))
 
@@ -36,5 +41,12 @@ class DesktopAdoption(Harness):
         for value in (10**400, -10**400):
             with self.subTest(value=value):
                 self.huge_sample(value)
-                self.assertEqual(lector_desk.evaluar(self.world.sample, self.world.utc, self.world.sample_boot),
+                self.assertEqual(lector_desk.evaluar(self.world.sample, self.world.utc, self.world.sample_boot,
+                                                    self.gate.config.snapshot_host),
                                  ['commitBytes incompleta'])
+
+    def test_name_must_match_local_config_exactly(self):
+        self.healthy_sample()
+        self.gate.config = replace(self.gate.config, snapshot_host='desk-fixture')
+        self.assertEqual([(r['code'], r['detail']) for r in self.gate._health()],
+                         [('health-invalid', 'host')])

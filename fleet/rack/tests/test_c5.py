@@ -71,6 +71,7 @@ class Fixture(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='rack-c5-', dir='/tmp')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        safety.desk_config(self, self.root)
         self.processes = []
         self.addCleanup(self.reap_all)
 

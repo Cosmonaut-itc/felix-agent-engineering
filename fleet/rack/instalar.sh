@@ -29,6 +29,19 @@ tailscale=/Applications/Tailscale.app/Contents/MacOS/Tailscale
 ip=$("$tailscale" ip -4)
 temporal=$(mktemp -d)
 trap 'rm -rf "$temporal"' EXIT
+/usr/bin/python3 -I - "$origen/accion.py" "$destino/hosts.json" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('rack_accion', sys.argv[1])
+accion = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(accion)
+try:
+    accion.adopt_desk_destination(Path(sys.argv[2]))
+except ValueError as error:
+    sys.exit('rack: ' + str(error))
+PY
 "$tailscale" status --json > "$temporal/status.json"
 "$tailscale" serve status --json > "$temporal/serve.json"
 "$tailscale" funnel status --json > "$temporal/funnel.json"
@@ -66,14 +79,17 @@ name = status['Self']['DNSName'].rstrip('.')
 if not name.endswith('.ts.net'):
     sys.exit('rack: Tailscale no devolvió un nombre MagicDNS')
 with open(plist, 'wb') as stream:
-    plistlib.dump(dict(Label='com.cosmonaut.pao-rack',
+    config = dict(Label='com.cosmonaut.pao-rack',
         ProgramArguments=['/usr/bin/python3', '-I', root + '/serve.py', '--bind', ip, '--port', port, '--owner', owner,
                            '--name', name, '--name', name.split('.')[0]],
         KeepAlive=True, RunAtLoad=True,
         # Without it launchd throttles the agent: under suite load, whois exceeds its 3 s limit and the owner gets 403.
         ProcessType='Interactive',
         StandardOutPath=os.path.expanduser('~/Library/Logs/pao-rack.log'),
-        StandardErrorPath=os.path.expanduser('~/Library/Logs/pao-rack.log')), stream)
+        StandardErrorPath=os.path.expanduser('~/Library/Logs/pao-rack.log'))
+    if os.environ.get('XDG_CONFIG_HOME'):
+        config['EnvironmentVariables'] = {'XDG_CONFIG_HOME': os.environ['XDG_CONFIG_HOME']}
+    plistlib.dump(config, stream)
 PY
 mkdir -p "$destino" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 for archivo in accion.py host_action.py desk_action.py snapshot.py serve.py index.html hosts.json; do

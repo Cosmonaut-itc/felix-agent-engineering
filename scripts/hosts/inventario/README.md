@@ -82,7 +82,7 @@ ese reporte y lo recupera tras finalizar. Máximo dos corridas.
 ## Limpieza automática de la Mini
 
 El LaunchAgent `com.cosmonaut.limpieza-disco` ejecuta cada hora
-`/Users/cosmonaut/bin/limpieza-disco.sh`. Borra con `rm -rf` los directorios
+`<home>/bin/limpieza-disco.sh`. Borra con `rm -rf` los directorios
 no ocultos de `~/remote-run/work/` que cumplen las cuatro condiciones:
 
 - no tienen `.remote-run.lock`;
@@ -244,7 +244,7 @@ detención o fallo de listado devuelve 1 (guardas de CLI: 2).
 
 La suite se ejecuta sólo en la Mini con turno de `run.sh`. Sus procesos y
 fixtures son temporales y se limpian en la corrida. El guion
-`/Users/felixddhs/.claude/encargos/mini-carga/guiones/borrado-mini.sh` imprime
+`<home>/.claude/encargos/mini-carga/guiones/borrado-mini.sh` imprime
 SHA y porcelain (sólo admite `?? .remote-run.lock`), corre ambas suites,
 comprueba las mutaciones de las guardas en copias temporales y muestra el
 JSON seco del remote-run real con du, lsof y ps de las cuatro. Usa `-B` y no

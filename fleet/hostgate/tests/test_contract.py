@@ -370,7 +370,9 @@ class Contract(Harness):
         self.assertEqual(self.view()['budget']['retained']['slots'], 1)
 
     def test_desk_no_transport_even_degraded(self):
+        from dataclasses import replace
         from hostgate.salud.lector_desk import _ts
+        self.gate.config = replace(self.gate.config, snapshot_host='DESK-FIXTURE')
         self.world.health_kind = 'desk'
         self.world.sample = json.loads((FIXTURES / 'health/desk.json').read_text())
         self.world.utc = _ts(self.world.sample['ts']) + 30
@@ -598,7 +600,9 @@ class Contract(Harness):
         self.assertEqual(self.view()['resources'][0]['holder'], key)
 
     def test_desk_huge_integer_is_invalid_at_adapter_boundary(self):
+        from dataclasses import replace
         from hostgate.salud.lector_desk import _ts
+        self.gate.config = replace(self.gate.config, snapshot_host='DESK-FIXTURE')
         self.world.health_kind = 'desk'
         self.world.sample = json.loads((FIXTURES / 'health/desk.json').read_text())
         self.world.utc = _ts(self.world.sample['ts']) + 30

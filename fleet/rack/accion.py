@@ -1,4 +1,6 @@
 """Cancelación por lanzador y diario durable. Python 3.9, biblioteca estándar."""
+import ctypes
+import errno
 import importlib.util
 from contextlib import contextmanager
 import hashlib
@@ -9,7 +11,9 @@ import pwd
 import re
 import signal  # compatibility for process-group tests
 import sqlite3
+import stat
 import subprocess
+import sys
 import threading
 import time
 
@@ -39,6 +43,7 @@ ERRORS = {
 }
 CANCEL_OPEN = ('cancelling', 'unknown', 'cancel_unconfirmed')
 OPEN = (*CANCEL_OPEN, 'applying', 'partial')
+DESK_DESTINATION = '<usuario>@<host-desk>'
 DESK_ARGV = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
              '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
              '-o', 'IdentityAgent=none', '-o', 'ConnectTimeout=10',
@@ -46,7 +51,9 @@ DESK_ARGV = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
              '-o', 'UserKnownHostsFile=~/.ssh/known_hosts',
              '-o', 'ClearAllForwardings=yes', '-o', 'PermitLocalCommand=no',
              '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
-             '-i', '~/.ssh/id_ed25519_pao_rack_accion', 'Felix@felix-desktop']
+             '-i', '~/.ssh/id_ed25519_pao_rack_accion', DESK_DESTINATION]
+_DNS_LABEL = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+_DESTINATION = re.compile(rf'[A-Za-z0-9_][A-Za-z0-9_.-]*@{_DNS_LABEL}(?:\.{_DNS_LABEL})*')
 DESK_TIMEOUT = 40
 # Local cancel: the previous 10 s plus up to 2 s for the origin probe (desk_action.send).
 LOCAL_CANCEL_TIMEOUT = 12
@@ -57,6 +64,92 @@ JOURNAL_WAIT = .5
 
 CONTROLLERS = {'remote-run': '~/.local/lib/remote-run/run-control.py',
                'jale': '~/.local/lib/jale/pueue-control.py'}
+
+
+def _desk_config_path():
+    return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'pao/rack-desk-ssh'
+
+
+class DeskDestinationError(ValueError):
+    """The desk transport could not get its destination before dispatch."""
+
+
+def _has_no_extended_acl(fd):
+    if sys.platform == 'darwin':
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            get_acl = libc.acl_get_fd_np
+            free_acl = libc.acl_free
+        except AttributeError:
+            return False
+        get_acl.argtypes = (ctypes.c_int, ctypes.c_int)
+        get_acl.restype = ctypes.c_void_p
+        free_acl.argtypes = (ctypes.c_void_p,)
+        free_acl.restype = ctypes.c_int
+        acl_type_extended = 0x00000100  # ACL_TYPE_EXTENDED in <sys/acl.h>
+        ctypes.set_errno(0)
+        acl = get_acl(fd, acl_type_extended)
+        if acl:
+            free_acl(acl)
+            return False
+        return ctypes.get_errno() == errno.ENOENT
+    if sys.platform == 'linux':
+        try:
+            return 'system.posix_acl_access' not in os.listxattr(fd)
+        except OSError as error:
+            return error.errno == errno.ENOTSUP
+    return False
+
+
+@contextmanager
+def _open_trusted_config(path, *, encoding=None):
+    # Check the opened file itself. No symlink traversal or blocking on FIFOs.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or not _has_no_extended_acl(fd)):
+            raise PermissionError(errno.EACCES, 'Archivo de configuración no confiable')
+        with os.fdopen(fd, encoding=encoding, closefd=False) as stream:
+            yield stream
+    finally:
+        os.close(fd)
+
+
+def desk_destination():
+    """Read the private, fixed user@hostname used by both desk channels."""
+    try:
+        with _open_trusted_config(_desk_config_path(), encoding='ascii') as stream:
+            destination = stream.read().rstrip('\r\n')
+        if _DESTINATION.fullmatch(destination):
+            return destination
+    except (OSError, UnicodeError):
+        pass
+    raise DeskDestinationError('Configura pao/rack-desk-ssh con la cuenta y el hostname SSH del desk')
+
+
+def adopt_desk_destination(installed):
+    """Preserve the shared destination from the previous installed hosts file."""
+    path = _desk_config_path()
+    if not path.exists() and not path.is_symlink():
+        try:
+            with _open_trusted_config(installed) as stream:
+                hosts = json.load(stream)
+            desk = next(host for host in hosts if host['id'] == 'desk')
+            destination = desk['argv'][-1]
+            expected = [*DESK_ARGV[:-1], destination]
+            if (_DESTINATION.fullmatch(destination) and desk['transport'] == 'ssh'
+                    and desk['actions']['argv'] == expected):
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                try:
+                    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
+                        stream.write(destination + '\n')
+                except FileExistsError:
+                    pass
+        except (KeyError, IndexError, TypeError, ValueError, OSError, StopIteration):
+            pass
+    return desk_destination()
 
 
 def request_budget(host):
@@ -177,8 +270,10 @@ class Executor:
         if launcher == 'host-control':
             config = action_config(host.get('actions'))
             if host['id'] == 'desk' and host['transport'] == 'ssh' and config['transport'] == 'ssh':
+                destination = desk_destination()
                 envelope = dict(schema='rack-desk-action@1', target='host-control', request=request)
-                argv = [a.replace('~/', str(self.home) + '/') for a in config['argv']]
+                argv = [a.replace('~/', str(self.home) + '/') for a in config['argv'][:-1]]
+                argv.append(destination)
                 code, response = desk_channel.exchange(argv, envelope, self.runner,
                     {'HOME': str(self.home), 'PATH': '/usr/bin:/bin', 'TMPDIR': '/tmp'},
                     min(DESK_TIMEOUT, timeout if timeout is not None else DESK_TIMEOUT))
@@ -207,7 +302,7 @@ class Executor:
         env = {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'}
         if remote:
             # The envelope never carries origin: the desk dispatcher negotiates it locally.
-            argv = list(config['argv'])
+            argv = [*config['argv'][:-1], desk_destination()]
             request = dict(schema='rack-desk-action@1', launcher=launcher, request=request)
             code, response = desk_channel.exchange(argv, request, self.runner, env, timeout)
         else:
@@ -422,6 +517,8 @@ class Actions:
                     return result(request, 'unknown')
                 response.update(schema=SCHEMA, op=request['op'], host=request['host'])
                 return response if self.timer() <= deadline - RECEIPT_RESERVE else result(request, 'unknown')
+            except DeskDestinationError:
+                return result(request, 'unknown') if op == 'status' else unsent()
             except Exception:
                 return result(request, 'unknown') if mutation_sent or op=='status' else unsent()
         wire = dict(schema='rack-cancel@1', op=op, ref=request['ref'])
@@ -438,6 +535,9 @@ class Actions:
             answer = sanitize(request, self.executor(self.hosts[request['host']], request['launcher'], wire,
                                                      timeout=timeout), op)
             return answer if self.timer() <= deadline - RECEIPT_RESERVE else result(request, 'unknown')
+        except DeskDestinationError:
+            return (result(request, 'unknown') if op == 'status'
+                    else result(request, 'rejected', 'preflight_unavailable'))
         except Exception:
             # This is the controller boundary, after client validation. Any failure
             # reading/decoding/validating its answer leaves the effect uncertain.

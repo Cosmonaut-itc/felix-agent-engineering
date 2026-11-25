@@ -24,7 +24,7 @@ accion = serve.accion
 REF = '20261112-184713-d976b4'
 HOSTS = [dict(id='mini', name='Mac Mini', transport='local', argv=['false'],
               actions=dict(transport='local', reason=None, controllers={'remote-run': accion.CONTROLLERS['remote-run']})),
-         dict(id='desk', name='Felix DESKTOP', transport='ssh', argv=['false'],
+         dict(id='desk', name='Desk · WSL', transport='ssh', argv=['false'],
               actions=dict(transport='disabled', reason='canal de escritura del desk pendiente',
                            controllers=dict(accion.CONTROLLERS)))]
 

@@ -19,6 +19,7 @@ class DeskChannelTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='rack-u32-',dir='/tmp');self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.now=1794664799.0  # 2026-11-14 13:59:59 UTC
+        safety.desk_config(self, self.root)
         self.p=FakePueue();self.p.groups={g:dict(status='Running',parallel_tasks=n) for g,n in control.desk_profile(self.now).items()}
         self.engine=control.MiniControl(self.p,self.root/'host',clock=lambda:self.now,generation=lambda:'linux-proc-v1:1111111111111111111111111111111111111111111111111111111111111111',host='desk')
         with control.locked(self.engine.directory):self.engine.adopt()
@@ -141,11 +142,24 @@ class DeskChannelTests(unittest.TestCase):
             answer=accion.Executor(home=self.root)(self.host,'host-control',wire,timeout=3)
         self.assertEqual(answer['status'],'unknown')
         argv,envelope,env,timeout=calls[0]
-        self.assertEqual(argv,[a.replace('~/',str(self.root)+'/') for a in accion.DESK_ARGV])
+        self.assertEqual(argv,[a.replace('~/',str(self.root)+'/') for a in accion.DESK_ARGV[:-1]]
+                         + [safety.DESK_DESTINATION])
         self.assertEqual(envelope,dict(schema='rack-desk-action@1',target='host-control',request=wire))
         self.assertEqual(timeout,3);self.assertEqual(set(env),{'HOME','PATH','TMPDIR'})
         self.assertNotIn('launcher',envelope)
         self.assertNotIn(wire['action_id'],' '.join(argv))
+
+    def test_missing_destination_rejects_host_mutation_without_sending(self):
+        accion._desk_config_path().unlink()
+        runner = Mock()
+        self.actions.executor = accion.Executor(runner=runner, home=self.root)
+        request = self.request()
+        _, answer = self.actions.post(request)
+        self.assertEqual(answer['status'], 'rejected')
+        self.assertEqual(answer['error']['code'], 'preflight_unavailable')
+        self.assertIs(answer.get('effects'), False)
+        self.assertEqual(self.actions.get(request['action_id'])[1], answer)
+        runner.assert_not_called()
 
     def test_dispatcher_fixed_controller_and_closed_envelope_and_status_disabled(self):
         desk=accion.desk_channel
@@ -173,7 +187,7 @@ class DeskChannelTests(unittest.TestCase):
         self.assertEqual(safe['next_event'],1794664800)
         for key,value in (('cap',7),('mode','fijo'),('expires_at',True),('next_event',True)):
             with self.assertRaises(ValueError):accion.host_channel.control(dict(v,**{key:value}),'desk')
-        fixture=dict(now=self.now,tickets={},hosts=[dict(id='desk',name='Felix DESKTOP · WSL',fresh=True,age=0,estimates={},actions=dict(reason=None),
+        fixture=dict(now=self.now,tickets={},hosts=[dict(id='desk',name='Desk · WSL',fresh=True,age=0,estimates={},actions=dict(reason=None),
             snapshot=dict(control=safe,groups=[dict(name=g,slots=n,status='Running') for g,n in control.desk_profile(self.now).items()],
                           tasks=[],cpu=dict(cores=12,load=[1,1,1]),mem=dict(total=32*1024**3,available=24*1024**3,swap_total=0,swap_used=0)))])
         source=(BASE/'index.html').read_text().split('<script>',1)[1].split('</script>',1)[0]
@@ -256,6 +270,7 @@ class DeskForcedChannelTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory(prefix='rack-u32-forced-',dir='/tmp')
         self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)
+        safety.desk_config(self, self.root)
         (self.root/'fakepueue.py').write_text(FAKE_PUEUE)
         self.controller=self.root/'control.py'
         self.controller.write_text(WRAPPER.format(control=str(BASE.parent/'pueue-desk/control.py')))
@@ -284,7 +299,7 @@ class DeskForcedChannelTests(unittest.TestCase):
         self.processes=[];self.argv=[]
         def runner(argv,**kw):
             self.argv.append(argv)
-            expected=[a.replace('~/',str(self.root)+'/') for a in accion.DESK_ARGV]
+            expected=[a.replace('~/',str(self.root)+'/') for a in accion.DESK_ARGV[:-1]] + [safety.DESK_DESTINATION]
             self.assertEqual(argv,expected)
             process=subprocess.Popen(['/usr/bin/python3','-I',str(shim)],**kw)
             self.processes.append(process);return process
