@@ -484,6 +484,7 @@ class Harness(unittest.TestCase):
         self.add_vm('vm-reservada', other)
         token = self.get_lease()
         self.config['prohibidos'] = [other]
+        self.api.calls.clear()
         self.assertEqual(self.run_cli('soltar', token)[0], 0)
         self.assertFalse((self.state / 'vms' / NAME / 'arriendos' / (token + '.json')).exists())
         self.api.now += 30 * 60
@@ -1178,7 +1179,6 @@ class Harness(unittest.TestCase):
         start = pool.epoch(today)
         next_id = fake_id('efgh2345')
         xlarge = fake_id('nprt2345')
-        self.add_vm('vm-grande', xlarge, overrides={'tipo': 'xlarge'}, created=start + 10)
         record_path = self.state / 'vms' / NAME / 'registro.json'
         record = pool.read_json(record_path)
         record['preparada_en'] = pool.stamp(start - 3600)
@@ -1190,6 +1190,7 @@ class Harness(unittest.TestCase):
         self.get_lease('misma')
 
         self.api.now = NOW
+        self.add_vm('vm-grande', xlarge, overrides={'tipo': 'xlarge'}, created=start + 10)
         record.update(id=next_id, preparada_en=pool.stamp(start + 3600))
         pool.atomic_json(record_path, record)
         self.api.sandbox(next_id, createdAt=record['preparada_en'])
