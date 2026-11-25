@@ -1048,7 +1048,7 @@ También cubre el claim perdido y el perdedor del claim, la Q vencida y el
 relevo de CC2, otra versión en el saludo, otra vida en el par y el perfil
 `coordinated`. Para el defecto latente prueba un `success` con Q en
 `Running`. Las tramas doradas de `corpus/pueue-404-frames.json` fijan el
-codificador. `tests/mutate_client_rpc.py` mata doce mutantes por aserción.
+codificador. `tests/mutate_client_rpc.py` mata veinte mutantes por aserción.
 `mutate_client_actions.py` reapunta dos casos a la compuerta y a la falla
 tras la intención.
 

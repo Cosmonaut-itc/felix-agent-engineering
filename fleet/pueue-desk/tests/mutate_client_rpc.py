@@ -15,6 +15,10 @@ CASES = [
      "            life_alive = self.alive(daemon['pid'], daemon['birth'])",
      '            life_alive = True',
      W+'test_emitter_dies_between_claim_and_frame_3'),
+    ('life D is read after frame 3, never assumed alive', 'client_actions.py',
+     "            life_alive = self.alive(daemon['pid'], daemon['birth'])",
+     '            life_alive = True',
+     W+'test_emitter_dies_after_frame_3'),
     ('gated without claim is not a not-sent', 'client_actions.py',
      "            plan, claim, seal = found['plan'], found['claim'], found['seal']",
      "            plan, claim, seal = found['plan'], found['claim'], found['seal']\n"
