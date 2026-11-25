@@ -225,17 +225,27 @@ class PanelTests(Aislado):
         devolver, = (efecto for efecto in efectos if efecto.tipo == "devolver")
         return nuevo, devolver
 
-    def test_expulsion_por_conflicto_conserva_url_exacta(self):
+    def test_expulsion_conserva_url_original_con_otra_grafia(self):
         nuevo, devolver = self.expulsar_del_lote("conflicto-en-cadena")
         self.assertEqual(json.loads(devolver.datos[2])["fallos"], [])
+        url = URL.replace(REPO, "Example/Project")
         escritor = EscritorGitHub()
-        with patch.object(escritor, "api", side_effect=[[], {"html_url": URL}, [], {}]):
+        with patch.object(escritor, "api", side_effect=[[], {"html_url": url}, [], {}]):
             resultado = escritor.ejecutar_feedback(devolver, nuevo, lambda *_: None)
         self.db.registrar_efecto(REPO, devolver, self.ahora - 110, resultado,
                                 completo=True, sin_consumo=True)
         reciente, = self.proyectar("--repo", REPO)["repos"][0]["recientes"]
         self.assertEqual(reciente["miembros"][0], dict(pr=1, resultado="DEVUELTO",
-            devolucion=dict(check="devolucion", unidad="Devolución", comentario_url=URL)))
+            devolucion=dict(check="devolucion", unidad="Devolución", comentario_url=url)))
+
+    def test_url_de_devolucion_solo_ignora_mayusculas_ascii_del_repo(self):
+        url = "https://github.com/example/kit/pull/1#issuecomment-123"
+        for anterior, otro in (("kit", "Kit"), ("kit/", "kit2/"), ("github.com", "GitHub.com"),
+                               ("/pull/", "/Pull/"), ("/1#", "/01#"),
+                               ("#issuecomment-", "#Issuecomment-")):
+            with self.subTest(otro=otro):
+                self.assertIsNone(panel.devolucion("example/kit", 1, (
+                    {}, {"comentario_url": url.replace(anterior, otro)})))
 
     def test_lote_devuelto_distingue_caducado_de_rearme(self):
         nuevo, _ = self.expulsar_del_lote("head-cambiado-en-tren", caducar=True)
@@ -288,6 +298,25 @@ class PanelTests(Aislado):
         self.db.guardar_paso(Estado(REPO.upper()), (), self.ahora - 5)
         self.comprobar_pr_terminado()
 
+    def test_espera_proyecta_admision_durable_antes_del_tick(self):
+        self.registro.write_text(f"{REPO} sombra\n")
+        tick = cli.parser().parse_args(["tick", "--repo", REPO, "--seco"])
+        obs_vacia = Falso(observacion(n=0, ahora=self.ahora - 90))
+        codigo, resultado = cli.ejecutar(tick, obs_vacia, self.ahora - 90)
+        self.assertEqual(codigo, 0, resultado)
+        for pr, segundos, ci in ((1, -40, "verde"), (2, -30, "pendiente")):
+            obs = replace(observacion(ahora=self.ahora + segundos), prs=(vista(pr, ci=ci),))
+            self.entregar_por_cli(REPO, pr, segundos, Falso(obs))
+
+        def espera():
+            filas = self.proyectar("--todos")["repos"][0]["espera"]
+            return [(fila["pr"], fila["etapa"], fila["motivo"]) for fila in filas]
+
+        admitidas = [(1, "admitido", None), (2, "retenido", "ci-no-verde")]
+        self.assertEqual(espera(), admitidas)
+        self.db.entregar(entrega(3), self.ahora - 20)
+        self.assertEqual(espera(), admitidas + [(3, "entregado", None)])
+
     def test_grafia_del_tick_activo_prevalece_sobre_otra_entrega(self):
         self.registro.write_text(f"{REPO.upper()} activo\n")
         self.entregar_por_cli(REPO, 1, -60)
@@ -337,6 +366,24 @@ class PanelTests(Aislado):
         self.assertEqual([fila["repo"] for fila in doc["repos"]], [REPO])
         self.assertEqual(cursor.read_bytes(), anterior)
         self.validar(doc)
+
+    def test_ledger_sustituido_y_legible_reconstruye_hitos_con_la_misma_secuencia(self):
+        self.paso(-160)
+        original = self.proyectar("--repo", REPO)["repos"][0]["lote"]
+        cursor = self.dir / "panel-cursor.json"
+        _, anterior = json.loads(cursor.read_bytes())
+        ledger = self.dir / "ledger.sqlite3"
+        ledger.rename(ledger.with_suffix(".anterior"))
+        with closing(self.ledger()) as nuevo:
+            nuevo.guardar_paso(self.estado, (), self.ahora - 90)
+
+        actual = self.proyectar("--repo", REPO)["repos"][0]["lote"]
+        _, reemplazo = json.loads(cursor.read_bytes())
+        llave = REPO + ":activo"
+        self.assertEqual(anterior["repos"][llave]["seq"], reemplazo["repos"][llave]["seq"])
+        self.assertNotEqual(anterior["ledger"], reemplazo["ledger"])
+        self.assertEqual(original["id"], actual["id"])
+        self.assertEqual((original["cierre"], actual["cierre"]), (self.ahora - 160, self.ahora - 90))
 
     def test_error_del_mismo_ledger_usa_grafia_de_la_seleccion(self):
         self.registro.write_text(f"{REPO.upper()} activo\n")
