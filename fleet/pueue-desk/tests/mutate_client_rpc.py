@@ -54,6 +54,23 @@ CASES = [
      "                verdict, after, post = self.actions.stock_verdict(current, post=proposal.get('post'))",
      '                verdict, after, post = self.actions.stock_verdict(current, post=None)',
      W+'test_cc2_relay_retains_on_deadline_and_retries_incompatible_q'),
+    ('local read error leaves no seal', 'client_rpc.py',
+     "        except OSError:\n            raise Abort() from None\n        return dict(peer=peer, outcome='replied'",
+     "        except OSError:\n            return dict(peer=peer, outcome='closed', reply=None, reason=None)\n"
+     "        return dict(peer=peer, outcome='replied'",
+     W+'test_local_error_reading_reply_aborts_without_seal'),
+    ('partial request write leaves no seal', 'client_rpc.py',
+     "            if written == 0:\n                return not_sent('startup', peer)\n            raise Abort() from None",
+     "            if written == 0:\n                return not_sent('startup', peer)\n            return not_sent('startup', peer)",
+     W+'test_partial_request_write_aborts_without_seal'),
+    ('protected turn recovers the cached stock proposal', 'client_actions.py',
+     '                proposal = self.cached(item)',
+     "                proposal = None if self.actions.stock(item['record'].get('process')) else self.cached(item)",
+     W+'test_cc2_stock_relay_under_contention'),
+    ('emitter ignores TERM while waiting for the reply', 'client_rpc.py',
+     '    for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGPIPE):',
+     '    for number in (signal.SIGHUP, signal.SIGINT, signal.SIGPIPE):',
+     W+'test_term_during_reply_wait_still_seals'),
 ]
 
 

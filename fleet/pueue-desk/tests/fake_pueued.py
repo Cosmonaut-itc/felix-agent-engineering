@@ -2,7 +2,8 @@
 
 argv: socket secret folder mode. Modes: success, failure, version (greets with
 0.32.0), stall-greeting (waits for folder/go before frame 2), stall-reply
-(waits for folder/go before frame 4), close (closes after frame 3). It records
+(waits for folder/go before frame 4), close (closes after frame 3),
+oversized-header (sends a length only). It records
 markers and each frame 3 in hex in folder; it never parses the request.
 """
 import os
@@ -58,7 +59,9 @@ def serve(connection, secret, folder, mode):
     if mode == 'stall-reply':
         wait_for(folder / 'go')
     key = 'Failure' if mode == 'failure' else 'Success'
-    connection.sendall(frame(b'\xa1' + text(key) + text('synthetic')))
+    response = (struct.pack('>Q', 2**32) if mode == 'oversized-header'
+                else frame(b'\xa1' + text(key) + text('synthetic')))
+    connection.sendall(response)
     try:
         while connection.recv(1):  # Like pueued: the client closes, not us.
             pass

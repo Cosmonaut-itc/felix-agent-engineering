@@ -5,6 +5,7 @@ speaks frames (fake_pueued.py). Every death boundary of §2.6 ends retained,
 never held and never released, with D alive and with D finished.
 """
 import copy
+import errno
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import time
 import unittest
 from unittest.mock import patch
 import test_client_actions as cc1
+import test_client_contract_rpc as corpus
 import test_client_reconcile as cc2
 
 control, a, c = cc1.control, cc1.a, cc1.c
@@ -209,7 +211,20 @@ def test_emitter_dies_before_claim(self):
 def test_emitter_dies_between_claim_and_frame_3(self):
     self.start_daemon('stall-greeting')
     self.evidence.moved = self.after
-    first = self.act_with(0)
+    # Give this child a test-only deadline beyond the harness's wait. The
+    # protocol still stalls at the same boundary and the test uses real SIGKILL.
+    popen = subprocess.Popen
+
+    def spawn(argv, **kwargs):
+        if argv[3:4] != [str(a.EMITTER)]:
+            return popen(argv, **kwargs)
+        script = ('import runpy, sys; path = sys.argv.pop(1); '
+                  'sys.argv[0] = path; main = runpy.run_path(path)["main"]; '
+                  'main.__globals__["HANDSHAKE_SECONDS"] = 3600; sys.exit(main(sys.argv))')
+        return popen([*argv[:3], '-c', script, *argv[3:]], **kwargs)
+
+    with patch.object(a.subprocess, 'Popen', side_effect=spawn):
+        first = self.act_with(0)
     self.assertEqual((first['status'], first['reason']), ('unknown', 'rpc_unresolved'))
     self.assertTrue(until(lambda: (self.fake / 'secret-read').exists()))
     self.kill_emitter()
@@ -227,6 +242,76 @@ def test_emitter_dies_after_frame_3(self):
     self.kill_emitter()
     self.assertFalse((self.originals() / 'seal.json').exists())
     self.two_lives(1, ('rpc_unresolved', True), ('startup', False))
+
+
+def test_term_during_reply_wait_still_seals(self):
+    self.start_daemon('stall-reply')
+    self.evidence.moved = self.after
+    self.assertEqual(self.act_with(0)['status'], 'unknown')
+    self.assertTrue(until(lambda: (self.fake / 'got-request').exists()))
+    pid = self.process()['pid']
+    os.kill(pid, signal.SIGTERM)
+    (self.fake / 'go').write_text('1')
+    seal_path = self.originals() / 'seal.json'
+    self.assertTrue(until(lambda: seal_path.exists() or gone(pid)))
+    self.assertTrue(seal_path.exists(), 'TERM must leave the emitter able to seal the reply')
+    self.assertEqual((self.seal()['outcome'], self.seal()['reply']), ('replied', 'success'))
+
+
+def test_oversized_reply_header_without_body_never_seals(self):
+    self.start_daemon('oversized-header')
+    self.act_with(0)
+    self.assertTrue(until(lambda: (self.fake / 'got-request').exists()))
+    self.assertTrue(until(lambda: gone(self.process()['pid'])), 'emitter ended')
+    self.assertFalse((self.originals() / 'seal.json').exists(), 'the reply body never arrived')
+    self.assertEqual(self.reconcile(), 1)
+    self.check_retained('rpc_unresolved', True)
+
+
+def check_local_abort(self, where):
+    self.start_daemon('stall-reply')
+    real_socket = rpc.socket.socket
+
+    class BrokenSocket(real_socket):
+        written = 0
+
+        def send(sock, data):
+            if where == 'write' and sock.written:
+                raise OSError(errno.EIO, 'synthetic local write error')
+            count = super().send(data[:1] if where == 'write' else data)
+            sock.written += count
+            return count
+
+        def recv(sock, *args):
+            if where == 'read' and sock.written:
+                raise OSError(errno.EIO, 'synthetic local read error')
+            return super().recv(*args)
+
+    def inject(dispatch, own, args):
+        def talk(plan):
+            with self.assertRaises(rpc.Abort):
+                rpc.socket_talk(plan, self.wire / 's', self.secret, cc1.native_birth)
+            raise rpc.Abort()
+
+        with patch.object(rpc.socket, 'socket', BrokenSocket):
+            self.assertIsNone(rpc.emit(self.engine.directory, dispatch, own, talk))
+
+    self.actions.rpc = self.fail  # Select the in-process path; inject takes over the conversation.
+    with patch.object(self.actions, 'injected', side_effect=inject):
+        first = self.act()
+    self.assertTrue((self.originals() / 'claim.json').exists())
+    self.assertFalse((self.originals() / 'seal.json').exists())
+    self.assertEqual((first['status'], first['reason']), ('unknown', 'rpc_unresolved'))
+    self.assertEqual(self.reconcile(), 1)
+    self.check_retained('rpc_unresolved', True)
+
+
+def test_partial_request_write_aborts_without_seal(self):
+    check_local_abort(self, 'write')
+
+
+def test_local_error_reading_reply_aborts_without_seal(self):
+    check_local_abort(self, 'read')
 
 
 def test_lost_reply_is_s3_and_never_attributed(self):
@@ -271,6 +356,47 @@ def test_cc2_relay_retains_on_deadline_and_retries_incompatible_q(self):
     self.assertEqual((record['response']['status'], record.get('attribution', {}).get('seal_receipt')),
                      ('held', self.seal()['receipt']))
     self.assertEqual(self.actions.reservation(self.r)['hold_identity'], self.after)
+
+
+def test_cc2_stock_relay_under_contention(self):
+    self.start_daemon('success')
+    self.evidence.moved = self.after
+    self.assertEqual(self.act_with(0)['status'], 'unknown')
+    self.assertTrue(until(lambda: (self.originals() / 'seal.json').exists()))
+
+    def turn():
+        with control.locked(self.engine.directory):
+            self.engine.reconcile_clients()
+        return self.actions.record(self.r)['response']['status']
+
+    with patch.object(a.Reconciler, 'lock', side_effect=BlockingIOError) as collision:
+        self.assertEqual(turn(), 'unknown', 'N collects outside the lock')
+        self.assertEqual(turn(), 'held', 'N+1 recovers the stock proposal under the original lock')
+    self.assertGreaterEqual(collision.call_count, 2)
+    self.assertEqual(self.actions.record(self.r)['attribution']['seal_receipt'], self.seal()['receipt'])
+
+
+def test_retired_receipt_survives_reused_id_and_finish(self):
+    self.start_daemon('success')
+    r = self.r = corpus.request_for('retire-interrupted')
+    self.evidence.identity = copy.deepcopy(r['expected'])
+    self.evidence.moved = copy.deepcopy(corpus.RPC['observations']['reused'])
+    absent = c.rpc_effect_identity(r['op'], r['expected'], self.evidence.moved)
+    finish = dict(r, op='finish', phase='finish', expected=absent,
+                  proof=dict(kind='interrupted', attempt=absent['attempt'],
+                             receipt='c'*64, acceptance_receipt=None, exit=1))
+    self.assertEqual(self.act_with(0)['status'], 'unknown')
+    self.assertTrue(until(lambda: (self.originals() / 'seal.json').exists()))
+    self.evidence.finish, self.evidence.proof = finish, finish['proof']
+    self.assertEqual(self.reconcile(), 1)
+    retired = self.actions.record(r)['response']
+    self.assertEqual((retired['status'], retired['identity']), ('retired', absent))
+    self.assertEqual(self.reconcile(), 1)
+    terminal = self.actions.record(finish)
+    self.assertIsNotNone(terminal)
+    self.assertEqual((terminal['response']['status'], terminal['response']['identity']), ('finished', absent))
+    self.assertEqual(self.actions.record(r)['response'], retired)
+    self.assertFalse(self.actions.reservation(r)['open'])
 
 
 def test_lost_claim_retains_a_success_seal(self):
@@ -382,6 +508,88 @@ class FrameTests(unittest.TestCase):
             self.assertEqual(json.loads((Path(folder) / 'claim.json').read_text()), dict(n=1))
             self.assertEqual((Path(folder) / 'claim.json').stat().st_mode & 0o777, 0o600)
             self.assertEqual(sorted(os.listdir(folder)), ['claim.json'])
+
+
+class EndpointTests(unittest.TestCase):
+    def test_separate_runtime_and_data_paths(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
+            root = Path(folder)
+            env = dict(HOME=folder, XDG_RUNTIME_DIR=str(root / 'run'), XDG_DATA_HOME=str(root / 'xdg'))
+            pueue = control.Pueue(env=env, cwd=root)
+            engine = control.MiniControl(pueue, root, host='desk')
+            authority = dict(pid_file=str(root / 'run/pueue.pid'))
+            user = __import__('pwd').getpwuid(os.getuid()).pw_name
+            socket_path = root / 'run' / ('pueue_' + user + '.socket')
+            with patch.object(control.sys, 'platform', 'linux'):
+                secret_path = root / 'xdg/pueue/shared_secret'
+                self.assertEqual(engine.rpc_endpoint(authority), (socket_path, secret_path))
+                # The pre-start configuration can differ from the caller's environment.
+                authority['pueue_data'] = str(root / 'validated')
+                secret_path = root / 'validated/shared_secret'
+                self.assertEqual(engine.rpc_endpoint(authority), (socket_path, secret_path))
+                config = engine.reorder_config(dict(request=dict(action_id='synthetic')), authority)
+            shared = json.loads(config.read_text())['shared']
+            self.assertEqual(shared['unix_socket_path'], str(socket_path))
+            self.assertEqual(shared['shared_secret_path'], str(secret_path))
+            self.assertEqual(shared['runtime_directory'], str(socket_path.parent))
+            self.assertEqual(shared['pueue_directory'], str(secret_path.parent))
+
+    def test_darwin_keeps_socket_and_secret_together(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
+            root = Path(folder)
+            data = root / 'Library/Application Support/pueue'
+            env = dict(HOME=folder, XDG_RUNTIME_DIR=str(root / 'elsewhere'), XDG_DATA_HOME=str(root / 'xdg'))
+            engine = control.MiniControl(control.Pueue(env=env, cwd=root), root, host='mini')
+            authority = dict(pid_file=str(data / 'pueue.pid'))
+            user = __import__('pwd').getpwuid(os.getuid()).pw_name
+            with patch.object(control.sys, 'platform', 'darwin'):
+                self.assertEqual(engine.rpc_endpoint(authority),
+                                 (data / ('pueue_' + user + '.socket'), data / 'shared_secret'))
+
+    @unittest.skipUnless(sys.platform == 'linux' and os.environ.get('CC3_PRIVATE_STOCK') == '1',
+                         'requires private Pueue 4.0.4 with XDG runtime on Linux')
+    def test_private_stock_split_paths_reply_failure(self):
+        binary_path = os.pathsep.join([str(Path.home() / '.local/bin'), '/opt/homebrew/bin', os.defpath])
+        pueue = shutil.which('pueue', path=binary_path)
+        pueued = shutil.which('pueued', path=binary_path)
+        self.assertTrue(pueue and pueued, 'private test requires both Pueue binaries')
+        with tempfile.TemporaryDirectory(prefix='cc3-stock-', dir='/tmp') as folder:
+            root = Path(folder)
+            home, config, data, runtime = (root / name for name in ('home', 'conf', 'data', 'run'))
+            for directory in (home, config, data, runtime):
+                directory.mkdir(mode=0o700)
+            env = dict(HOME=str(home), XDG_CONFIG_HOME=str(config), XDG_DATA_HOME=str(data),
+                       XDG_RUNTIME_DIR=str(runtime), LANG='C', PATH=os.defpath)
+            configuration = control.validate_configuration(home=home, pueue=pueue, daemon=pueued,
+                                                           env=env, cwd=root)
+            with (root / 'daemon.log').open('wb') as log:
+                daemon = subprocess.Popen([pueued], env=env, cwd=root, stdin=subprocess.DEVNULL,
+                                          stdout=log, stderr=log)
+                try:
+                    pid_path = configuration['pid_file']
+                    self.assertTrue(until(lambda: daemon.poll() is not None or pid_path.exists()))
+                    self.assertIsNone(daemon.poll(), (root / 'daemon.log').read_text())
+                    cli = control.Pueue(pueue, env=env, cwd=root)
+                    cli.timeout = 3
+                    self.assertEqual(cli.status()['tasks'], {})
+                    self.assertEqual(pid_path.parent, runtime)
+                    self.assertTrue((configuration['data'] / 'shared_secret').is_file())
+                    self.assertNotEqual(pid_path.parent, configuration['data'])
+                    authority = dict(pid_file=str(pid_path), pueue_data=str(configuration['data']))
+                    engine = control.MiniControl(cli, root, host='desk')
+                    plan = dict(daemon=dict(pid=daemon.pid, birth=cc1.native_birth(daemon.pid)),
+                                verb='stash', task_id=77)
+                    reply = rpc.socket_talk(plan, *engine.rpc_endpoint(authority), cc1.native_birth)
+                    self.assertEqual((reply['outcome'], reply['reply'], reply['reason']), ('replied', 'failure', None))
+                    self.assertEqual(cli.status()['tasks'], {})
+                finally:
+                    if daemon.poll() is None:
+                        daemon.terminate()
+                        try:
+                            daemon.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            daemon.kill()
+                            daemon.wait()
 
 
 if __name__ == '__main__':
