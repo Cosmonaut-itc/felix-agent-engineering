@@ -574,6 +574,39 @@ class Harness(unittest.TestCase):
 
         self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], NAME)
 
+    def test_review_pedir_reconsidera_la_vm_que_vigilar_ya_vio_encendida(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = 'vm-otra'
+        other_id = fake_id('efgh2345')
+        self.add_vm(other, other_id, places=2, overrides={'inactividad_min': None})
+        self.assertEqual(self.run_cli('apagar', other)[0], 0)
+        self.api.sandbox(other_id, state='ready', stoppedAt=None, holdsCreatorLogins=False)
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        code, output, stderr = self.run_cli('estado', '--json')
+        self.assertEqual(code, 0, stderr)
+        status = next(vm for vm in json.loads(output)['vms'] if vm['vm'] == other)
+        self.assertEqual((status['estado'], status['lugares_libres']), ('ready', 2))
+        self.assertEqual(self.run_cli('encender', other)[0], 0)
+
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], other)
+
+    def test_review_pedir_pospone_el_diario_danado_antes_del_ultimo_evento(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = 'vm-otra'
+        other_id = fake_id('efgh2345')
+        self.add_vm(other, other_id, places=2)
+        self.assertEqual(self.run_cli('apagar', other)[0], 0)
+        self.assertEqual(self.run_cli('encender', other)[0], 0)
+        journal = self.state / 'vms' / other / 'eventos.jsonl'
+        original = journal.read_bytes()
+        with journal.open('wb') as stream:
+            stream.write(b'no es JSON\n')
+            stream.write(original)
+
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], NAME)
+
     def test_arriendo_vencido_y_soltar_idempotente(self):
         lease = self.get_lease('caduca', 'contract', '--ttl', '300')
         self.api.now += 301
