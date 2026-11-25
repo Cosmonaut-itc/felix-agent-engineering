@@ -75,7 +75,7 @@ def load_repos(path):
     config = data.get('tren', {})
     _require(type(config) is dict, 'tren')
     repos = tuple(_repo(repo) for repo in _rows(config.get('repos', []), 0, 4))
-    _require(len(repos) == len(set(repos)), 'tren.repos repetidos')
+    _require(len(repos) == len({repo.lower() for repo in repos}), 'tren.repos repetidos')
     return repos
 
 
@@ -128,7 +128,7 @@ def _member(row):
 def _return(row, repo, pr):
     _keys(row, 'check unidad comentario_url')
     url = _matches(row['comentario_url'],
-                   rf'https://github\.com/{re.escape(repo)}/pull/{pr}#issuecomment-[0-9]+',
+                   rf'https://github\.com/(?ai:{re.escape(repo)})/pull/{pr}#issuecomment-[0-9]+',
                    'comentario_url')
     return dict(check=_matches(row['check'], MODE, 'check'), unidad=_unit(row['unidad']),
                 comentario_url=url)
@@ -201,13 +201,15 @@ def valid_tren(data, repos, now):
                     cierre=date(row['cierre']), fin=_date(row['fin'], taken - 12 * 3600, taken + 300),
                     miembros=[_finished_member(member, repo) for member in _rows(row['miembros'], 1, 5)])
 
+    configured = {repo.lower(): repo for repo in repos}
     clean = []
     seen = set()
     for row in _rows(data['repos'], 1, 4):
         _keys(row, 'repo modo pausa lote espera recientes')
-        repo = _repo(row['repo'])
-        _require(repo in repos and repo not in seen, 'repo no permitido o repetido')
-        seen.add(repo)
+        name = _repo(row['repo']).lower()
+        _require(name in configured and name not in seen, 'repo no permitido o repetido')
+        seen.add(name)
+        repo = configured[name]
         clean.append(dict(repo=repo, modo=_choice(row['modo'], ('activo', 'sombra'), 'modo'),
                           pausa=None if row['pausa'] is None else pause(row['pausa']),
                           lote=None if row['lote'] is None else batch(row['lote']),

@@ -239,26 +239,14 @@ def activo(estado):
     return next((t for t in reversed(estado["trenes"]) if t["fase"]["_tipo"] != "Terminal"), None)
 
 
-def leer_cursor(ruta, identidad=None):
+def leer_cursor(ruta, identidad):
     try:
         sello, contenido = json.loads(ruta.read_text(encoding="utf-8"))
-        if sello == clave(contenido) and (contenido["ledger"] == identidad or identidad is None):
-            return contenido
+        if sello == clave(contenido) and contenido["ledger"] == identidad:
+            return dict(ledger=identidad, repos=contenido["repos"], publicados=contenido["publicados"])
     except (OSError, ValueError, TypeError, KeyError):
         pass
     return dict(ledger=identidad, repos={}, publicados={})
-
-
-def leer_grafias_publicadas(ruta):
-    cursor = leer_cursor(ruta)
-    # Los cursores anteriores sólo permiten recuperar las grafías inequívocas.
-    variantes = {}
-    for llave in cursor["repos"]:
-        nombre = llave.rsplit(":", 1)[0]
-        variantes.setdefault(nombre.lower(), set()).add(nombre)
-    grafias = {normal: next(iter(nombres)) for normal, nombres in variantes.items() if len(nombres) == 1}
-    grafias.update(cursor.get("grafias", {}))
-    return grafias
 
 
 def leer_hitos(db, repo, tipo, ultimo, previo, estado, efectos):
@@ -328,12 +316,19 @@ def leer_devoluciones(db, estado, historia, ahora):
     return devoluciones
 
 
-def leer_repo(db, repo, modo_repo, cache, ahora):
+def leer_repo(db, nombres, modo_repo, cache, ahora):
     tipo = TIPO_TICK[modo_repo]
-    ultimo = db.execute("SELECT payload FROM events WHERE repo=? AND tipo=? "
-                        "ORDER BY seq DESC LIMIT 1", (repo, tipo)).fetchone()
-    estado = json.loads(ultimo["payload"])["estado"] if ultimo else datos(
-        inicial(repo) if modo_repo == "activo" else inicial(""))
+    consulta = "SELECT seq, repo FROM events WHERE repo=? AND tipo=? ORDER BY seq DESC LIMIT 1"
+    # events_repo permite buscar hacia atrás por cada nombre y devolver sólo su último tick.
+    ticks = (tick for nombre in nombres for tick in db.execute(consulta, (nombre, tipo)))
+    ultimo = max(ticks, key=lambda tick: tick["seq"], default=None)
+    if ultimo is None:
+        repo = nombres[0]
+        estado = datos(inicial(repo if modo_repo == "activo" else ""))
+    else:
+        repo = ultimo["repo"]
+        raw, = db.execute("SELECT payload FROM events WHERE seq=?", (ultimo["seq"],)).fetchone()
+        estado = json.loads(raw)["estado"]
     efectos = efectos_suite(db, repo, activo(estado))
     secuencia = db.execute("SELECT max(seq) FROM events WHERE repo=?", (repo,)).fetchone()[0] or 0
     llave = repo + ":" + modo_repo
@@ -426,14 +421,6 @@ def problema(etapa, exc):
     return dict(stage=etapa, message="Lectura fallida: " + type(exc).__name__)
 
 
-def grafia_ledger(db, nombres, modo_repo):
-    if len(nombres) == 1:
-        return nombres[0]
-    consulta = "SELECT 1 FROM events WHERE repo=? AND tipo=? ORDER BY seq DESC LIMIT 1"
-    return next((nombre for nombre in nombres
-                 if db.execute(consulta, (nombre, TIPO_TICK[modo_repo])).fetchone()), nombres[0])
-
-
 def leer_ledger(raiz, ruta, seleccion, ahora):
     stat = (raiz / "ledger.sqlite3").stat()
     identidad = [1, stat.st_dev, stat.st_ino]
@@ -447,8 +434,7 @@ def leer_ledger(raiz, ruta, seleccion, ahora):
                 grafias = {}
                 for nombre, in db.execute("SELECT DISTINCT repo FROM events ORDER BY repo"):
                     grafias.setdefault(nombre.lower(), []).append(nombre)
-                filas = [leer_repo(db, grafia_ledger(db, grafias.get(r.lower(), [r]), m),
-                                   m, cursor["repos"], ahora)
+                filas = [leer_repo(db, grafias.get(r.lower(), [r]), m, cursor["repos"], ahora)
                          for r, m in seleccion]
             return filas, cursor
         except sqlite3.OperationalError as exc:
@@ -477,11 +463,7 @@ def publicar(repo, ahora=None):
     except (OSError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
         errores.append(problema("ledger", exc))
         cursor = None
-        grafias = leer_grafias_publicadas(ruta)
-        if repo is not None and repo.lower() not in grafias:
-            grafias = {r.lower(): r for r in inscritos()}
-        filas = [(grafias.get(r.lower(), r), m, dict(entradas=[], trenes=[]), {}, {}, (), {})
-                 for r, m in seleccion]
+        filas = [(r, m, dict(entradas=[], trenes=[]), {}, {}, (), {}) for r, m in seleccion]
     registros = []
     for fila in filas:
         try:
@@ -507,7 +489,6 @@ def publicar(repo, ahora=None):
         raise ValueError("panel supera el tamaño del receptor")
     if cursor is not None:
         cursor["publicados"][seleccion_id] = [clave(salida["repos"], salida["errors"]), salida["taken"]]
-        cursor.setdefault("grafias", {}).update((fila[0].lower(), fila[0]) for fila in filas)
         try:
             atomico(ruta, json.dumps([clave(cursor), cursor]).encode("utf-8"))
         except OSError:

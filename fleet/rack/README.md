@@ -31,8 +31,12 @@ hasta 256 KiB, con un plazo de lectura de 30 s. El servidor y el receptor leen
 el mismo `rack.json`, junto a los scripts por omisión, o el archivo que se
 indique con `--config`.
 Para habilitar el canal, configura la lista de repositorios, por ejemplo
-`{"tren":{"repos":["OWNER/NAME"]}}`. Ambos usan el mismo directorio de estado
-y aceptan `--state-dir`.
+`{"tren":{"repos":["OWNER/NAME"]}}`. La configuración y el documento rechazan
+repositorios repetidos aunque difieran en mayúsculas. El receptor y el servidor
+validan los nombres sin distinguir mayúsculas y publican la grafía de
+`tren.repos`. En las URL de comentarios, la comparación del nombre sigue
+la misma regla y se conserva la URL original. Ambos scripts usan el mismo
+directorio de estado y aceptan `--state-dir`.
 
 Una recepción válida marca la hora de llegada y sustituye `tren.json` de
 forma atómica. El receptor devuelve 0 al aceptar, 65 al rechazar el documento

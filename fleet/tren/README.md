@@ -88,6 +88,11 @@ El tick activo ejecuta efectos; `--seco` conserva la simulación sin IO de escri
 en stdout. `pao-tren panel --todos` proyecta los repos del registro
 `inscritos` (entre uno y cuatro). Incluye el lote, la cola y los terminados
 de las últimas 12 horas. Proyectar un repo individual no requiere inscripción.
+Si el ledger contiene varias grafías del mismo repo, el panel usa la del tick
+más reciente por secuencia en el modo seleccionado. Sin un tick de ese modo,
+usa la primera grafía del ledger en orden de SQLite, o la solicitada si no
+hay eventos del repo. Ante un error del ledger, usa la grafía del registro
+para `--todos` y la del argumento para `--repo`.
 
 El comando abre el ledger en SQLite `mode=ro`, sin tomar el candado del
 tick. Ante un bloqueo de SQLite, reintenta una vez con un presupuesto de

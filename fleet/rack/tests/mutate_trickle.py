@@ -11,50 +11,60 @@ CASES=[('incoherent_history',
   'snapshot.py',
   "            if confirmed is not None:raise ValueError('Confirmación sin intento')",
   '            pass',
-  'SnapshotTrickleTests.test_incoherent_permit_and_multiple_rows_do_not_publish_history'),
+  'test_trickle.SnapshotTrickleTests.test_incoherent_permit_and_multiple_rows_do_not_publish_history'),
  ('local_dependency',
   'index.html',
   'b.grupo==null || b.grupo===n',
   'b.grupo==null',
-  'MergedCellTests.test_adverse_freshness_and_local_dependency'),
+  'test_trickle.MergedCellTests.test_adverse_freshness_and_local_dependency'),
  ('future_sensor',
   'index.html',
   'age<0 || age>120',
   'age>120',
-  'MergedCellTests.test_adverse_freshness_and_local_dependency'),
+  'test_trickle.MergedCellTests.test_adverse_freshness_and_local_dependency'),
  ('incomplete_tick',
   'index.html',
   'else if(!high && !recent) unknown();',
   'else if(false) unknown();',
-  'MergedCellTests.test_adverse_freshness_and_local_dependency'),
+  'test_trickle.MergedCellTests.test_adverse_freshness_and_local_dependency'),
  ('maintain',
   'snapshot.py',
   "row.get('accion') in ('pausar','mantener','reanudar')",
   "row.get('accion') in ('pausar','reanudar')",
-  'SnapshotTrickleTests.test_current_pressure_keep_iso_and_middle_band'),
+  'test_trickle.SnapshotTrickleTests.test_current_pressure_keep_iso_and_middle_band'),
  ('whitelist',
   'serve.py',
   "    _guard_snapshot.validate_guard(data.get('guard'))",
   '    pass',
-  'SnapshotTrickleTests.test_secret_fields_and_bool_pressure_are_rejected'),
+  'test_trickle.SnapshotTrickleTests.test_secret_fields_and_bool_pressure_are_rejected'),
  ('history',
   'snapshot.py',
   'return confirmed\n    finally:db.close()',
   'return None\n    finally:db.close()',
-  'SnapshotTrickleTests.test_durable_history_survives_log_rotation'),
+  'test_trickle.SnapshotTrickleTests.test_durable_history_survives_log_rotation'),
  ('merged',
   'index.html',
   "const held=g.status==='Paused' && r.length<g.slots;",
   'const held=false;',
-  'MergedCellTests.test_high'),
+  'test_trickle.MergedCellTests.test_high'),
  ('cpu_attribution',
   'index.html',
   "p.memory<t.pause.memory ? 'memory' : ['io','cpu'].find(k=>k in t.pause && p[k]>t.pause[k])",
   "'cpu'",
-  'MergedCellTests.test_io_memory_and_open')]
+  'test_trickle.MergedCellTests.test_io_memory_and_open'),
+ ('tren_repo_exacto',
+  'tren.py',
+  """        name = _repo(row['repo']).lower()
+        _require(name in configured and name not in seen, 'repo no permitido o repetido')
+        seen.add(name)
+        repo = configured[name]""",
+  """        repo = _repo(row['repo'])
+        _require(repo in repos and repo not in seen, 'repo no permitido o repetido')
+        seen.add(repo)""",
+  'test_tren.ValidatorTests.test_repo_spelling_is_canonical_and_comment_url_is_preserved')]
 
-def run(root,test=None):
-    return subprocess.run([sys.executable,'-B','-m','unittest','test_trickle'+('.'+test if test else '')],cwd=str(root/'tests'),
+def run(root,test='test_trickle'):
+    return subprocess.run([sys.executable,'-B','-m','unittest',test],cwd=str(root/'tests'),
         env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),capture_output=True,text=True,timeout=30)
 
 def main():
@@ -66,8 +76,12 @@ def main():
         shutil.copytree(SOURCE.parent,root,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         path=root/'rack'/file;source=path.read_text()
         if source.count(anchor)!=1:raise AssertionError('Anchor '+name)
+        control=run(root/'rack',test)
+        if control.returncode:raise AssertionError(name+' control: '+control.stderr)
         path.write_text(source.replace(anchor,replacement));result=run(root/'rack',test)
-        if result.returncode!=1 or 'FAIL:' not in result.stderr or 'ERROR:' in result.stderr:raise AssertionError(name+': '+result.stderr)
+        if (result.returncode!=1 or 'FAIL:' not in result.stderr or
+                'AssertionError:' not in result.stderr or 'ERROR:' in result.stderr):
+            raise AssertionError(name+': '+result.stderr)
         print(name+': AssertionError; '+test,flush=True)
     print(str(len(CASES))+'/'+str(len(CASES))+' killed by assertion',flush=True)
 

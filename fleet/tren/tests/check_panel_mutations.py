@@ -21,11 +21,10 @@ CASOS = (
      "test_espera_publica_recibida_en_todas_las_etapas"),
     ("N2", "if intento or not bloqueo or restante <= 0:", "if True:",
      "test_ledger_reintenta_solo_los_bloqueos"),
-    ("R2-sol-1-tick", "grafia_ledger(db, grafias.get(r.lower(), [r]), m)",
-     "grafias.get(r.lower(), [r])[0]",
-     "test_grafia_del_tick_sombra_prevalece_sobre_otra_entrega"),
-    ("R2-sol-1-error", "grafias = leer_grafias_publicadas(ruta)", "grafias = {}",
-     "test_error_de_ledger_conserva_grafia_del_cursor"),
+    ("R3-sol-2", 'max(ticks, key=lambda tick: tick["seq"], default=None)',
+     "next(ticks, None)", "test_grafia_del_ultimo_tick_sombra_sigue_la_secuencia"),
+    ("R3-sol-1-sin-tope", "lectura_medicion(raiz, timeout=restante if intento else min(restante, 0.1))",
+     "lectura_medicion(raiz)", "test_presupuesto_de_bloqueo_descuenta_el_tiempo_del_primer_intento_y_la_pausa"),
 )
 
 
