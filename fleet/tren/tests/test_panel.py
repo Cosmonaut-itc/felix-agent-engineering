@@ -1,22 +1,26 @@
 """Contrato y CLI del panel con un ledger temporal."""
+from contextlib import contextmanager
 from dataclasses import replace
 import importlib.util
 import json
 import os
 from pathlib import Path
 import sqlite3
+from threading import Event, Thread
 import time
 from typing import get_args
 from unittest.mock import patch
 
-from test_tren import Aislado, BASE, HEAD, REPO, cli, entrega
+from test_tren import Aislado, BASE, HEAD, REPO, cli, entrega, vista
 
 from dominio import (Admitido, Candidato, Certificado, Congelado, Corriendo,
-                     Diagnosticando, Efecto, Entrada, Estado, Fallo, Fase, Motivo,
-                     Pausa, Rechazado, Reproduccion, Retenido, Terminal, Tren, clave,
-                     datos)
+                     Decision, Diagnosticando, Efecto, Entrada, Estado, Fallo, Fase,
+                     Motivo, Observacion, Pausa, Rechazado, Reproduccion, Retenido,
+                     Terminal, Tren, clave, datos, paso)
+from feedback import EscritorGitHub
 from ledger import directorio_estado
 import panel
+from sombra import paso_sombra
 
 RACK = Path(__file__).resolve().parents[2] / "rack"
 spec = importlib.util.spec_from_file_location("tren", RACK / "tren.py")
@@ -178,6 +182,170 @@ class PanelTests(Aislado):
         reciente, = simulado["recientes"]
         self.assertEqual(reciente["resultado"], "SIMULADO")
         self.assertEqual(reciente["miembros"][0]["resultado"], "MERGEADO-FUERA")
+
+    def test_fin_nuevo_renueva_taken_con_cursor_y_sin_cursor(self):
+        self.registro.write_text(f"{SOMBRA} sombra\n")
+        with patch.object(self, "ahora", self.ahora - 361):
+            anterior = self.proyectar("--todos")
+        entrega_sombra = replace(self.entrega, repo=SOMBRA)
+        self.db.entregar(entrega_sombra, self.ahora - 21)
+        observacion = Observacion(self.ahora - 1, BASE, (vista(),))
+        estado, efectos = paso_sombra(self.db.estado(SOMBRA, sombra=True, doble_camino=True),
+                                      observacion)
+        self.db.sombra(estado, efectos, observacion.ahora, doble_camino=True)
+
+        caliente = self.proyectar("--todos")
+        cursor = self.dir / "panel-cursor.json"
+        cursor.rename(cursor.with_suffix(".anterior"))
+        frio = self.proyectar("--todos")
+        self.assertEqual(caliente, frio)
+        self.assertGreater(caliente["taken"], anterior["taken"])
+        lote, = caliente["repos"][0]["recientes"]
+        self.assertEqual((lote["resultado"], lote["fin"]), ("SIMULADO", observacion.ahora))
+
+    def expulsar_del_lote(self, motivo, *, caducar=False):
+        entradas = (self.entrada, *(replace(self.entrada, entrega=entrega(pr)) for pr in (2, 3)))
+        tren = replace(self.tren, recibos=tuple(e.entrega.recibo for e in entradas))
+        estado = Estado(REPO, entradas, (tren,), Pausa(motivo, pr=1))
+        self.paso(-150, estado=estado)
+        if caducar:
+            vistas = (vista(1), vista(2, head="c" * 40), vista(3))
+            estado, efectos = paso(estado, Observacion(self.ahora - 145, BASE, vistas))
+            self.paso(-145, efectos=efectos, estado=estado)
+        pausa_id = self.db.pausa_id(REPO, estado)
+        decision = Decision(clave("juicio"), REPO, ID, "expulsar", 1, "motivo del operador",
+                            self.ahora - 130, pausa_id, estado.pausa)
+        self.db.registrar_decision(decision)
+        nuevo, efectos = paso(estado, Observacion(self.ahora - 120, BASE, (), decision=decision,
+                                                  pausa_id=pausa_id))
+        self.paso(-120, efectos=efectos, estado=nuevo)
+        devolver, = (efecto for efecto in efectos if efecto.tipo == "devolver")
+        return nuevo, devolver
+
+    def test_expulsion_por_conflicto_conserva_url_exacta(self):
+        nuevo, devolver = self.expulsar_del_lote("conflicto-en-cadena")
+        self.assertEqual(json.loads(devolver.datos[2])["fallos"], [])
+        escritor = EscritorGitHub()
+        with patch.object(escritor, "api", side_effect=[[], {"html_url": URL}, [], {}]):
+            resultado = escritor.ejecutar_feedback(devolver, nuevo, lambda *_: None)
+        self.db.registrar_efecto(REPO, devolver, self.ahora - 110, resultado,
+                                completo=True, sin_consumo=True)
+        reciente, = self.proyectar("--repo", REPO)["repos"][0]["recientes"]
+        self.assertEqual(reciente["miembros"][0], dict(pr=1, resultado="DEVUELTO",
+            devolucion=dict(check="devolucion", unidad="Devolución", comentario_url=URL)))
+
+    def test_lote_devuelto_distingue_caducado_de_rearme(self):
+        nuevo, _ = self.expulsar_del_lote("head-cambiado-en-tren", caducar=True)
+        self.assertEqual(nuevo.entradas[1].admision, Rechazado(Motivo.HEAD))
+        reciente, = self.proyectar("--repo", REPO)["repos"][0]["recientes"]
+        self.assertEqual({m["pr"]: m["resultado"] for m in reciente["miembros"]},
+                         {1: "DEVUELTO", 2: "CADUCADO", 3: "REARMAR"})
+
+    def test_todos_y_repo_publican_la_grafia_del_ledger(self):
+        self.registro.write_text(f"{REPO.upper()} activo\n")
+        self.db.entregar(self.entrega, self.ahora - 200)
+        self.paso(-20, estado=Estado(REPO, (replace(self.entrada, tren=None),)))
+        una, = self.proyectar("--repo", REPO)["repos"]
+        codigo, doc = cli.ejecutar(cli.parser().parse_args(["panel", "--todos"]), ahora=self.ahora)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(doc["repos"], [una])
+        self.assertEqual(self.proyectar("--repo", REPO.upper())["repos"], [una])
+        self.validar(doc)
+        self.assertEqual(una["repo"], REPO)
+        self.assertEqual([fila["pr"] for fila in una["espera"]], [1])
+
+    def test_espera_publica_recibida_en_todas_las_etapas(self):
+        admisiones = (Retenido(Motivo.CUSTODIA), Admitido(), Retenido(Motivo.CI), Rechazado(Motivo.HEAD))
+        entradas = tuple(replace(self.entrada, entrega=entrega(pr), tren=None, admision=admision,
+                                 recibida=self.ahora - 200 - pr, caducada=self.ahora - 60)
+                         for pr, admision in enumerate(admisiones, 1))
+        self.paso(-20, estado=Estado(REPO, entradas))
+        espera = self.proyectar("--repo", REPO)["repos"][0]["espera"]
+        self.assertEqual([(fila["etapa"], fila["desde"]) for fila in espera], list(zip(
+            ("entregado", "admitido", "retenido", "caducado"), (e.recibida for e in entradas))))
+
+    def test_ledger_ocupado_tiene_un_tope_de_dos_segundos(self):
+        cursor = self.dir / "panel-cursor.json"
+        self.proyectar("--repo", REPO)
+        anterior = cursor.read_bytes()
+        self.db.db.execute("BEGIN EXCLUSIVE")
+        try:
+            inicio = time.monotonic()
+            doc = self.proyectar("--repo", REPO)
+            duracion = time.monotonic() - inicio
+        finally:
+            self.db.db.execute("ROLLBACK")
+        self.assertEqual(doc["errors"], [dict(stage="ledger", message="Lectura fallida: OperationalError")])
+        self.assertEqual(cursor.read_bytes(), anterior)
+        self.assertGreaterEqual(duracion, 1.5)
+        self.assertLess(duracion, 3.5)
+
+    def test_ledger_reintenta_solo_los_bloqueos(self):
+        self.db.entregar(self.entrega, self.ahora - 200)
+        lectura = panel.lectura_medicion
+        for mensaje, intentos in (("database is locked", 2), ("no such table: events", 1)):
+            with self.subTest(mensaje=mensaje):
+                with patch.object(panel, "lectura_medicion",
+                                  side_effect=[sqlite3.OperationalError(mensaje),
+                                               lectura(self.dir)]) as leer:
+                    doc = self.proyectar("--repo", REPO)
+                self.assertEqual(leer.call_count, intentos)
+                if intentos == 2:
+                    self.assertEqual(doc["errors"], [])
+                    self.assertEqual([fila["pr"] for fila in doc["repos"][0]["espera"]], [1])
+                else:
+                    self.assertEqual(doc["errors"], [
+                        dict(stage="ledger", message="Lectura fallida: OperationalError")])
+
+    def test_panel_y_escritor_concurrente_en_ledger_temporal(self):
+        self.db.entregar(self.entrega, self.ahora - 200)
+        ruta = self.dir / "ledger.sqlite3"
+        listo, leyendo, siguiente = Event(), Event(), Event()
+        confirmadas, errores = [], []
+
+        def escribir():
+            try:
+                with sqlite3.connect(str(ruta), isolation_level=None, timeout=2) as db:
+                    for i in range(12):
+                        db.execute("BEGIN IMMEDIATE")
+                        db.execute("INSERT INTO events(repo,tipo,instante,payload) VALUES (?,?,?,?)",
+                                   (REPO, "control-panel", self.ahora, "{}"))
+                        if i == 0:
+                            listo.set()
+                            if not leyendo.wait(5):
+                                raise RuntimeError("el panel no abrió una instantánea")
+                            siguiente.set()
+                        db.execute("COMMIT")
+                        confirmadas.append(i)
+            except Exception as exc:
+                errores.append(exc)
+            finally:
+                siguiente.set()
+
+        lectura = panel.lectura_medicion
+
+        @contextmanager
+        def lectura_solapada(*args, **kwargs):
+            with lectura(*args, **kwargs) as db:
+                leyendo.set()
+                self.assertTrue(siguiente.wait(5))
+                yield db
+
+        escritor = Thread(target=escribir, daemon=True)
+        escritor.start()
+        try:
+            self.assertTrue(listo.wait(5))
+            with patch.object(panel, "lectura_medicion", lectura_solapada):
+                for _ in range(12):
+                    doc = self.proyectar("--repo", REPO)
+                    self.assertEqual(doc["errors"], [])
+                    self.assertEqual([fila["pr"] for fila in doc["repos"][0]["espera"]], [1])
+        finally:
+            leyendo.set()
+            escritor.join(5)
+        self.assertFalse(escritor.is_alive())
+        self.assertEqual(errores, [])
+        self.assertEqual(confirmadas, list(range(12)))
 
     def test_fase_futura_y_tabla_exhaustiva(self):
         for fase in get_args(Fase):
