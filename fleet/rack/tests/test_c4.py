@@ -277,10 +277,37 @@ class SSHTests(unittest.TestCase):
         desk['argv'][-1] = 'u@prior.example'
         desk['actions']['argv'][-1] = desk['argv'][-1]
         installed.write_text(json.dumps([desk]))
+        installed.chmod(0o600)
         self.assertEqual(accion.adopt_desk_destination(installed), 'u@prior.example')
         self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
         config.write_text(safety.DESK_DESTINATION + '\n')
         self.assertEqual(accion.adopt_desk_destination(installed), safety.DESK_DESTINATION)
+
+    def test_migration_rejects_untrusted_legacy_file(self):
+        config = accion._desk_config_path()
+        config.unlink()
+        desk = copy.deepcopy(self.host)
+        desk['argv'][-1] = desk['actions']['argv'][-1] = 'u@prior.example'
+        legacy = config.with_name('hosts.json')
+        legacy.write_text(json.dumps([desk]))
+        legacy.chmod(0o666)
+        link = legacy.with_name('linked-hosts.json')
+        link.symlink_to(legacy)
+
+        for label, source, mode, uid in (
+                ('escritura compartida', legacy, 0o666, os.getuid()),
+                ('enlace a 0600', link, 0o600, os.getuid()),
+                ('dueño distinto', legacy, 0o600, os.getuid() + 1)):
+            with self.subTest(case=label):
+                legacy.chmod(mode)
+                try:
+                    with patch.object(os, 'getuid', return_value=uid):
+                        with self.assertRaisesRegex(accion.DeskDestinationError, 'Configura pao/rack-desk-ssh'):
+                            accion.adopt_desk_destination(source)
+                    self.assertFalse(config.exists())
+                finally:
+                    if config.exists():
+                        config.unlink()
 
     def test_missing_or_invalid_destination_cannot_launch_ssh(self):
         config = accion._desk_config_path()

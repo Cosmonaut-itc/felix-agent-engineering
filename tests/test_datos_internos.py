@@ -1,5 +1,9 @@
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
 _spec = importlib.util.spec_from_file_location('datos_internos', Path(__file__).with_name('datos_internos.py'))
@@ -124,9 +128,16 @@ class DatosInternosTests(unittest.TestCase):
                          ['home de macOS', 'home de Windows'])
         self.assertEqual(kinds(r'//host.example/c$/Users/U/bin'), ['home de Windows'])
         for text in ('HOME=~demo/bin', 'Users list', 'Users/DemoUser', '/Users/<usuario>/x',
-                     "r'/Users/|/home/'", '/SuperUsers/DemoUser'):
+                     "r'/Users/|/home/'", '/Users/', '/SuperUsers/DemoUser'):
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), [])
+
+    def test_profiles_with_punctuation_at_start_of_name(self):
+        for text, platform in (('/Users/-demo/x', 'macOS'),
+                               (r'C:\Users\.demo\x', 'Windows'),
+                               ("/Users/'demo/x", 'macOS')):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(text), ['home de ' + platform])
 
     def test_profiles_in_paths_from_the_reviews(self):
         for text, platform in (
@@ -159,10 +170,9 @@ class DatosInternosTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), ['home de ' + platform])
 
-    def test_synthetic_marker_only_exempts_profiles_on_its_line(self):
-        text = ('C:/Users/Public %2FUsers%2FDemo # datos-internos: sintético /home/demo\n'
-                '/Users/Demo/x\n')
-        self.assertEqual(datos.findings(text), [(1, 'home de usuario'), (2, 'home de macOS')])
+    def test_old_marker_does_not_exempt_profiles(self):
+        text = 'C:/Users/Demo %2FUsers%2FDemo # datos-internos: sintético'
+        self.assertEqual(kinds(text), ['home de macOS', 'home de Windows'])
 
     def test_profiles_in_raw_percent_encoded_and_json_forms(self):
         for text, expected in (
@@ -202,6 +212,64 @@ class DatosInternosTests(unittest.TestCase):
 
     def test_stops_after_four_decode_passes(self):
         self.assertEqual(kinds('%252525252FUsers%252525252FDemoUser/bin'), [])
+
+
+class DatosInternosCliTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name) / 'repo'
+        self.fleet = self.root / 'fleet'
+        self.fleet.mkdir(parents=True)
+        self.env = dict(os.environ, GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1')
+        self.git('init', '-q')
+
+    def git(self, *args):
+        subprocess.run(['git', *args], cwd=self.root, env=self.env, check=True, capture_output=True)
+
+    def assert_cli(self, expected):
+        self.git('add', 'fleet')
+        rule = Path(datos.__file__).resolve()
+        result = subprocess.run([sys.executable, '-I', '-B', str(rule)], cwd=self.root,
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, int(bool(expected)))
+        self.assertEqual(result.stdout.splitlines(), expected)
+        if expected:
+            self.assertIn(f'{len(expected)} dato(s) interno(s)', result.stderr)
+            self.assertNotIn('Demo', result.stdout + result.stderr)
+        else:
+            self.assertEqual(result.stderr, '')
+
+    def test_reads_utf16_profiles(self):
+        text = 'cabecera\nC:\\Users\\Demo\\x\n'
+        for encoding, bom in (('utf-16-le', b'\xff\xfe'), ('utf-16-le', b''),
+                              ('utf-16-be', b'\xfe\xff'), ('utf-16-be', b'')):
+            with self.subTest(encoding=encoding, bom=bom):
+                (self.fleet / 'fixture').write_bytes(bom + text.encode(encoding))
+                self.assert_cli(['fleet/fixture:2: home de Windows'])
+
+    def test_reads_nul_separated_paths(self):
+        (self.fleet / 'fixture').write_bytes(b'a\0/Users/Demo/x\0')
+        self.assert_cli(['fleet/fixture:2: home de macOS'])
+
+    def test_reports_profile_link_text_with_existing_or_missing_target(self):
+        (self.fleet / 'absolute-link').symlink_to('/Users/Demo/x')
+        target = self.root.parent / 'Users' / 'Demo' / 'x'
+        target.parent.mkdir(parents=True)
+        (self.fleet / 'temp-link').symlink_to(target)
+        for exists in (False, True):
+            with self.subTest(target_exists=exists):
+                if exists:
+                    target.write_text('contenido limpio', encoding='utf-8')
+                self.assert_cli(['fleet/absolute-link:1: home de macOS',
+                                 'fleet/temp-link:1: home de macOS'])
+
+    def test_does_not_follow_links_to_files_or_directories(self):
+        target = self.root.parent / 'untracked'
+        target.write_text('/Users/Demo/x', encoding='utf-8')
+        (self.fleet / 'file-link').symlink_to(target)
+        (self.fleet / 'directory-link').symlink_to(target.parent)
+        self.assert_cli([])
 
 
 if __name__ == '__main__':
