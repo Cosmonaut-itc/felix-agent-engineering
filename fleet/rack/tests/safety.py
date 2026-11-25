@@ -15,6 +15,7 @@ def write_desk_config(root):
     dest = config_home / 'pao/rack-desk-ssh'
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(DESK_DESTINATION + '\n')
+    dest.chmod(0o600)
     return {'XDG_CONFIG_HOME': str(config_home)}
 
 

@@ -6,9 +6,9 @@ Propietario: Fleet (165dccf7). Implementador delegado: mini-carga (mcp:73237748)
 Ruta de implementación exclusiva: `fleet/hostgate/`.
 Tickets: SEN-3822, SEN-3825 y SEN-3830. Spec: SEN-3817.
 
-Ante diferencias con los documentos de outputs del 2026-10-23, prevalecen este
-contrato y los criterios adicionales de los tickets. Esos documentos son
-antecedentes. Contención no prueba terminalidad; no existe una U3 separada.
+Ante diferencias con los antecedentes del 2026-10-23, conservados como
+evidencia local, prevalecen este contrato y los criterios adicionales de los
+tickets. Contención no prueba terminalidad; no existe una U3 separada.
 
 El borrador v0 de Mini se acepta como base con las precisiones siguientes.
 El diseño disputado fija la serialización y el mecanismo de IPC; cualquier cambio

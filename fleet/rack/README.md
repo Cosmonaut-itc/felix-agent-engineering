@@ -1,6 +1,6 @@
 # Rack de pruebas
 
-Panel de Mac Mini y Felix DESKTOP (WSL), con lectura del rack y cancelación
+Panel de Mac Mini y Desk · WSL, con lectura del rack y cancelación
 por lanzador en ambos hosts, con la variante
 «C · Lugares». Python 3.9 y biblioteca estándar; sin dependencias de frontend.
 Cada host entrega `rack-host@1`; el servidor sirve `rack@1` cada 15 segundos.
@@ -62,12 +62,13 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
    restrict,command="MSYS_NO_PATHCONV=1 wsl -d Ubuntu -u <usuario> -- /usr/bin/python3 -I /home/<usuario>/.local/bin/pao-rack-snapshot" ssh-ed25519 <PUBLICA> pao-rack@mini
    ```
 
-   El shell de OpenSSH en Felix DESKTOP es Git bash. Sin `MSYS_NO_PATHCONV=1`
+   El shell de OpenSSH de Desk · WSL es Git Bash. Sin `MSYS_NO_PATHCONV=1`
    convierte `/usr/bin/python3` en una ruta de Windows y el comando falla.
    `restrict` quita PTY y reenvíos; el comando forzado ignora lo que pida el
    cliente y sólo devuelve JSON.
 3. En la Mini, guardar el destino `<usuario>@<host-desk>` en una sola línea
    en `${XDG_CONFIG_HOME:-~/.config}/pao/rack-desk-ssh`, con permisos 600.
+   Debe ser un archivo regular, sin enlace simbólico, del usuario del rack.
    Usar la cuenta de OpenSSH de Windows y el hostname del desk en el tailnet.
    Al actualizar, el instalador recupera el destino de la configuración
    instalada anterior si ambos canales coincidían y el archivo local no existe.

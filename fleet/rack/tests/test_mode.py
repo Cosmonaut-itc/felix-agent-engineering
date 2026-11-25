@@ -178,7 +178,7 @@ class ModeChannelTests(unittest.TestCase):
 
     def fixture(self):
         v=accion.host_channel.control(self.engine.view(),'desk')
-        return dict(now=self.now,tickets={},hosts=[dict(id='desk',name='Felix DESKTOP · WSL',fresh=True,age=0,
+        return dict(now=self.now,tickets={},hosts=[dict(id='desk',name='Desk · WSL',fresh=True,age=0,
             estimates={},actions=dict(reason=None),snapshot=dict(control=v,
             groups=[dict(name=g,slots=n,status='Running') for g,n in v['slots'].items()],tasks=[],
             cpu=dict(cores=12,load=[1,1,1]),mem=dict(total=32*1024**3,available=24*1024**3,swap_total=0,swap_used=0)))])

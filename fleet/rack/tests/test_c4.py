@@ -484,7 +484,7 @@ class DeskUITests(unittest.TestCase):
         hosts=serve.load_hosts(BASE/'hosts.json')
         self.assertIsNone(accion.transport_reason(hosts[1],'remote-run'))
         self.assertIsNone(accion.transport_reason(hosts[1],'jale'))
-        data=payload();data['hosts'][0].update(id='desk',name='Felix DESKTOP',actions={'reason':None})
+        data=payload();data['hosts'][0].update(id='desk',name='Desk · WSL',actions={'reason':None})
         data['hosts'][0]['snapshot']['groups'][0]['status']='Paused'
         harness=(BASE/'tests/ui-check.js').read_text().split('(async()=>{',1)[0]
         probe=r'''
@@ -506,7 +506,7 @@ class DeskUITests(unittest.TestCase):
   await run('prepareCancel(menu,found)');assert.equal(button.disabled,false);
   assert.equal(sent[0].host,'desk');assert.equal(sent[0].launcher,launcher);
   context.fetch=async()=>({json:async()=>({schema:'rack-action@1',status:'cancelling'})});
-  run(`confirmCancel(found);`);assert.match(dialog.paragraph.textContent,/Felix DESKTOP/);dialog.close('si');
+  run(`confirmCancel(found);`);assert.match(dialog.paragraph.textContent,/Desk · WSL/);dialog.close('si');
   await Promise.resolve();await Promise.resolve();
   assert.match(elements.app.innerHTML,/Cancelando…/);
   run(`{const [key,action]=[...PENDING][0];acceptAction(key,action,{status:'cancelled',result:{exit:130}})}`);

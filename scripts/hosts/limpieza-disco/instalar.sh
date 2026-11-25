@@ -59,11 +59,19 @@ import plistlib
 import sys
 
 template, output, home = sys.argv[1:]
+
+
+def resolve(path):
+    if '@HOME@' not in path:
+        sys.exit('limpieza-disco: falta @HOME@ en una ruta de la plantilla')
+    return path.replace('@HOME@', home, 1)
+
+
 with open(template, 'rb') as stream:
     config = plistlib.load(stream)
-config['ProgramArguments'][1] = config['ProgramArguments'][1].replace('@HOME@', home, 1)
+config['ProgramArguments'][1] = resolve(config['ProgramArguments'][1])
 for key in ('StandardOutPath', 'StandardErrorPath'):
-    config[key] = config[key].replace('@HOME@', home, 1)
+    config[key] = resolve(config[key])
 with open(output, 'wb') as stream:
     plistlib.dump(config, stream)
 PY

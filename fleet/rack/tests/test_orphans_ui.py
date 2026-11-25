@@ -42,7 +42,7 @@ def scenarios():
 
 
 def payload(snap):
-    return dict(now=NOW, tickets={}, hosts=[dict(id='desk', name='Felix DESKTOP · WSL', fresh=True, age=0,
+    return dict(now=NOW, tickets={}, hosts=[dict(id='desk', name='Desk · WSL', fresh=True, age=0,
                 estimates={}, actions=dict(reason=None), snapshot=snap)])
 
 

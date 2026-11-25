@@ -20,13 +20,26 @@ TAILNET = ipaddress.ip_network('100.64.0.0/10')
 SYNTHETIC_NET = ipaddress.ip_network('100.100.0.0/24')
 SYNTHETIC_TAILNETS = {'example'}
 SYNTHETIC_USERS = {'u', 'root'}
+MAC_ALLOWED_USERS = SYNTHETIC_USERS | {'shared'}
+WINDOWS_ALLOWED_USERS = SYNTHETIC_USERS | {'public'}
 
 FQDN = re.compile(r'([A-Za-z0-9-]+)\.ts\.net(?![A-Za-z0-9-])', re.IGNORECASE)
 IPV4 = re.compile(r'(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2}))?(?![0-9]|\.[0-9])')
 HOME = re.compile(r'(?<![A-Za-z0-9_.~$-])/home/([a-z_][a-z0-9_-]*)(?![a-z0-9_-])')
-MAC_HOME = re.compile(r'(?<![A-Za-z0-9_.:~$-])/Users/([\w][\w.-]*)')
-WINDOWS_HOME = re.compile(r'(?:/[A-Za-z]|[A-Za-z]:)/Users/([\w][\w. -]*)'
-                          r'|[A-Za-z]:\\+Users\\+([\w][\w. -]*)', re.IGNORECASE)
+WINDOWS_LOCATION = r'''
+    (?:
+        (?:/[A-Z]|(?<![\w.-])[A-Z]:|//[\w.-]+/[A-Z]\$)/Users/
+        | (?:(?<![\w.-])[A-Z]:|\\{2,}[\w.-]+\\+[A-Z]\$)\\+Users\\+
+    )
+'''
+# Windows va primero para contar una sola vez el segmento /Users de una unidad.
+PROFILE_HOME = re.compile(rf'''
+    (?P<quote>['"]){WINDOWS_LOCATION}
+        (?P<quoted_user>[\w][\w.-]*(?:\ +[\w.-]+)*)(?=[/\\]|(?P=quote))
+    | {WINDOWS_LOCATION}(?P<windows_user>[\w][\w.-]*)
+    | (?:file://(?:localhost)?|(?<![\w./-])-[A-Z]+|/System/Volumes/Data|(?<![\w./\\~$-]))
+        /Users/(?P<mac_user>[\w][\w.-]*)
+''', re.IGNORECASE | re.VERBOSE)
 WSL_USER = re.compile(r'\bwsl\b(?:(?!\s--(?:\s|$)).)*?\s(?:-u|--user)\s+([a-z_][a-z0-9_-]*)(?![a-z0-9_<>-])')
 
 
@@ -51,10 +64,12 @@ def findings(text):
             found.append((number, 'IP de tailnet'))
         if any(m[1] not in SYNTHETIC_USERS for m in HOME.finditer(line)):
             found.append((number, 'home de usuario'))
-        if any(m[1].rstrip('.') not in SYNTHETIC_USERS for m in MAC_HOME.finditer(line)):
+        profiles = list(PROFILE_HOME.finditer(line.replace(r'\/', '/')))
+        if any(m['mac_user'] and m['mac_user'].rstrip('.').lower() not in MAC_ALLOWED_USERS
+               for m in profiles):
             found.append((number, 'home de macOS'))
-        if any((m[1] or m[2]).rstrip(' .').lower() not in SYNTHETIC_USERS
-               for m in WINDOWS_HOME.finditer(line)):
+        if any(user.rstrip('.').lower() not in WINDOWS_ALLOWED_USERS
+               for m in profiles if (user := m['quoted_user'] or m['windows_user'])):
             found.append((number, 'home de Windows'))
         if any(m[1] not in SYNTHETIC_USERS for m in WSL_USER.finditer(line)):
             found.append((number, 'cuenta de WSL'))

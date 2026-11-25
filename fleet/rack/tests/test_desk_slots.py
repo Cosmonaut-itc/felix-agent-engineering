@@ -187,7 +187,7 @@ class DeskChannelTests(unittest.TestCase):
         self.assertEqual(safe['next_event'],1794664800)
         for key,value in (('cap',7),('mode','fijo'),('expires_at',True),('next_event',True)):
             with self.assertRaises(ValueError):accion.host_channel.control(dict(v,**{key:value}),'desk')
-        fixture=dict(now=self.now,tickets={},hosts=[dict(id='desk',name='Felix DESKTOP · WSL',fresh=True,age=0,estimates={},actions=dict(reason=None),
+        fixture=dict(now=self.now,tickets={},hosts=[dict(id='desk',name='Desk · WSL',fresh=True,age=0,estimates={},actions=dict(reason=None),
             snapshot=dict(control=safe,groups=[dict(name=g,slots=n,status='Running') for g,n in control.desk_profile(self.now).items()],
                           tasks=[],cpu=dict(cores=12,load=[1,1,1]),mem=dict(total=32*1024**3,available=24*1024**3,swap_total=0,swap_used=0)))])
         source=(BASE/'index.html').read_text().split('<script>',1)[1].split('</script>',1)[0]

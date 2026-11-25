@@ -9,6 +9,7 @@ import pwd
 import re
 import signal  # compatibility for process-group tests
 import sqlite3
+import stat
 import subprocess
 import threading
 import time
@@ -66,15 +67,25 @@ def _desk_config_path():
     return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'pao/rack-desk-ssh'
 
 
+class DeskDestinationError(ValueError):
+    """The desk transport could not get its destination before dispatch."""
+
+
 def desk_destination():
     """Read the private, fixed user@hostname used by both desk channels."""
     try:
-        destination = _desk_config_path().read_text(encoding='ascii').rstrip('\r\n')
-        if _DESTINATION.fullmatch(destination):
-            return destination
+        # Check the opened file itself. No symlink traversal or blocking on FIFOs.
+        fd = os.open(_desk_config_path(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, encoding='ascii') as stream:
+            info = os.fstat(stream.fileno())
+            if (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                    and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+                destination = stream.read().rstrip('\r\n')
+                if _DESTINATION.fullmatch(destination):
+                    return destination
     except (OSError, UnicodeError):
         pass
-    raise ValueError('Configura pao/rack-desk-ssh con la cuenta y el hostname SSH del desk')
+    raise DeskDestinationError('Configura pao/rack-desk-ssh con la cuenta y el hostname SSH del desk')
 
 
 def adopt_desk_destination(installed):
@@ -214,9 +225,10 @@ class Executor:
         if launcher == 'host-control':
             config = action_config(host.get('actions'))
             if host['id'] == 'desk' and host['transport'] == 'ssh' and config['transport'] == 'ssh':
+                destination = desk_destination()
                 envelope = dict(schema='rack-desk-action@1', target='host-control', request=request)
                 argv = [a.replace('~/', str(self.home) + '/') for a in config['argv'][:-1]]
-                argv.append(desk_destination())
+                argv.append(destination)
                 code, response = desk_channel.exchange(argv, envelope, self.runner,
                     {'HOME': str(self.home), 'PATH': '/usr/bin:/bin', 'TMPDIR': '/tmp'},
                     min(DESK_TIMEOUT, timeout if timeout is not None else DESK_TIMEOUT))
@@ -460,6 +472,8 @@ class Actions:
                     return result(request, 'unknown')
                 response.update(schema=SCHEMA, op=request['op'], host=request['host'])
                 return response if self.timer() <= deadline - RECEIPT_RESERVE else result(request, 'unknown')
+            except DeskDestinationError:
+                return result(request, 'unknown') if op == 'status' else unsent()
             except Exception:
                 return result(request, 'unknown') if mutation_sent or op=='status' else unsent()
         wire = dict(schema='rack-cancel@1', op=op, ref=request['ref'])
@@ -476,6 +490,9 @@ class Actions:
             answer = sanitize(request, self.executor(self.hosts[request['host']], request['launcher'], wire,
                                                      timeout=timeout), op)
             return answer if self.timer() <= deadline - RECEIPT_RESERVE else result(request, 'unknown')
+        except DeskDestinationError:
+            return (result(request, 'unknown') if op == 'status'
+                    else result(request, 'rejected', 'preflight_unavailable'))
         except Exception:
             # This is the controller boundary, after client validation. Any failure
             # reading/decoding/validating its answer leaves the effect uncertain.

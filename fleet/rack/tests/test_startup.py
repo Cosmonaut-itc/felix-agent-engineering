@@ -78,7 +78,7 @@ class StartupUITests(unittest.TestCase):
         try:
             c=test.engine.view();c.update(pause_reasons={'jale':['startup','ambiguous']},startup_holds={'jale':'pausa de origen desconocido <script>'})
             safe=serve.accion.host_channel.control(c,'desk')
-            return dict(now=test.now,tickets={},hosts=[dict(id='desk',name='Felix DESKTOP · WSL',fresh=True,age=0,estimates={},actions=dict(reason=None),
+            return dict(now=test.now,tickets={},hosts=[dict(id='desk',name='Desk · WSL',fresh=True,age=0,estimates={},actions=dict(reason=None),
                 snapshot=dict(control=safe,groups=[dict(name=g,slots=n,status='Paused') for g,n in test.engine.view()['slots'].items()]+[dict(name='default',slots=1,status='Paused')],
                     tasks=[dict(row_task(id=1,group='jale',state='Done',result='Killed'),name='Corrida sintética',interruption_reason=MESSAGE)],
                     cpu=dict(cores=12,load=[1,1,1]),mem=dict(total=32*1024**3,available=24*1024**3,swap_total=0,swap_used=0)))])
@@ -156,7 +156,7 @@ class StartupPipelineTests(unittest.TestCase):
             try:collected=serve.validate_snapshot(collected,'desk')
             except ValueError as error:self.fail('Production pipeline produced an invalid snapshot: '+str(error))
             cache=serve.Rack.__new__(serve.Rack)
-            cache.hosts=[dict(id='desk',name='Felix DESKTOP · WSL',transport='ssh')]
+            cache.hosts=[dict(id='desk',name='Desk · WSL',transport='ssh')]
             cache.good={'desk':collected};cache.errors={};cache.lock=threading.Lock();cache.tickets={}
             cache.history=Mock();cache.history.estimate.return_value=None
             cache.publish(test.now)
