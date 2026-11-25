@@ -72,10 +72,8 @@ def profile_forms(line):
     yield line
     for _ in range(4):
         previous = line
-        try:
-            line = unquote(line, errors='strict')
-        except UnicodeDecodeError:
-            pass
+        # Un byte inválido no impide decodificar los separadores de la misma línea.
+        line = unquote(line, errors='replace')
         if line != previous:
             yield line
         decoded = JSON_ESCAPE.sub(decode_json_escape, line)

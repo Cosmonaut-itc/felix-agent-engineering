@@ -194,6 +194,7 @@ class DatosInternosTests(unittest.TestCase):
                 (r'/Users/\ud801\udc00/bin', ['macOS']),
                 (r'\ud801 /Users/Demo/bin', ['macOS']),
                 ('%ZZ %FF /Users/Demo/bin', ['macOS']),
+                ('%FF %2FUsers%2FDemo%2Fx', ['macOS']),
                 (r'HOME=/Users/DemoUser %2FUsers%2fDemoUser "C:\\Users\\DemoUser"',
                  ['macOS', 'Windows'])):
             with self.subTest(text=text):
