@@ -262,16 +262,17 @@ class PanelTests(Aislado):
         codigo, resultado = cli.ejecutar(args, observador, self.ahora + segundos)
         self.assertEqual(codigo, 0, resultado)
 
-    def comprobar_pr_terminado(self):
+    def comprobar_pr_terminado(self, pr=1, configurado=REPO):
         for args in (("--todos",), ("--repo", REPO), ("--repo", REPO.upper())):
             with self.subTest(args=args):
                 codigo, doc = cli.ejecutar(cli.parser().parse_args(["panel", *args]), ahora=self.ahora)
                 self.assertEqual(codigo, 0)
                 fila, = doc["repos"]
                 self.assertEqual(fila["repo"], REPO)
-                self.assertEqual([m["pr"] for lote in fila["recientes"] for m in lote["miembros"]], [1])
+                self.assertEqual([m["pr"] for lote in fila["recientes"] for m in lote["miembros"]], [pr])
                 self.assertEqual(doc["errors"], [])
-                self.validar(doc)
+                self.assertEqual(contrato.valid_tren(doc, (configurado,), self.ahora)["repos"][0]["repo"],
+                                 configurado)
 
     def test_grafia_del_tick_sombra_prevalece_sobre_otra_entrega(self):
         self.registro.write_text(f"{REPO.upper()} sombra\n")
@@ -290,6 +291,48 @@ class PanelTests(Aislado):
         self.entregar_por_cli(REPO.upper(), 2, -10)
         self.db.sombra(Estado(REPO.upper()), (), self.ahora - 5, doble_camino=True)
         self.comprobar_pr_terminado()
+
+    def test_grafia_del_ultimo_tick_sombra_sigue_la_secuencia(self):
+        self.registro.write_text(f"{REPO} sombra\n")
+        for repo, pr, instante in ((REPO.upper(), 1, -15), (REPO, 2, -60)):
+            falso = Falso(replace(observacion(), prs=(vista(pr),)))
+            self.entregar_por_cli(repo, pr, instante - 5, falso)
+            tick = cli.parser().parse_args(["tick", "--repo", repo, "--seco"])
+            codigo, resultado = cli.ejecutar(tick, falso, self.ahora + instante)
+            self.assertEqual(codigo, 0, resultado)
+        self.comprobar_pr_terminado(2, configurado=REPO.upper())
+
+    def test_grafia_del_ultimo_tick_activo_sigue_la_secuencia(self):
+        self.registro.write_text(f"{REPO} activo\n")
+        for repo, pr, instante in ((REPO.upper(), 1, -15), (REPO, 2, -60)):
+            entrada = replace(self.entrada, entrega=replace(entrega(pr), repo=repo))
+            tren = replace(self.tren, recibos=(entrada.entrega.recibo,), fase=Terminal("ATERRIZADO"))
+            self.paso(instante, estado=Estado(repo, (entrada,), (tren,)))
+        self.comprobar_pr_terminado(2, configurado=REPO.upper())
+
+    def test_error_de_ledger_sustituido_y_bloqueado_usa_grafia_del_registro(self):
+        self.registro.write_text(f"{REPO.upper()} activo\n")
+        self.entregar_por_cli(REPO.upper(), 1, -65)
+        panel.publicar(None, self.ahora - 55)
+        cursor = self.dir / "panel-cursor.json"
+        anterior = cursor.read_bytes()
+        ledger = self.dir / "ledger.sqlite3"
+        inodo = ledger.stat().st_ino
+        ledger.rename(ledger.with_suffix(".anterior"))
+        self.registro.write_text(f"{REPO} activo\n")
+        with closing(self.ledger()) as nuevo:
+            self.entregar_por_cli(REPO, 2, -20)
+            self.assertNotEqual(ledger.stat().st_ino, inodo)
+            nuevo.db.execute("BEGIN EXCLUSIVE")
+            try:
+                with patch.object(panel, "TOPE_BLOQUEO", 0.05):
+                    doc = panel.publicar(None, self.ahora)
+            finally:
+                nuevo.db.execute("ROLLBACK")
+        self.assertEqual([e["stage"] for e in doc["errors"]], ["ledger"])
+        self.assertEqual([fila["repo"] for fila in doc["repos"]], [REPO])
+        self.assertEqual(cursor.read_bytes(), anterior)
+        self.validar(doc)
 
     def test_error_de_ledger_conserva_grafia_del_cursor(self):
         self.registro.write_text(f"{REPO.upper()} activo\n")
@@ -365,6 +408,28 @@ class PanelTests(Aislado):
         self.assertEqual(cursor.read_bytes(), anterior)
         self.assertGreaterEqual(duracion, 1.5)
         self.assertLess(duracion, 3.5)
+
+    def test_presupuesto_de_bloqueo_descuenta_el_tiempo_del_primer_intento_y_la_pausa(self):
+        transcurrido = 0.0
+        esperas = []
+
+        def pausa(segundos):
+            nonlocal transcurrido
+            transcurrido += segundos + 0.375  # Simula un despertar tardío del proceso.
+
+        def lectura_bloqueada(raiz, *, timeout=5.0):
+            nonlocal transcurrido
+            esperas.append(timeout)
+            transcurrido += timeout
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch.object(panel.time, "monotonic", side_effect=lambda: transcurrido), \
+             patch.object(panel.time, "sleep", side_effect=pausa), \
+             patch.object(panel, "lectura_medicion", side_effect=lectura_bloqueada):
+            doc = self.proyectar("--repo", REPO)
+        self.assertEqual([error["stage"] for error in doc["errors"]], ["ledger"])
+        self.assertEqual(esperas, [0.1, 1.5])
+        self.assertAlmostEqual(transcurrido, 2.0)
 
     def test_ledger_reintenta_solo_los_bloqueos(self):
         self.db.entregar(self.entrega, self.ahora - 200)
