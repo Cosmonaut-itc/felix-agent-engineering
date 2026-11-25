@@ -47,9 +47,9 @@ class DatosInternosTests(unittest.TestCase):
                 '100.63.255.255 y 100.128.0.0 quedan fuera',
                 'versión 1.100.64.2.3',
                 '/home/<usuario>/.local/bin/x y /home/u/run.sh',
-                '/Users/<usuario>/bin, <home>/bin y /Users/u/run.sh',
-                '/c/Users/<usuario>/AppData y /c/Users/U/AppData',
-                r'C:\Users\<usuario>\AppData y C:\Users\u\AppData',
+                '/Users/<usuario>/bin, <home>/bin y /Users/|',
+                '/c/Users/<usuario>/AppData',
+                r'C:\Users\<usuario>\AppData',
                 'state/project/home/fixtures',
                 "re.compile(r'/Users/|/home/|https?://')",
                 '~/.local/bin/pueue y $HOME/home/x',
@@ -70,8 +70,7 @@ class DatosInternosTests(unittest.TestCase):
                 'file://localhost/Users/DemoUser/bin',
                 'clang -I/Users/DemoUser/include',
                 'rsync host.example:22:/Users/DemoUser/bin',
-                '/System/Volumes/Data/Users/DemoUser/bin',
-                r'"\/Users\/DemoUser\/bin"'):
+                '/System/Volumes/Data/Users/DemoUser/bin'):
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), ['home de macOS'])
 
@@ -92,7 +91,7 @@ class DatosInternosTests(unittest.TestCase):
                 (r'\\host.example\c$\Users\DemoUser', 'Windows'),
                 (r'"C:\Users\Nombre Con Espacio"', 'Windows'),
                 (r'"C:\Users\Public Lab"', 'Windows'),
-                (r'local\Users\DemoUser', 'macOS'),
+                (r'local\Users\DemoUser', 'Windows'),
                 (r'prefix//uSeRs/\DemoUser/bin', 'macOS'),
                 (r'clang -IC:\//Users\\DemoUser', 'Windows'),
                 (r'\\host.example/c$\Users/DemoUser', 'Windows'),
@@ -102,16 +101,19 @@ class DatosInternosTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), ['home de ' + platform])
 
-    def test_allows_public_profiles_and_prose_after_synthetic_profiles(self):
-        for text in (
-                '/Users/Shared/work',
-                r'C:\Users\Public\Documents',
-                r'El perfil C:\Users\u usa un marcador',
-                'C:/Users/u y /c/Users/<usuario>',
-                '/c/Users/u y otra cosa',
-                r'C:\Users\u '):
+    def test_rejects_profiles_regardless_of_name(self):
+        for text, platform in (
+                ('/Users/Shared/x', 'macOS'),
+                (r'C:\Users\Public\x', 'Windows'),
+                ('/Users/u/x', 'macOS'),
+                (r'El perfil C:\Users\u usa un marcador', 'Windows'),
+                ('C:/Users/u y /c/Users/<usuario>', 'Windows'),
+                ('/c/Users/u y otra cosa', 'Windows'),
+                (r'C:\Users\u ', 'Windows'),
+                (r'\\?\C:\Users\Public', 'Windows'),
+                ('file:///C:/Users/Public/x', 'Windows')):
             with self.subTest(text=text):
-                self.assertEqual(kinds(text), [])
+                self.assertEqual(kinds(text), ['home de ' + platform])
 
     def test_profile_boundaries(self):
         self.assertEqual(kinds(r'"C:\Users\u example\bin"'), ['home de Windows'])
@@ -119,63 +121,83 @@ class DatosInternosTests(unittest.TestCase):
         self.assertEqual(kinds(r'C:\Users\PublicFixture\x'), ['home de Windows'])
         self.assertEqual(kinds(r'/Users/DemoUser/x C:\Users\DemoUser\x'),
                          ['home de macOS', 'home de Windows'])
-        for text in ('HOME=~demo/bin', r'//host.example/c$/Users/U/bin'):
+        self.assertEqual(kinds(r'//host.example/c$/Users/U/bin'), ['home de Windows'])
+        for text in ('HOME=~demo/bin', 'Users list', 'Users/DemoUser', '/Users/<usuario>/x',
+                     "r'/Users/|/home/'", '/SuperUsers/DemoUser'):
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), [])
 
-    def test_public_profile_requires_its_system_prefix(self):
-        for text, expected in (
-                ('/c/Users/DemoUser/bin', ['Windows']),
-                ('/c/Users/Shared/bin', ['Windows']),
-                ('/c/Users/Public/bin', []),
-                ('/mnt/c/Users/Shared/bin', ['Windows']),
-                ('/mnt/c/Users/pUbLiC/bin', []),
-                ('-IC:/Users/Shared/include', ['Windows']),
-                ('-IC://Users/Shared/include', ['Windows']),
-                ('clang -isystemC://Users/Shared/include', ['Windows']),
-                ('clang -isystemC://Users/Public/include', ['Windows']),
-                ('prefix//Users/Shared/bin', ['macOS']),
-                ('https://Users/Shared/bin', ['macOS']),
-                ('/Volumes/Disco/Users/DemoUser/bin', ['macOS']),
-                ('/Volumes/Disco/Users/Shared/bin', []),
-                ('/System/Volumes/Data/Users/Shared/bin', []),
-                ('file:///Users/Shared/bin', []),
-                ('file://localhost/Users/Shared/bin', []),
-                ('file:///C:/Users/DemoUser/AppData', ['Windows']),
-                (r'\\host.example\c$\Users\Public\bin', [])):
+    def test_profiles_in_paths_from_the_reviews(self):
+        for text, platform in (
+                ('/c/Users/DemoUser/bin', 'Windows'),
+                ('/c/Users/Shared/bin', 'Windows'),
+                ('/c/Users/Public/bin', 'Windows'),
+                ('/mnt/c/Users/Shared/bin', 'Windows'),
+                ('/mnt/C/Users/pUbLiC/bin', 'Windows'),
+                ('clang -isystemC://Users/Shared/include', 'Windows'),
+                ('clang -isystemC://Users/Public/include', 'Windows'),
+                ('prefix//Users/Shared/bin', 'macOS'),
+                ('https://Users/Shared/bin', 'macOS'),
+                ('/Volumes/Disco/Users/Shared/bin', 'macOS'),
+                ('/System/Volumes/Data/Users/Shared/bin', 'macOS'),
+                ('file:///Users/Shared/bin', 'macOS'),
+                ('file://localhost/Users/Shared/bin', 'macOS'),
+                ('file:///C:/Users/DemoUser/AppData', 'Windows'),
+                (r'\\host.example\c$\Users\Public\bin', 'Windows'),
+                ('/Users/Shared./bin', 'macOS'),
+                ('/Users/Shared%2E/bin', 'macOS'),
+                ('/Users/Shared+Lab/bin', 'macOS'),
+                (r'"C:\Users\Public Lab"', 'Windows'),
+                (r'cp C:/Users/Public\ Lab/AppData .', 'Windows'),
+                (r'"/Users/Shared"', 'macOS'),
+                ('/Users/sHaReD', 'macOS'),
+                (r'C:\Users\Public Lab', 'Windows'),
+                ('cp "/c/Users/Public"Lab/AppData .', 'Windows'),
+                ("cp '/Users/Shared'Lab/Library .", 'macOS'),
+                (r'cp /c/Users/Public\&Lab/AppData .', 'Windows')):
             with self.subTest(text=text):
-                self.assertEqual(kinds(text), ['home de ' + platform for platform in expected])
+                self.assertEqual(kinds(text), ['home de ' + platform])
 
-    def test_public_profile_requires_exact_name_and_clean_end(self):
-        for text, expected in (
-                ('/Users/Shared./bin', ['macOS']),
-                ('/Users/Shared%2E/bin', ['macOS']),
-                ('/Users/Shared+Lab/bin', ['macOS']),
-                (r'"C:\Users\Public Lab"', ['Windows']),
-                (r'cp C:/Users/Public\ Lab/AppData .', ['Windows']),
-                (r'"/Users/Shared"', []),
-                ('/Users/sHaReD', []),
-                (r'C:\Users\Public Lab', [])):
-            with self.subTest(text=text):
-                self.assertEqual(kinds(text), ['home de ' + platform for platform in expected])
+    def test_synthetic_marker_only_exempts_profiles_on_its_line(self):
+        text = ('C:/Users/Public %2FUsers%2FDemo # datos-internos: sintético /home/demo\n'
+                '/Users/Demo/x\n')
+        self.assertEqual(datos.findings(text), [(1, 'home de usuario'), (2, 'home de macOS')])
 
     def test_profiles_in_raw_percent_encoded_and_json_forms(self):
         for text, expected in (
                 ('file:///C:%5CUsers%5CDemoUser%5CAppData', ['Windows']),
                 ('file:///C:/Users/Public%20Lab/AppData', ['Windows']),
+                ('C:%5cUsers%2fPublic%20Lab', ['Windows']),
+                ('C:%5cUsers%2fPublic%20Lab%5CAppData', ['Windows']),
+                ('C:%5cUsers%2fDemoUser%5CAppData', ['Windows']),
+                ('C:%5cUsers%2fPublic%5CAppData', ['Windows']),
                 ('%2fUsers%2FDemoUser/bin', ['macOS']),
+                ('%255cUsers%255CDemoUser/bin', ['Windows']),
+                ('%2525252FUsers%2525252FDemoUser/bin', ['macOS']),
                 ('copy%20/c/Users/DemoUser/bin', ['macOS', 'Windows']),
                 (r'{"path":"C:\\Users\\Public Lab\\AppData"}', ['Windows']),
-                (r'{"path":"\/Users\/Shared Lab\/Library"}', ['macOS']),
+                (r'{"path":"\/Users\/Shared Lab\/Library"}', ['macOS', 'Windows']),
+                (r'"\/Users\/DemoUser\/bin"', ['macOS', 'Windows']),
                 (r'{"path":"C:\\Users\\Public\u0020Lab\\AppData"}', ['Windows']),
                 (r'{"command":"echo \"C:\\Users\\Public Lab\""}', ['Windows']),
                 (r'{"command":"echo \"/Users/Shared Lab/Library\""}', ['macOS']),
                 (r'{"path":"\u002fUsers\u002fDemoUser/Library"}', ['macOS']),
-                (r'{"path":"\u002fUsers\u002fDemoUser\q"}', []),
+                (r'{"path":"\u002fUsers\u002fDemoUser\q"}', ['macOS']),
+                (r'{"path":"C:\u005cUsers\u005cPublic\u0020Lab\u005cAppData"}', ['Windows']),
+                (r'{"path":"\u002fUsers\u002fShared Lab/Library"}', ['macOS']),
+                (r'{"path":"C:\u005cUsers%5CDemoUser\u005cAppData"}', ['Windows']),
+                (r'{"p":"\u00252FUsers%2FDemo%2Fx"}', ['macOS']),
+                (r'{"path":"\u00252FUsers%2FDemoUser%2FLibrary"}', ['macOS']),
+                (r'"\u0022\u005cu002fUsers\u005cu002fDemoUser/Library\u0022"', ['macOS']),
+                (r'"\\u002fUsers\\u002fDemoUser"', ['macOS']),
+                ('%ZZ %FF /Users/Demo/bin', ['macOS']),
                 (r'HOME=/Users/DemoUser %2FUsers%2fDemoUser "C:\\Users\\DemoUser"',
                  ['macOS', 'Windows'])):
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), ['home de ' + platform for platform in expected])
+
+    def test_stops_after_four_decode_passes(self):
+        self.assertEqual(kinds('%252525252FUsers%252525252FDemoUser/bin'), [])
 
 
 if __name__ == '__main__':
