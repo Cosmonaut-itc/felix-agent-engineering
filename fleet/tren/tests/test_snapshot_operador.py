@@ -14,7 +14,7 @@ import test_activo as activo
 from test_jale import FALLO, PRODUCTOR
 import test_juicio as juicio_fixtures
 from adaptadores import seleccionar
-from dominio import (Certificado, Corriendo, EsperandoCI, Pausa, Promoviendo,
+from dominio import (Certificado, Congelado, Corriendo, EsperandoCI, Pausa, Promoviendo,
                      Reproduccion, Terminal, clave)
 from operador import FalloSnapshot, Snapshots
 
@@ -303,6 +303,18 @@ c.tick(2000)
         self.assertEqual(registro.read_bytes(), anterior)
         self.assertEqual(self.lineas('versiones.log'), ['nuevo nuevo'])
         self.assertEqual(len(self.lineas('lanzamientos.jsonl')), 1)
+
+    def test_main_avanza_antes_de_la_suite_rearma_sin_lanzar(self):
+        self.hasta_fase(EsperandoCI)
+        tercero = self.version('tercero', self.nuevo)
+        self.push(tercero, 'refs/heads/main')
+        self.contexto.tick(2000)
+        estado = self.estado()
+        self.assertEqual(estado.trenes[0].fase, Terminal('REARMAR'))
+        self.assertIsNone(estado.pausa)
+        self.assertFalse(self.solicitudes())
+        self.contexto.tick(2120)
+        self.assertEqual(self.estado().trenes[-1].fase, Congelado(tercero))
 
     def test_recupera_argv_legacy_de_jale(self):
         ruta = self.config.pop('checkout_operador')

@@ -443,6 +443,8 @@ class Observacion:
     archivos_lote: Optional[Tuple[str, ...]] = None
     firma_distingue_fallo: bool = False
     repeticiones_en_paralelo: bool = False
+    # El efecto iniciar-suite del tren activo ya empezó su IO en algún tick.
+    suite_iniciada: bool = False
 
 
 @dataclass(frozen=True)
@@ -538,36 +540,36 @@ def aterrizaje(estado, tren, observacion):
         elif isinstance(lectura, EnBase):
             fase = replace(fase, reintento_pendiente=True)
         elif isinstance(lectura, EscritorExterno):
-            return rearmar(estado, tren, lectura.main, pausar=True), ()
+            return replace(rearmar(estado, tren),
+                           pausa=Pausa("escritor-externo", main=lectura.main)), ()
         else:
             return estado, ()
     return replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
                                        else t for t in estado.trenes)), efectos
 
 
-# Política al ver main fuera de la B de un tren antes de su suite. True pausa
-# escritor-externo como en la promoción; False rearma sobre main sin pausa.
-PAUSAR_REARMAR_TEMPRANO = True
-
-
-def rearmar(estado, tren, main, pausar):
+def rearmar(estado, tren):
     """C ya no aterriza sobre main: cierra el tren y devuelve sus miembros a la fila.
 
     Las fechas FIFO no cambian; el reductor congela el lote siguiente sobre main.
     """
-    estado = replace(estado,
+    return replace(estado,
         trenes=tuple(replace(t, fase=Terminal("REARMAR")) if t.id == tren.id else t
                      for t in estado.trenes),
         entradas=tuple(replace(e, tren=None) if e.entrega.recibo in tren.recibos
                        else e for e in estado.entradas))
-    return replace(estado, pausa=Pausa("escritor-externo", main=main)) if pausar else estado
 
 
 def base_vieja(fase, observacion):
-    """main ya no es la B de un tren que aún no corre su suite."""
+    """main ya no es la B de un tren cuya suite aún no empezó.
+
+    Una suite iniciada puede tener coordinadores vivos aunque la fase siga en
+    EsperandoCI; cerrar el tren los dejaría sin dueño.
+    """
     if isinstance(fase, Congelado):
         base = fase.B
-    elif isinstance(fase, (Armado, EsperandoCI)):
+    elif isinstance(fase, Armado) or (isinstance(fase, EsperandoCI) and
+                                      not observacion.suite_iniciada):
         base = fase.candidato.B
     else:
         return False
@@ -982,8 +984,7 @@ def paso(estado, observacion):
             return estado, tuple(efectos)
         # Un merge por fuera deja a C sin poder aterrizar: no gastar CI ni suite.
         if base_vieja(fase, observacion):
-            return (rearmar(estado, tren, observacion.base, PAUSAR_REARMAR_TEMPRANO),
-                    tuple(efectos))
+            return rearmar(estado, tren), tuple(efectos)
         ocupada = observacion.rama_ocupada
         if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
                 observacion.tren_id == tren.id and

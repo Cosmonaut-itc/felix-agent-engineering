@@ -3,10 +3,8 @@ from dataclasses import replace
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import dominio
 from dominio import (Armado, Candidato, Completo, Congelado, Corriendo, Entrada, Entrega,
                      EsperandoCI, Estado, Observacion, Pausa, Terminal, VistaPR, paso)
 
@@ -37,9 +35,9 @@ class RearmarTempranoTests(unittest.TestCase):
     def en_fase(self, fase):
         return replace(self.congelado, trenes=(replace(self.tren, fase=fase),))
 
-    def assert_rearmado(self, antes, final, efectos, pausa=Pausa("escritor-externo", main=MAIN)):
+    def assert_rearmado(self, antes, final, efectos):
         self.assertEqual(final.trenes[0].fase, Terminal("REARMAR"))
-        self.assertEqual(final.pausa, pausa)
+        self.assertIsNone(final.pausa)
         self.assertEqual([e.tipo for e in efectos], [])
         self.assertTrue(all(e.tren is None for e in final.entradas))
         self.assertEqual(tuple((e.recibida, e.admitida) for e in final.entradas),
@@ -60,12 +58,29 @@ class RearmarTempranoTests(unittest.TestCase):
         final, efectos = paso(self.congelado, obs)
         self.assert_rearmado(self.congelado, final, efectos)
 
-    def test_suite_terminada_sobre_b_vieja_no_certifica(self):
-        antes = self.en_fase(EsperandoCI(self.candidato, 100))
-        obs = replace(self.obs, base=MAIN, tren_id=self.tren.id, ci_candidato="verde",
-                      suite="/estado/suite.json", resultado_suite=Completo("verde", (), 10.0))
+    def test_el_lote_se_congela_sobre_main_en_el_paso_siguiente(self):
+        antes = self.en_fase(Armado(self.candidato))
+        obs = replace(self.obs, base=MAIN)
         final, efectos = paso(antes, obs)
         self.assert_rearmado(antes, final, efectos)
+        nuevo, efectos = paso(final, obs)
+        self.assertEqual(nuevo.trenes[-1].fase, Congelado(MAIN))
+        self.assertEqual(nuevo.trenes[-1].recibos, self.tren.recibos)
+        self.assertNotEqual(nuevo.trenes[-1].id, self.tren.id)
+        self.assertEqual(efectos[0].tipo, "armar-candidato")
+
+    def test_suite_iniciada_no_se_rearma(self):
+        # Sus coordinadores pueden seguir vivos con la fase aún en EsperandoCI.
+        antes = self.en_fase(EsperandoCI(self.candidato, 100))
+        obs = replace(self.obs, base=MAIN, tren_id=self.tren.id, ci_candidato="verde",
+                      suite_iniciada=True)
+        final, efectos = paso(antes, obs)
+        self.assertIsInstance(final.trenes[0].fase, EsperandoCI)
+        self.assertEqual([e.tipo for e in efectos], ["iniciar-suite"])
+        final, _ = paso(antes, replace(obs, suite="/estado/suite.json",
+                                       resultado_suite=Completo("verde", (), 10.0)))
+        self.assertNotIsInstance(final.trenes[0].fase, Terminal)
+        self.assertIsNone(final.pausa)
 
     def test_con_main_en_b_sigue_igual(self):
         final, efectos = paso(self.en_fase(Armado(self.candidato)), self.obs)
@@ -87,18 +102,6 @@ class RearmarTempranoTests(unittest.TestCase):
         self.assertEqual(final.pausa, Pausa("manual"))
         final, _ = paso(armado, replace(self.obs, base=""))
         self.assertNotIsInstance(final.trenes[0].fase, Terminal)
-
-    def test_sin_pausa_el_lote_se_congela_sobre_main(self):
-        antes = self.en_fase(Armado(self.candidato))
-        obs = replace(self.obs, base=MAIN)
-        with patch.object(dominio, "PAUSAR_REARMAR_TEMPRANO", False):
-            final, efectos = paso(antes, obs)
-            self.assert_rearmado(antes, final, efectos, pausa=None)
-            nuevo, efectos = paso(final, obs)
-        self.assertEqual(nuevo.trenes[-1].fase, Congelado(MAIN))
-        self.assertEqual(nuevo.trenes[-1].recibos, self.tren.recibos)
-        self.assertNotEqual(nuevo.trenes[-1].id, self.tren.id)
-        self.assertEqual(efectos[0].tipo, "armar-candidato")
 
 
 if __name__ == "__main__":

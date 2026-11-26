@@ -10,7 +10,7 @@ import json
 import subprocess
 
 from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
-                     Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, datos,
+                     Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, clave, datos,
                      desde_datos, paso)
 from efectos import EfectoFallido, ejecutar
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
@@ -93,6 +93,9 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
 
     previo.limpiar(estado)
     observacion = observador.observar(estado, ahora)
+    activo = next((t for t in estado.trenes if not isinstance(t.fase, Terminal)), None)
+    if activo is not None and ledger.efecto_iniciado(repo, clave("suite", activo.id)):
+        observacion = replace(observacion, suite_iniciada=True)
     if not estado.pausa and any(isinstance(t.fase, Diagnosticando) for t in estado.trenes):
         observacion = replace(
             observacion, absoluciones_recientes=ledger.absoluciones_recientes(repo, ahora),

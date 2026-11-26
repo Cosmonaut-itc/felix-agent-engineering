@@ -417,10 +417,13 @@ Si `Observacion.base` deja de ser la B de un tren en `Congelado`, `Armado` o
 `EsperandoCI`, el tren termina `REARMAR` en ese paso, antes de pedir CI o de
 lanzar la suite, porque su C ya no puede aterrizar. Esto ocurre, por ejemplo,
 al levantar una pausa larga durante la que se mergeó por fuera. Los miembros
-vuelven a la fila igual que en la promoción. `PAUSAR_REARMAR_TEMPRANO` en
-`dominio.py` decide si ese rearmado pausa `escritor-externo` (hoy, `True`) o
-deja que el lote se congele sobre main en el tick siguiente sin pausa. Un tren
-en `Corriendo` o `Diagnosticando` no se rearma por este camino.
+vuelven a la fila igual que en la promoción, pero sin pausa: en el tick
+siguiente el lote se congela sobre main. En `EsperandoCI` sólo se rearma
+mientras el efecto `iniciar-suite` del tren no haya empezado. Desde que la
+outbox lo marca `ejecutando`, puede haber coordinadores vivos aunque la fase
+no haya cambiado, y el tren sigue por la suite y la promoción, que pausa
+`escritor-externo`. Un tren en `Corriendo` o `Diagnosticando` tampoco se
+rearma por este camino.
 
 Los campos añadidos tienen defaults; el encoding etiquetado y esquema 1
 del ledger siguen vigentes. Sólo el tick activo importa este ejecutor.
@@ -805,7 +808,7 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 |---|---|---|
 | `etapa-1` | vacío | `reanudar`: levantar la pausa del repo; siguen vigentes los permisos operativos externos para cada suite. |
 | `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
-| `escritor-externo` | vacío | Main avanzó por fuera, en la promoción o antes de CI y suite. `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
+| `escritor-externo` | vacío | Main avanzó por fuera y el tren lo vio en la promoción. Antes de CI y suite rearma sin esta pausa. `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
 | `infraestructura` | `lanzador-rechazo` / `corrida-interrumpida` | El lanzador salió 64 o Jale confirmó la interrupción con 125 y `PUEUE_INTERRUPTED=1` sin recibo. La pausa conserva la ruta del log y cierra el efecto. `reanudar` lanza otro intento con registro y clave nuevos. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
 | `infraestructura` | `salida-sin-recibo` | Jale guardó una salida entera distinta de 75 y 64 sin recibo, en cualquier host. La pausa conserva la ruta del log y cierra el efecto. `reanudar` reengancha el mismo registro con la misma clave y conserva la salida anterior. `absolver` abandona el reenganche y lanza otro intento con registro y clave nuevos para cada modo sin recibo válido, no sólo el de la pausa. Úsalo cuando el log de cada uno de esos modos muestra que la corrida terminó, porque reenganchar repetiría la misma salida. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
 | `infraestructura` | `cobertura-parcial-boat` | `corrida.log` acredita omisiones de cobertura. `reanudar` lanza otro intento con registro e identidad nuevos para el modo afectado. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
