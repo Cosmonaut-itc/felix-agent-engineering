@@ -411,6 +411,24 @@ antes de readmitir PR, pues GitHub puede haberlos cerrado tras aterrizar.
 Si vuelve a una B ya usada con los mismos recibos, el id incorpora la primera
 generación libre (1, 2, …); cada generación tiene sus propias claves estables
 y conserva el orden FIFO de sus miembros.
+
+El reductor no espera a la promoción para ver un main que avanzó por fuera.
+Si `Observacion.base` deja de ser la B de un tren en `Congelado`, `Armado` o
+`EsperandoCI`, el tren termina `REARMAR` en ese paso, antes de pedir CI o de
+lanzar la suite, porque su C ya no puede aterrizar. Esto ocurre, por ejemplo,
+al levantar una pausa larga durante la que se mergeó por fuera. Los miembros
+vuelven a la fila igual que en la promoción, pero sin pausa: en el tick
+siguiente el lote se congela sobre main. Como en `EsperandoCI`, conservan su
+fecha FIFO aunque un check vuelva a pendiente, hasta entrar al lote siguiente. En `EsperandoCI` sólo se rearma
+mientras el efecto `iniciar-suite` del tren siga `pendiente` en la outbox.
+Desde que deja de estarlo, puede haber coordinadores vivos aunque la fase
+no haya cambiado, y el tren sigue por la suite y la promoción, que pausa
+`escritor-externo`. Un tren en `Corriendo` o `Diagnosticando` tampoco se
+rearma por este camino. La misma regla rige al ejecutar la outbox: al
+recuperar tras una muerte, al levantar una pausa o al resolver un juicio,
+`solicitar-ci` e `iniciar-suite` de un tren con la B atrás de main esperan
+sin publicar ni lanzar, y el paso siguiente rearma el tren.
+
 Los campos añadidos tienen defaults; el encoding etiquetado y esquema 1
 del ledger siguen vigentes. Sólo el tick activo importa este ejecutor.
 
@@ -794,7 +812,7 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 |---|---|---|
 | `etapa-1` | vacío | `reanudar`: levantar la pausa del repo; siguen vigentes los permisos operativos externos para cada suite. |
 | `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
-| `escritor-externo` | vacío | `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
+| `escritor-externo` | vacío | Main avanzó por fuera y el tren lo vio en la promoción. Antes de CI y suite rearma sin esta pausa. `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
 | `infraestructura` | `lanzador-rechazo` / `corrida-interrumpida` | El lanzador salió 64 o Jale confirmó la interrupción con 125 y `PUEUE_INTERRUPTED=1` sin recibo. La pausa conserva la ruta del log y cierra el efecto. `reanudar` lanza otro intento con registro y clave nuevos. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
 | `infraestructura` | `salida-sin-recibo` | Jale guardó una salida entera distinta de 75 y 64 sin recibo, en cualquier host. La pausa conserva la ruta del log y cierra el efecto. `reanudar` reengancha el mismo registro con la misma clave y conserva la salida anterior. `absolver` abandona el reenganche y lanza otro intento con registro y clave nuevos para cada modo sin recibo válido, no sólo el de la pausa. Úsalo cuando el log de cada uno de esos modos muestra que la corrida terminó, porque reenganchar repetiría la misma salida. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
 | `infraestructura` | `cobertura-parcial-boat` | `corrida.log` acredita omisiones de cobertura. `reanudar` lanza otro intento con registro e identidad nuevos para el modo afectado. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
@@ -1442,11 +1460,12 @@ en caché para la reanudación.
 Si `solicitar-ci` se reintenta tras la muerte de un tick, vuelve a prelanzar
 sobre el mismo registro, salvo que ese tick ya lea en rojo el CI de esa
 misma solicitud. El rojo de una solicitud anterior no lo impide: al reanudar
-una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza.
+una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza, salvo
+que main haya dejado atrás la B del lote, que entonces se rearma.
 
 Si falla el prelanzamiento, `prelanzamiento-fallido` registra el tren y
-el error, y la solicitud de CI se completa. Si el CI sale rojo o un juicio
-aborta el tren antes de confirmar la corrida, `suite-prelanzada-sin-leer`
+el error, y la solicitud de CI se completa. Si el CI sale rojo, un juicio
+aborta el tren o main deja atrás su B antes de confirmar la corrida, `suite-prelanzada-sin-leer`
 registra el modo, la clave de la corrida (si llegó a escribirse) y si ya
 terminó. Cada corrida sigue en el host hasta terminar y su resultado queda
 sin consumir.

@@ -10,6 +10,8 @@ def conservar_lotes_comunes(tipo, payload, comunes):
     estado["trenes"] = [t for t in estado["trenes"] if tuple(t["recibos"]) in comunes]
     lotes_por_id = {t["id"]: tuple(t["recibos"]) for t in estado["trenes"]}
     for entrada in estado["entradas"]:
+        # SEN-7614: la marca sólo conserva el orden FIFO hacia el lote siguiente.
+        entrada.pop("rearmada", None)
         if entrada["tren"] not in lotes_por_id:
             del entrada["tren"]
         elif tipo == "sombra-doble-camino":

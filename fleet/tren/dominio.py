@@ -71,6 +71,9 @@ class Entrada:
     caducada: Optional[float] = None
     # Ligada al recibo: conserva el aislamiento hasta resolver la entrega.
     partida: bool = False
+    # Liberada por un rearmado antes de la suite: conserva su FIFO, como si
+    # siguiera en EsperandoCI, hasta entrar al lote siguiente.
+    rearmada: bool = False
 
 
 @dataclass(frozen=True)
@@ -443,6 +446,8 @@ class Observacion:
     archivos_lote: Optional[Tuple[str, ...]] = None
     firma_distingue_fallo: bool = False
     repeticiones_en_paralelo: bool = False
+    # El efecto iniciar-suite del tren activo ya empezó su IO en algún tick.
+    suite_iniciada: bool = False
 
 
 @dataclass(frozen=True)
@@ -538,15 +543,41 @@ def aterrizaje(estado, tren, observacion):
         elif isinstance(lectura, EnBase):
             fase = replace(fase, reintento_pendiente=True)
         elif isinstance(lectura, EscritorExterno):
-            fase = Terminal("REARMAR")
-            estado = replace(estado,
-                pausa=Pausa("escritor-externo", main=lectura.main),
-                entradas=tuple(replace(e, tren=None) if e.entrega.recibo in tren.recibos
-                               else e for e in estado.entradas))
+            return replace(rearmar(estado, tren),
+                           pausa=Pausa("escritor-externo", main=lectura.main)), ()
         else:
             return estado, ()
     return replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
                                        else t for t in estado.trenes)), efectos
+
+
+def rearmar(estado, tren, temprano=False):
+    """C ya no aterriza sobre main: cierra el tren y devuelve sus miembros a la fila.
+
+    Las fechas FIFO no cambian; el reductor congela el lote siguiente sobre main.
+    """
+    return replace(estado,
+        trenes=tuple(replace(t, fase=Terminal("REARMAR")) if t.id == tren.id else t
+                     for t in estado.trenes),
+        entradas=tuple(replace(e, tren=None, rearmada=temprano)
+                       if e.entrega.recibo in tren.recibos
+                       else e for e in estado.entradas))
+
+
+def base_vieja(fase, observacion):
+    """main ya no es la B de un tren cuya suite aún no empezó.
+
+    Una suite iniciada puede tener coordinadores vivos aunque la fase siga en
+    EsperandoCI; cerrar el tren los dejaría sin dueño.
+    """
+    if isinstance(fase, Congelado):
+        base = fase.B
+    elif isinstance(fase, Armado) or (isinstance(fase, EsperandoCI) and
+                                      not observacion.suite_iniciada):
+        base = fase.candidato.B
+    else:
+        return False
+    return bool(observacion.base) and observacion.base != base
 
 
 ESPERAS_SUITE = (300, 900, 3600)
@@ -936,7 +967,7 @@ def paso(estado, observacion):
                 admitida = (entrada.admitida if entrada.admitida is not None
                             else observacion.ahora)
             elif (decision == Retenido(Motivo.INCIERTO) or entrada.partida or
-                  entrada.tren in esperando_ci):
+                  entrada.rearmada or entrada.tren in esperando_ci):
                 # No perder FIFO al retener antes o después de una partición.
                 admitida = entrada.admitida
             else:
@@ -955,6 +986,9 @@ def paso(estado, observacion):
         fase = tren.fase
         if observacion.tren_id and observacion.tren_id != tren.id:
             return estado, tuple(efectos)
+        # Un merge por fuera deja a C sin poder aterrizar: no gastar CI ni suite.
+        if base_vieja(fase, observacion):
+            return rearmar(estado, tren, temprano=True), tuple(efectos)
         ocupada = observacion.rama_ocupada
         if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
                 observacion.tren_id == tren.id and
@@ -1044,7 +1078,7 @@ def paso(estado, observacion):
         generacion += 1
         tren_id = clave("tren", estado.repo, observacion.base, recibos, generacion)
     tren = Tren(tren_id, recibos, Congelado(observacion.base))
-    estado = replace(estado, entradas=tuple(replace(e, tren=tren_id)
+    estado = replace(estado, entradas=tuple(replace(e, tren=tren_id, rearmada=False)
                      if e.entrega.recibo in recibos else e for e in entradas),
                      trenes=estado.trenes + (tren,))
     efectos.append(Efecto(clave("armar", tren_id), "armar-candidato", (tren_id,)))
@@ -1067,8 +1101,8 @@ def datos(valor):
         return dict({"_tipo": type(valor).__name__},
                     **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)
                        # Conservar payloads históricos de sombra/custodia.
-                       if not (isinstance(valor, Entrada) and f.name == "partida"
-                               and not valor.partida)
+                       if not (isinstance(valor, Entrada) and f.name in ("partida", "rearmada")
+                               and not getattr(valor, f.name))
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
                                 and valor.ventana is None)})
     if isinstance(valor, tuple):

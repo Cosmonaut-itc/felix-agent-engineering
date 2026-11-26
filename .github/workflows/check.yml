@@ -1,5 +1,14 @@
 name: Check
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+# Las ramas corren sólo por su PR: los jobs de macOS van en serie, de 30 a 47 min cada uno.
+# Un head nuevo del PR cancela la corrida del superado. Cada commit de main tiene su
+# propio grupo, porque un grupo compartido descartaría la corrida pendiente anterior.
+concurrency:
+  group: check-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
