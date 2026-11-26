@@ -406,6 +406,26 @@ class Harness(unittest.TestCase):
                 self.assertFalse(output)
         self.assertFalse(self.api.calls)
 
+    def test_candidatas_invalidas_no_crean_estado(self):
+        other = 'vm-ajena'
+        self.add_vm(other, fake_id('efgh2345'), overrides={'repo': 'otro/proyecto'})
+        cases = (
+            ('vacia', 'contract', '', ()),
+            ('intermedia', 'contract', f'{NAME},,{NAME}', ()),
+            ('preparar', 'preparar', NAME, ('--vm', NAME)),
+            ('desconocida', 'contract', 'vm-desconocida', ()),
+            ('ajena', 'contract', other, ()),
+        )
+        for case, kind, names, options in cases:
+            with self.subTest(case=case):
+                state_home = self.base / case
+                with patch.dict(os.environ, {'XDG_STATE_HOME': str(state_home)}):
+                    result = self.run_cli(*self.args('suite', kind, *options, '--candidatas', names))
+                self.assertEqual(result[:2], (64, ''), result)
+                self.assertFalse((state_home / 'boat-pool').exists(),
+                                 f'código, stdout, stderr: {result!r}; se creó el directorio de estado')
+        self.assertFalse(self.api.calls)
+
     def test_pedir_espera_y_vence_si_la_unica_candidata_esta_llena(self):
         self.get_lease('ocupante')
         self.add_vm('vm-otra', fake_id('efgh2345'))
