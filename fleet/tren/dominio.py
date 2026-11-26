@@ -1101,8 +1101,8 @@ def datos(valor):
         return dict({"_tipo": type(valor).__name__},
                     **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)
                        # Conservar payloads históricos de sombra/custodia.
-                       if not (isinstance(valor, Entrada) and f.name == "partida"
-                               and not valor.partida)
+                       if not (isinstance(valor, Entrada) and f.name in ("partida", "rearmada")
+                               and not getattr(valor, f.name))
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
                                 and valor.ventana is None)})
     if isinstance(valor, tuple):
