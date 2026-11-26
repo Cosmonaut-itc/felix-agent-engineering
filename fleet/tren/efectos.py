@@ -44,7 +44,8 @@ def pedidos_adelantados(fase, git, adaptador, tren):
     prs = tuple(pr for pr, _, _ in c.eslabones)
     plan = planificar(fase.fallos, prs, fase.evidencias,
                       fase.presupuesto_s - fase.costo_infra_s, en_paralelo=True)
-    demas = [(s, adaptador.adelanto(tren, s)) for s in plan.tanda if s.id != fase.pendiente.id]
+    demas = [(s, adaptador.adelanto(c, tren, s)) for s in plan.tanda
+             if s.id != fase.pendiente.id]
     cupo = adaptador.repeticiones_paralelas - 1 - sum(a == "vivo" for _, a in demas)
     for solicitud, adelanto in demas:
         if cupo <= 0:

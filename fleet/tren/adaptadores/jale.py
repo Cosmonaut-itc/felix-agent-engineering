@@ -405,8 +405,7 @@ class Jale:
         fallo = solicitud.fallo
         exigir(fallo.parte == 'jale' and fallo.check in self.modos, 'seleccion-no-corresponde')
         raiz = self.estado / clave('repetir', tren_id, solicitud.id)
-        base = (self.estado / clave('base', commit, fallo.check, fallo.unidad)
-                if commit == candidato.B else None)
+        base = self.cache_de_base(candidato, commit, fallo)
         exigir(not reanudar or reanudar == str(raiz), 'reanudar-no-corresponde')
         origen = leer_json(suite)
         exigir(isinstance(origen, list) and all(isinstance(r, dict) for r in origen) and
@@ -420,12 +419,20 @@ class Jale:
             exigir(isinstance(publicado, Publicado), 'subconjunto-no-publicado')
         return raiz, base
 
-    def adelanto(self, tren_id, solicitud):
+    def cache_de_base(self, candidato, commit, fallo):
+        return (self.estado / clave('base', commit, fallo.check, fallo.unidad)
+                if commit == candidato.B else None)
+
+    def adelanto(self, candidato, tren_id, solicitud):
         raiz = self.estado / clave('repetir', tren_id, solicitud.id)
-        registros = [raiz / n / '0' for n in ('1', '2')]
-        if any(lanzamiento_activo(r / 'candado') for r in registros):
+        base = (self.cache_de_base(candidato, candidato.B, solicitud.fallo)
+                if solicitud.objetivo == 'B' else None)
+        if any(lanzamiento_activo(raiz / n / '0' / 'candado') for n in ('1', '2')):
             return 'vivo'
-        return 'terminado' if all((r / 'codigo.json').exists() for r in registros) else ''
+        return 'terminado' if all(
+            (raiz / n / '0' / 'codigo.json').exists() or
+            (base is not None and (base / n / 'registro.json').exists())
+            for n in ('1', '2')) else ''
 
     def adelantar_repeticiones(self, candidato, suite, pedidos, tren_id):
         if self.repeticiones_paralelas == 1:

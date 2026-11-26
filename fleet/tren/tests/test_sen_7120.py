@@ -221,8 +221,8 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
         self.plan([{'esperar': True}])
         pedido, otro = self.pedidos[:2]
         self.adelantar((pedido,))
-        self.assertEqual(self.adaptador.adelanto(TREN, pedido[0]), 'vivo')
-        self.assertEqual(self.adaptador.adelanto(TREN, otro[0]), '')
+        self.assertEqual(self.adaptador.adelanto(CANDIDATO, TREN, pedido[0]), 'vivo')
+        self.assertEqual(self.adaptador.adelanto(CANDIDATO, TREN, otro[0]), '')
         (self.raiz / 'seguir').touch()
         for registro in self.registros(pedido):
             self.esperar_archivo(registro / 'codigo.json')
@@ -230,7 +230,25 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
         while (any(lanzamiento_activo(r / 'candado') for r in self.registros(pedido))
                and time.monotonic() < limite):
             time.sleep(.01)
-        self.assertEqual(self.adaptador.adelanto(TREN, pedido[0]), 'terminado')
+        self.assertEqual(self.adaptador.adelanto(CANDIDATO, TREN, pedido[0]), 'terminado')
+
+    def test_adelanto_de_base_cuenta_los_intentos_servidos_por_la_cache(self):
+        base = self.pedidos[1]
+        self.assertEqual(base[0].objetivo, 'B')
+        self.plan([{}, {'codigo': 75, 'sin_linea': True}])
+        anterior = self.jale(1).repetir(CANDIDATO, self.origen, base[0], base[1], 'lote-anterior')
+        self.assertIsInstance(anterior, Incompleto)
+        self.assertEqual(self.adaptador.adelanto(CANDIDATO, TREN, base[0]), '')
+        self.plan([{}])
+        self.adelantar((base,))
+        primero, segundo = self.registros(base)
+        self.esperar_archivo(segundo / 'codigo.json')
+        limite = time.monotonic() + 5
+        while lanzamiento_activo(segundo / 'candado') and time.monotonic() < limite:
+            time.sleep(.01)
+        self.assertFalse((primero / 'codigo.json').exists())
+        self.assertEqual(self.adaptador.adelanto(CANDIDATO, TREN, base[0]), 'terminado')
+        self.assertEqual(self.adaptador.adelanto(CANDIDATO, TREN, self.pedidos[0][0]), '')
 
     def test_fallo_al_lanzar_el_segundo_intento_conserva_el_75_del_primero(self):
         (self.raiz / 'primero-75').touch()
@@ -374,7 +392,7 @@ class EfectoTests(unittest.TestCase):
         self.adaptador.adelanto.side_effect = ('vivo', 'terminado', '')
         self.ejecutar()
         self.assertEqual([c.args for c in self.adaptador.adelanto.call_args_list],
-                         [(TREN, s) for s in self.demas])
+                         [(LOTE, TREN, s) for s in self.demas])
         self.git.armar.assert_called_once_with(B, ((4, 'a' * 40),))
         self.adaptador.adelantar_repeticiones.assert_called_once_with(
             LOTE, 'suite.json', ((self.demas[2], '4' * 40),), TREN)
