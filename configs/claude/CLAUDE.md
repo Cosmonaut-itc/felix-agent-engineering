@@ -72,10 +72,12 @@ corre en la Mini lo que exige macOS o nunca ha pasado en Linux.
   `run-remote.sh desktop` en Jale). Si la admisión sale con 75, va a la Mac
   Mini. Lo demás corre en la Mini.
 - **Pool de Boat (Jale).** La `contract` o la `e2e` completa de Jale es la
-  excepción. Va al pool con `run-remote.sh boat`, lanzado desde la MacBook. Si
-  el pool no da lugar, el mismo lanzador la manda al desk. Un 75 de `boat` sin
-  `RESULT` canónico se reintenta con la misma invocación, sin cambiar de host;
-  con él, es una corrida roja.
+  excepción, salvo las que su `docs/agents/test-hosts.md` deja en otro host
+  (la del tren y la base e2e de main de una e2e del desk). Va al pool con
+  `run-remote.sh boat`, lanzado desde la MacBook. Si el pool no da lugar, el
+  mismo lanzador la manda al desk. Un 75 de `boat` sin `RESULT` canónico se
+  reintenta con la misma invocación, sin cambiar de host; con él, es una
+  corrida roja.
 - **Sin grupo propio (los demás).** Todo va al desk con
   `REMOTE_RUN_HOST=desk remote-run start`. La prueba dirigida de menos de
   10 min lleva `--carril rapido`; el resto se encola en el grupo `otros`.
