@@ -380,6 +380,69 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.get_grant('primera')['vm'], NAME)
         self.assertEqual(self.get_grant('segunda')['vm'], other)
 
+    def test_contract_elige_otra_vm_si_una_e2e_ocupa_un_lugar(self):
+        self.config['vms'][0].update(lugares=2, peso_clase={'contract': 2})
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'), places=2,
+                    overrides={'peso_clase': {'contract': 2}})
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], NAME)
+        code, _, stderr = self.run_cli('apagar', other)
+        self.assertEqual(code, 0, stderr)
+
+        self.assertEqual(self.get_grant('contrato')['vm'], other)
+
+    def test_e2e_agota_la_espera_con_una_contract_en_cada_vm(self):
+        self.config['vms'][0].update(lugares=2, peso_clase={'contract': 2})
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'), places=2,
+                    overrides={'peso_clase': {'contract': 2}})
+        self.assertEqual(self.get_grant('primera')['vm'], NAME)
+        self.assertEqual(self.get_grant('segunda')['vm'], other)
+
+        def advance_clock(seconds):
+            self.api.now += seconds
+
+        with patch.object(pool.time, 'monotonic', side_effect=lambda: self.api.now - NOW), \
+                patch.object(self.api, 'sleep', side_effect=advance_clock):
+            self.assert_unavailable('sin_lugar', *self.args('fragmento', 'e2e', '--esperar', '0.25'))
+        self.assertEqual(self.api.now, NOW + 0.25)
+
+    def test_estado_descuenta_el_peso_de_la_contract(self):
+        self.config['vms'][0].update(lugares=2, peso_clase={'contract': 2})
+        self.assertEqual(self.get_grant('contrato')['vm'], NAME)
+
+        code, output, stderr = self.run_cli('estado', '--json')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(output)['vms'][0]['lugares_libres'], 0)
+
+    def test_sin_peso_clase_caben_dos_contracts_en_la_misma_vm(self):
+        declaration = self.config['vms'][0]
+        declaration.update(lugares=2, peso_clase={'contract': 2})
+        self.assertEqual(self.get_grant('primera')['vm'], NAME)
+        self.assert_unavailable('sin_lugar', *self.args('segunda'))
+
+        del declaration['peso_clase']
+        self.assertEqual(self.get_grant('segunda')['vm'], NAME)
+
+    def test_rechaza_peso_clase_invalido(self):
+        declaration = self.config['vms'][0]
+        declaration['lugares'] = 2
+        for weights in ({'contract': 0}, {'contract': 3}, {'contract': '2'},
+                        {'contract': 2.0}, {'contract': True}, None):
+            with self.subTest(peso_clase=weights):
+                declaration['peso_clase'] = weights
+                code, _, stderr = self.run_cli(*self.args())
+                self.assertEqual(code, 64, stderr)
+
+    def test_pedir_ordena_por_el_peso_de_los_arriendos(self):
+        self.config['vms'][0].update(lugares=3, peso_clase={'contract': 2})
+        self.assertEqual(self.get_grant('contrato')['vm'], NAME)
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'), places=3)
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], other)
+
+        self.assertEqual(self.get_grant('integracion', 'integracion')['vm'], other)
+
     def test_pedir_elige_la_primera_si_la_segunda_esta_llena(self):
         first = self.config['vms'].pop()
         first['lugares'] = 2
