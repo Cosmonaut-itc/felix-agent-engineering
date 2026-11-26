@@ -29,8 +29,10 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
 
 ## Operación
 
-- `pedir --repo R --corrida ID --clase C [--prioridad P] [--esperar S] [--ttl S]`
+- `pedir --repo R --corrida ID --clase C [--candidatas A,B] [--prioridad P] [--esperar S] [--ttl S]`
   devuelve un JSON con el arriendo, nombre de VM, ID en Boat y vencimiento.
+  `--candidatas A,B` limita la concesión a esas VMs de `pool.json` del mismo
+  repositorio y sólo se admite en clases distintas de `preparar`.
   Entre las VMs con cupo, `pedir` pospone las que tienen un apagado pendiente
   o cuyo último evento de energía para el ID vigente es un apagado. Elige por
   menor proporción de lugares ocupados y desempata en el orden de
