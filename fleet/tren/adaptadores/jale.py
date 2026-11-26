@@ -3,7 +3,7 @@ import base64
 import binascii
 import fcntl
 import hashlib
-from itertools import islice
+from itertools import combinations, islice
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -11,9 +11,10 @@ import subprocess
 import sys
 import time
 
-from adaptadores.ejecucion_jale import clave_registro, guardar
+from adaptadores.ejecucion_jale import ACUSE_CANCELACION, CANCELAR, clave_registro, guardar
 from adaptadores.hasito import ResultadoInvalido, exigir, leer_json
-from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
+from atribucion import identidad
+from dominio import (Completo, Diagnosticando, Fallo, Incompleto, Intento, Repeticion,
                      UnidadRepetida, RechazoLanzador, clave)
 from git_ops import Publicado, sha
 from ledger import directorio_estado
@@ -24,12 +25,24 @@ MODOS = ('contract', 'e2e')
 HOSTS = ('auto', 'mini', 'desktop', 'boat')
 ESPERA_BOAT_S = 180
 PLAZO_PRELANZAMIENTO_S = 5
+PLAZO_CANCELACION_S = 30
 SIN_IMPEDIMENTO = object()
 
 
 def especulativa(registro):
     return ((registro / 'prelanzada.json').exists() and
             not (registro / 'confirmada.json').exists())
+
+
+def con_candado(registro):
+    try:
+        with (registro / 'candado').open('rb') as candado:
+            fcntl.flock(candado, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except FileNotFoundError:
+        return False
+    except BlockingIOError:
+        return True
+    return False
 
 
 def leer_pendiente_boat(log):
@@ -193,6 +206,7 @@ class Jale:
         self.lanzador = str(Path(lanzador).resolve()) if resolver_lanzador else str(lanzador)
         self.lanzador_configurado = str(lanzador)
         self.operador = None
+        self.cancelacion_aplaza_prelanzamiento = False
         self.git = git
         self.host, self.modos = host.copy() if isinstance(host, dict) else host, tuple(modos)
         self.estado = (Path(estado) if estado is not None else
@@ -212,10 +226,25 @@ class Jale:
         if not self.prelanzar_habilitado:
             return
         raiz = self.estado / clave('suite', tren_id)
+        aplazado = self.archivo_prelanzamiento_aplazado(tren_id)
+        if (self.cancelacion_aplaza_prelanzamiento or
+                self.operador is not None and self.cancelaciones_en_curso()):
+            if not aplazado.exists():
+                raiz.mkdir(parents=True, exist_ok=True, mode=0o700)
+                guardar(aplazado, True)
+            return
         lanzadas = []
         for modo in self.modos:
             self.prelanzar_corrida(raiz / modo, candidato.C, modo, (), tren_id, lanzadas)
         self.esperar_prelanzadas(lanzadas)
+        aplazado.unlink(missing_ok=True)
+
+    def archivo_prelanzamiento_aplazado(self, tren_id):
+        return self.estado / clave('suite', tren_id) / 'prelanzamiento-aplazado.json'
+
+    def prelanzamiento_aplazado(self, tren_id):
+        return (self.prelanzar_habilitado and
+                self.archivo_prelanzamiento_aplazado(tren_id).exists())
 
     def prelanzar_corrida(self, raiz, commit, modo, filtros, tren_id, lanzadas):
         if not (raiz / 'completo.json').exists():
@@ -238,10 +267,39 @@ class Jale:
                    or lanzamiento_activo(registro / 'candado')
                    for registro in raiz.glob('*/*') if registro.is_dir())
 
-    def prelanzadas_sin_leer(self, tren_id):
+    def indice_adelantos(self, tren_id):
+        return self.estado / clave('adelantos', tren_id)
+
+    def adelantos_anteriores(self, tren_id, fase):
+        if not isinstance(fase, Diagnosticando):
+            return
+        # Registros anteriores al índice. Las claves sobreviven a cambios
+        # de tanda y se pueden deducir mientras se conserva el diagnóstico.
+        prs = tuple(pr for pr, _, _ in fase.candidato.eslabones)
+        objetivos = [('C', ()), ('B', ())]
+        objetivos.extend(('subconjunto', grupo) for n in range(1, len(prs))
+                         for grupo in combinations(prs, n))
+        fallos = {identidad(f) for f in fase.fallos if f.parte == 'jale' and f.check in MODOS}
+        for fallo in sorted(fallos):
+            for objetivo, grupo in objetivos:
+                solicitud = clave('reproduccion', fallo, objetivo, grupo)
+                yield clave('repetir', tren_id, solicitud), fallo[1]
+
+    def registros_prelanzados(self, tren_id, fase):
         raiz = self.estado / clave('suite', tren_id)
         for modo in MODOS:
-            registro = raiz / modo / '0'
+            yield raiz / modo / '0', modo
+        adelantos = set(self.adelantos_anteriores(tren_id, fase))
+        for archivo in self.indice_adelantos(tren_id).glob('*.json'):
+            nombre = re.fullmatch(r'([0-9a-f]{64})\.(contract|e2e)', archivo.stem)
+            if nombre is not None:
+                adelantos.add(nombre.groups())
+        for raiz, modo in sorted(adelantos):
+            for n in ('1', '2'):
+                yield self.estado / raiz / n / '0', modo
+
+    def prelanzadas_sin_leer(self, tren_id, fase):
+        for registro, modo in self.registros_prelanzados(tren_id, fase):
             if especulativa(registro):
                 try:
                     iniciado = leer_json(registro / 'iniciado.json')
@@ -251,13 +309,87 @@ class Jale:
                 if not isinstance(id_corrida, str) or not re.fullmatch(
                         r'[A-Za-z0-9._-]{8,128}', id_corrida):
                     id_corrida = None
-                yield {'tren': tren_id, 'modo': modo, 'clave': id_corrida,
-                       'terminada': (registro / 'codigo.json').exists()}
+                yield registro, {'tren': tren_id, 'modo': modo, 'clave': id_corrida,
+                                 'terminada': (registro / 'codigo.json').exists(),
+                                 'cancelacion_pedida': False, 'cancelacion_confirmada': False}
+
+    def archivo_cancelaciones(self):
+        return self.estado / (clave('cancelaciones', self.operador.repo) + '.json')
+
+    def cancelaciones_en_curso(self):
+        archivo = self.archivo_cancelaciones()
+        if not archivo.exists():
+            return set()
+        rutas = leer_json(archivo)
+        exigir(isinstance(rutas, list) and all(isinstance(ruta, str) and re.fullmatch(
+            r'[a-f0-9]{64}/(?:contract|e2e|1|2)/0', ruta) for ruta in rutas),
+            'cancelaciones-invalidas')
+        return {ruta for ruta in rutas
+                if lanzamiento_activo(self.estado / ruta / 'candado')}
+
+    def cancelar_corridas(self, terminales):
+        avisos, activas = [], {}
+        for tren in terminales:
+            for registro, aviso in self.prelanzadas_sin_leer(tren.id, tren.fase):
+                avisos.append(aviso)
+                if aviso['terminada']:
+                    continue
+                try:
+                    activa = con_candado(registro)
+                    if activa:
+                        activas[registro] = aviso
+                    # La marca impide el arranque incluso si el coordinador
+                    # todavía no tomó el candado o el tick muere tras pedirlo.
+                    guardar(registro / CANCELAR, True)
+                    if activa or con_candado(registro):
+                        activas[registro] = aviso
+                        aviso['cancelacion_pedida'] = True
+                    elif not (registro / 'codigo.json').exists():
+                        aviso['error_cancelacion'] = 'coordinador-ausente'
+                except OSError as error:
+                    aviso['error_cancelacion'] = type(error).__name__
+
+        # Un plazo común para todos los lanzadores. El candado se conserva
+        # hasta que sale el launcher que hace la cancelación en su host.
+        pendientes = set(activas)
+        limite = time.monotonic() + PLAZO_CANCELACION_S
+        while pendientes:
+            pendientes = {r for r in pendientes if lanzamiento_activo(r / 'candado')}
+            restante = limite - time.monotonic()
+            if not pendientes or restante <= 0:
+                break
+            time.sleep(min(.05, restante))
+        for registro, aviso in activas.items():
+            aviso['cancelacion_confirmada'] = (
+                aviso['cancelacion_pedida'] and registro not in pendientes)
+            acuse = registro / ACUSE_CANCELACION
+            if acuse.exists():
+                try:
+                    estado = leer_json(acuse)
+                except ResultadoInvalido:
+                    estado = 'acuse-invalido'
+                if estado != 'senal-enviada':
+                    aviso['error_cancelacion'] = estado
+            elif (registro in pendientes or not (registro / 'codigo.json').exists()) and (
+                    'error_cancelacion' not in aviso):
+                aviso['error_cancelacion'] = 'coordinador-sin-acuse'
+        if pendientes:
+            self.cancelacion_aplaza_prelanzamiento = True
+            try:
+                anteriores = self.cancelaciones_en_curso()
+                guardar(self.archivo_cancelaciones(),
+                        sorted(anteriores | {str(r.relative_to(self.estado)) for r in pendientes}))
+            except (OSError, ResultadoInvalido) as error:
+                for registro in pendientes:
+                    activas[registro]['error_barrera_cancelacion'] = type(error).__name__
+        return avisos
 
     def lanzar(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None,
                reenganche=None, *, prelanzamiento=False):
         """Devuelve el coordinador, None si ya hay salida o False si no se autorizó."""
         sin_confirmar = especulativa(registro)
+        if (registro / CANCELAR).exists():
+            return
         if sin_confirmar and not permitir_lanzar:
             return False
         registro.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -348,6 +480,7 @@ class Jale:
     def recoger(self, registro, proceso, commit, modo, filtros):
         if proceso is False:
             return False
+        exigir(not (registro / CANCELAR).exists(), 'corrida-interrumpida')
         if proceso is not None:
             try:
                 self.esperar(proceso)
@@ -463,6 +596,9 @@ class Jale:
             for solicitud, commit in islice(pedidos, self.repeticiones_paralelas - 1):
                 raiz, base = self.preparar_repeticion(candidato, suite, solicitud, commit, tren_id)
                 fallo = solicitud.fallo
+                indice = self.indice_adelantos(tren_id)
+                indice.mkdir(parents=True, exist_ok=True, mode=0o700)
+                guardar(indice / (raiz.name + '.' + fallo.check + '.json'), True)
                 for n in ('1', '2'):
                     if base is None or not (base / n / 'registro.json').exists():
                         self.prelanzar_corrida(raiz / n, commit, fallo.check,
