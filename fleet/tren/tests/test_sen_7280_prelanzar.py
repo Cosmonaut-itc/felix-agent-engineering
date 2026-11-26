@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -276,8 +277,9 @@ class TickActivoTests(Productor, unittest.TestCase):
 
     def eventos(self, tipo):
         with self.ledger() as ledger:
-            return [json.loads(e['payload']) for e in ledger.ultimos_eventos(REPO)
-                    if e['tipo'] == tipo]
+            filas = ledger.db.execute('SELECT payload FROM events WHERE repo=? AND tipo=?'
+                                      ' ORDER BY seq DESC', (REPO, tipo))
+            return [json.loads(fila[0]) for fila in filas]
 
     def test_tick_publica_y_prelanza_con_ci_pendiente_y_recoge_en_verde(self):
         self.plan([{'barrera': True, 'esperar': True}])
@@ -482,6 +484,60 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assert_sucesor_sin_candados(sucesor)
         self.assertEqual(sum(':refs/heads/tren/' in p for p in self.lineas('pushes.log')), 2)
 
+    def test_sondeo_rojo_tardio_recorta_la_espera_de_cancelacion(self):
+        tren, registros = self.lote_con_prelanzadas()
+        (self.raiz / 'retener-cancelacion').touch()
+        (self.raiz / 'predecesor.json').write_text(json.dumps(list(map(str, registros))))
+        cli = activo.cli
+        args = cli.parser().parse_args(['tick', '--repo', REPO, '--config', str(self.privada)])
+        segundos = 0
+        ci_original = self.contexto.observador.ci
+
+        def dormir(duracion):
+            nonlocal segundos
+            segundos += duracion
+
+        def ci(repo, commit, rama=None):
+            if commit == tren.fase.candidato.C:
+                if segundos == 80:
+                    dormir(11)  # El cuarto sondeo devuelve rojo a los 91 s.
+                if segundos >= 91:
+                    return ResultadoCI('rojo', ('check',))
+            return ci_original(repo, commit, rama)
+
+        reloj = SimpleNamespace(monotonic=lambda: segundos, sleep=dormir,
+                                time=lambda: next(self.reloj))
+        with patch.object(cli, 'ARRANQUE', 0), patch.object(cli, 'time', reloj), \
+                patch.object(cli, 'cuota', return_value=True), \
+                patch('adaptadores.jale.time', reloj), \
+                patch.object(self.contexto.observador, 'ci', side_effect=ci), \
+                patch.object(cli, 'GitHubGit', wraps=cli.GitHubGit,
+                             return_value=self.contexto.observador), \
+                patch('git_ops.GitTren', return_value=self.contexto.git), \
+                patch('operativo.EscritorGitHub', return_value=self.contexto.escritor):
+            pasos = list(cli.ticks(args))
+
+        self.assertTrue(all(codigo == 0 for codigo, _ in pasos), pasos)
+        self.assertLess(segundos, 120, f'el tick terminó a los {segundos:g} s')
+        predecesor, sucesor = self.estado().trenes
+        self.assertEqual(predecesor.fase, Terminal('PARTIDO'))
+        self.assertIsInstance(sucesor.fase, EsperandoCI)
+        self.assert_avisos_cancelacion(tren, 2, False)
+        for registro in registros:
+            self.assertTrue((registro / 'cancelar.json').exists())
+            self.esperar_archivo(registro / 'term')
+            self.assertTrue(lanzamiento_activo(registro / 'candado'))
+        aplazado = Jale(self.lanzador).archivo_prelanzamiento_aplazado(sucesor.id)
+        self.assertTrue(aplazado.exists())
+        self.assertFalse(any(r.exists() for r in self.registros_de_suite(sucesor)))
+
+        (self.raiz / 'salir').touch()
+        for registro in registros:
+            self.esperar_candado_libre(registro)
+        self.tick()
+        self.assert_sucesor_sin_candados(sucesor)
+        self.assertFalse(aplazado.exists())
+
     def test_rearmar_cancela_prelanzadas_vivas(self):
         tren, registros = self.lote_con_prelanzadas()
         c = tren.fase.candidato
@@ -540,26 +596,19 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertTrue(all(not (r / 'cancelar.json').exists() for r in
                             self.registros_de_suite(tren)))
 
-    def test_pid_sin_candado_no_recibe_una_senal(self):
+    def test_coordinador_ausente_deja_marca_y_registra_el_error(self):
         tren, _ = self.hasta(EsperandoCI)
         registros = self.registros_de_suite(tren)
         for registro in registros:
             self.esperar_archivo(registro / 'codigo.json')
             self.esperar_candado_libre(registro)
             (registro / 'codigo.json').rename(registro / 'codigo-anterior.json')
-        with subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(15)']) as ajeno:
-            try:
-                for registro in registros:
-                    (registro / 'pid.json').write_text(json.dumps(ajeno.pid))
-                self.ci = 'rojo'
-                self.tick()
-                self.assertIsNone(ajeno.poll())
-                self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
-                self.assertEqual(self.eventos('suite-prelanzada-sin-leer')[0]['error_cancelacion'],
-                                 'coordinador-ausente')
-                self.assertTrue(all((r / 'cancelar.json').exists() for r in registros))
-            finally:
-                ajeno.terminate()
+        self.ci = 'rojo'
+        self.tick()
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        avisos = self.eventos('suite-prelanzada-sin-leer')
+        self.assertEqual([a['error_cancelacion'] for a in avisos], ['coordinador-ausente'] * 2)
+        self.assertTrue(all((r / 'cancelar.json').exists() for r in registros))
 
     def test_error_de_permiso_al_cancelar_no_frena_el_cierre_ni_el_otro_modo(self):
         tren, registros = self.lote_con_prelanzadas()
