@@ -24,6 +24,7 @@ MODOS = ('contract', 'e2e')
 HOSTS = ('auto', 'mini', 'desktop', 'boat')
 ESPERA_BOAT_S = 180
 PLAZO_PRELANZAMIENTO_S = 5
+SIN_IMPEDIMENTO = object()
 
 
 def especulativa(registro):
@@ -494,7 +495,10 @@ class Jale:
             lanzadas = simultaneas
             if any(proceso is False for *_, proceso in lanzadas):
                 return None
-        rechazo = None
+        # Con intentos simultáneos los dos ya corren: antes de devolver el primer
+        # resultado que impide la repetición se recogen todos, para que un recibo
+        # válido quede en la caché y el intento siguiente no lo vuelva a lanzar.
+        impedimento = SIN_IMPEDIMENTO
         for n, cache, cache_disponible, desde_base, ultimo, proceso in lanzadas:
             try:
                 if desde_base:
@@ -506,29 +510,28 @@ class Jale:
                         if cache is not None and not cache_disponible:
                             cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                             guardar(cache, str(ultimo.relative_to(self.estado)))
-            except ResultadoInvalido:
-                if rechazo is None:
-                    raise
+            except ResultadoInvalido as exc:
+                r = exc
+            if impedimento is not SIN_IMPEDIMENTO:
                 continue
-            if rechazo is not None:
+            if isinstance(r, dict) and r['codigo'] != 75:
+                u = r['unidades'][0]
+                intentos.append(Intento(n, 'omitida' if u['resultado'] == 'no-corrida' else
+                    u['resultado'], u['firma'], u['duracion_s'], str(ultimo.parent),
+                    json.dumps(r['huella_entorno'], sort_keys=True)))
                 continue
-            if r is False:
-                return None
-            if isinstance(r, RechazoLanzador):
-                if self.repeticiones_paralelas == 1:
-                    return r
-                # El otro intento ya corre: su recibo queda en la caché y el
-                # intento siguiente no lo vuelve a lanzar.
-                rechazo = r
-                continue
-            if r is None or r['codigo'] == 75:
-                return Incompleto(75, str(raiz))
-            u = r['unidades'][0]
-            intentos.append(Intento(n, 'omitida' if u['resultado'] == 'no-corrida' else
-                u['resultado'], u['firma'], u['duracion_s'], str(ultimo.parent),
-                json.dumps(r['huella_entorno'], sort_keys=True)))
-        if rechazo is not None:
-            return rechazo
+            impedimento = r
+            if self.repeticiones_paralelas == 1:
+                # En serie el intento siguiente todavía no se lanzó.
+                break
+        if isinstance(impedimento, ResultadoInvalido):
+            raise impedimento
+        if impedimento is False:
+            return None
+        if isinstance(impedimento, RechazoLanzador):
+            return impedimento
+        if impedimento is not SIN_IMPEDIMENTO:
+            return Incompleto(75, str(raiz))
         if fallo_al_lanzar is not None:
             raise fallo_al_lanzar
         return Repeticion(commit, candidato.C, candidato.B,

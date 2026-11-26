@@ -1351,14 +1351,15 @@ mayor, cada efecto `repetir` adelanta reproducciones de la tanda hasta
 completar N vivas: cuentan la pendiente y las adelantadas de la tanda cuyo
 coordinador sigue vivo. Una adelantada que ya terminó no ocupa lugar ni se
 vuelve a lanzar. Si uno de los dos intentos simultáneos de una reproducción
-sale con un rechazo del lanzador, el efecto recoge antes el otro intento. Si
-ese intento deja un recibo válido con código distinto de 75, queda en la
-caché y el intento que abre `absolver` o `reanudar` no lo vuelve a lanzar.
-El efecto espera a que termine el coordinador local de ese otro intento
-antes de devolver el rechazo, como la suite espera a los coordinadores de
-todos sus modos. Esa espera no garantiza que el host quede sin tareas de la
-reproducción: un lanzador que sale por un envío sin confirmar puede dejar la
-suya en la cola.
+no deja un resultado utilizable (un rechazo del lanzador, un 75 o un recibo
+inválido), el efecto recoge antes el otro intento. Si ese intento deja un
+recibo válido con código distinto de 75, queda en la caché y el intento
+siguiente no lo vuelve a lanzar. El efecto devuelve el resultado del primer
+intento que impide la repetición, en orden de intento. Espera a que termine
+el coordinador local del otro intento antes de devolverlo, como la suite
+espera a los coordinadores de todos sus modos. Esa espera no garantiza que
+el host quede sin tareas de la reproducción: un lanzador que sale por un
+envío sin confirmar puede dejar la suya en la cola.
 
 ### Checkout del operador
 
