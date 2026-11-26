@@ -2406,7 +2406,7 @@ apto_short() { git -C "$1" rev-parse --short "$2"; }
 apto_resolution() { read -r -a resolution <<< "$(sed -n 's/^Resolución: git diff //p' <<< "$1")"; }
 
 apto_vigente() {
-    local repo output tree status
+    local repo output tree status left right
     repo=$(apto_repo)
     printf 'y\n' >> "$repo/otro.txt"
     git -C "$repo" commit -q -am destino
@@ -2447,6 +2447,20 @@ apto_vigente() {
     output=$("$SCRIPTS/apto-vigente" --help)
     assert test "$(tail -n 1 <<< "$output")" = 'Uso: apto-vigente DESTINO HEAD_REVISADO HEAD_NUEVO'
     assert test "$(wc -l <<< "$output" | tr -d ' ')" = 8
+
+    # Dos merges con los mismos padres dejan dos bases óptimas para B.
+    repo=$(apto_repo)
+    left=$(git -C "$repo" rev-parse revisado)
+    printf 'destino\n' >> "$repo/otro.txt"
+    git -C "$repo" commit -q -am destino
+    right=$(git -C "$repo" rev-parse destino)
+    tree=$(git -C "$repo" rev-parse 'destino^{tree}')
+    git -C "$repo" branch cruce-revisado "$(git -C "$repo" commit-tree "$tree" -p "$left" -p "$right" -m revisado)"
+    git -C "$repo" branch cruce-destino "$(git -C "$repo" commit-tree "$tree" -p "$right" -p "$left" -m destino)"
+    status=0
+    output=$(apto "$repo" cruce-destino cruce-revisado cruce-destino 2>&1) || status=$?
+    assert test "$status" = 2
+    assert test "$output" = 'apto-vigente: la base común del head revisado y la base nueva no es única'
 }
 
 apto_vigente_interactions() {
@@ -2639,7 +2653,8 @@ for case in cases:
     result = subprocess.run([bash, script, 'destino', 'revisado', 'nuevo'], cwd=repo,
                             capture_output=True, text=True, encoding='utf-8')
     expected = ('APTO vigente' if case in ('disjuntas', 'translations', 'varios') else
-                'Ronda:' if case == 'editado' else 'Ronda delta')
+                'Ronda:' if case == 'conflicto' else
+                'Ronda delta')
     assert result.returncode == 0 and result.stdout.startswith(expected), (case, result)
     if expected == 'APTO vigente':
         assert 'catálogo' in result.stdout and 'claves disjuntas' in result.stdout, result
@@ -2692,47 +2707,29 @@ def write_journal(root, entries):
     write(root / journal, dict(version='7', dialect='postgresql', entries=entries))
 
 
-def with_unknown_message(repo, path):
-    shim = repo / 'shim'
-    shim.mkdir()
-    wrapper = shim / 'git'
-    wrapper.write_text('''#!/bin/sh
-"$TEST_REAL_GIT" "$@"
-status=$?
-if [ "$3" = merge-tree ]; then
-    printf '%s\\0' 1 "$TEST_MESSAGE_PATH" 'CONFLICT (desconocido)' 'Aviso de prueba sin tipo permitido'
-fi
-exit "$status"
-''')
-    wrapper.chmod(0o755)
-    real_git = subprocess.run(['bash', '-c', 'command -v git'], check=True,
-                              capture_output=True, text=True).stdout.strip()
-    return dict(os.environ, TEST_REAL_GIT=real_git, TEST_MESSAGE_PATH=path,
-                PATH=str(shim) + os.pathsep + os.environ['PATH'])
-
-
 cases = {
     'una': None, 'dos': None, 'apilada': None, 'sin-conflicto': None,
     'directorio-unicode': None, 'solo-sql': None, 'sin-snapshot': None, 'when-maximo': None,
+    'mixta': None, 'mixta-invalida': (None, 'unión de altas disjuntas'),
     'sql': (3, 'cambió el SQL'), 'when': (2, 'when debe crecer'), 'idx': (2, 'idx o tag'),
     'prevId': (4, 'prevId'), 'id-base': (4, 'id repetido'), 'id-alta': (4, 'id repetido'),
     'perdio-tabla': (4, 'esquema difiere'), 'perdio-columna': (4, 'esquema difiere'),
     'fuera': (1, 'árbol fuera'), 'snapshot-base': (4, 'snapshot de la base editado'),
     'misma-clave': (4, 'cambios incompatibles'), 'extra': (5, 'otros archivos'),
     'compartido-fuera': (1, 'compartido.txt'),
-    'mixta': (1, 'Auto-merging messages/es.json'), 'mixta-invalida': (1, 'Auto-merging messages/es.json'),
     'sin-conflicto-sql': (3, 'cambió el SQL'), 'sql-base': (3, 'otros cambios de SQL'),
     'sql-viejo': (3, 'aún existe el nombre anterior'),
     'conflicto-fuera': (1, 'parche.txt'), 'when-entre-altas': (2, 'when debe crecer'),
     'version': (2, 'versión'), 'breakpoints': (2, 'breakpoints'),
-    'retroceso': (1, 'la base nueva no incorpora la base revisada'),
+    'retroceso': (2, 'las altas del journal difieren'),
     'sin-conflicto-fuera': (1, 'árbol fuera'), 'id-base-nombrado': (4, 'id repetido'),
     'snapshot-agregado': (4, 'presencia del snapshot'), 'snapshot-borrado': (4, 'presencia del snapshot'),
-    'renombre': (1, 'CONFLICT (file location)'), 'renombre-conservado': (1, 'CONFLICT (file location)'),
-    'renombre-dividido': (1, 'CONFLICT (directory rename split)'),
-    'mensaje-desconocido': (1, 'Aviso de prueba sin tipo permitido'),
+    'renombre': ('vaciado', 'legacy/ajuste.sql'),
+    'renombre-fuera': ('vaciado', 'legacy/ajuste.sql'), 'modo-fuera': (1, 'parche.txt'),
     'when-no-seguro': (2, 'rango de enteros seguros'),
     'when-negativo': (2, 'rango de enteros seguros'), 'error-python': None,
+    'renombre-conservado': ('vaciado', 'legacy/ajuste.sql'), 'renombre-dividido': ('vaciado', 'legacy/ajuste.sql'),
+    'vaciado-por-parche': ('vaciado', 'aux/nuevo.txt'), 'vaciado-sin-alta': None,
 }
 for case, failure in cases.items():
     repo = Path(temporary) / ('migracion-' + case)
@@ -2746,9 +2743,12 @@ for case, failure in cases.items():
     branch_sql, second_sql = b'ALTER TABLE original ADD COLUMN first TEXT;\n', b'SELECT 2;\n'
     base = entry(0, 100, 'base')
     incoming = entry(1, 200, 'destino')
-    clean = case.startswith('sin-conflicto') or case == 'mensaje-desconocido'
+    clean = case.startswith('sin-conflicto')
     split = case == 'renombre-dividido'
-    directory_rename = split or case in ('renombre', 'renombre-conservado')
+    directory_rename = split or case in ('renombre', 'renombre-conservado', 'renombre-fuera')
+    emptied_dir = root / 'aux' if case == 'vaciado-por-parche' else repo / 'vaciado'
+    old_file = emptied_dir / 'anterior.txt'
+    added_file = emptied_dir / 'nuevo.txt'
     retreat = case == 'retroceso'
     first = entry(2 if clean or retreat else 1, 250 if retreat else 150, 'primera')
     second, third = entry(2, 175, 'segunda'), entry(3, 180, 'tercera')
@@ -2794,6 +2794,9 @@ for case, failure in cases.items():
     if directory_rename:
         (repo / 'legacy').mkdir()
         (repo / 'legacy/marcador.txt').write_text('marcador\n')
+    if case in ('vaciado-por-parche', 'vaciado-sin-alta'):
+        emptied_dir.mkdir()
+        old_file.write_text('anterior\n')
     if split:
         (repo / 'legacy/esquema.txt').write_text('esquema\n')
         (repo / 'aplicar-ajustes.sh').write_text('for sql in legacy/*.sql; do\n  printf "%s\\n" "$sql"\ndone\n')
@@ -2820,6 +2823,8 @@ for case, failure in cases.items():
     (repo / 'parche.txt').write_text('cambio revisado\n')
     if directory_rename:
         (repo / 'legacy/ajuste.sql').write_bytes(b'UPDATE original SET id = 1 WHERE id IS NULL;\n')
+    if case == 'vaciado-por-parche':
+        old_file.unlink()
     if mixed:
         mine = deepcopy(catalog_base)
         mine['inicio']['rama'] = 'Rama'
@@ -2863,13 +2868,28 @@ for case, failure in cases.items():
         git(repo, 'mv', 'legacy/esquema.txt', 'ajustes/esquema/esquema.txt')
         deploy = repo / 'aplicar-ajustes.sh'
         deploy.write_text(deploy.read_text().replace('legacy/', 'ajustes/datos/'))
+    elif case == 'renombre-fuera':
+        git(repo, 'mv', 'legacy', 'ajustes')
     elif directory_rename:
         git(repo, 'mv', 'legacy/marcador.txt', f'{directory}/marcador.txt')
+    if case == 'vaciado-por-parche':
+        added_file.write_text('alta del destino\n')
+    if case == 'vaciado-sin-alta':
+        old_file.unlink()
     if not retreat:
         commit(repo, 'destino')
     candidate_base = old_base if retreat else 'destino'
     auto = git(repo, 'merge-tree', '--write-tree', candidate_base, 'revisado', check=False)
     assert auto.returncode == (0 if clean or retreat else 1), (case, auto)
+    if case == 'renombre-fuera':
+        moved = git(repo, '-c', 'merge.directoryRenames=true', 'merge-tree',
+                    '--write-tree', 'destino', 'revisado', check=False)
+        paths = git(repo, 'ls-tree', '-r', '--name-only', moved.stdout.splitlines()[0]).stdout.splitlines()
+        assert 'ajustes/ajuste.sql' in paths and 'legacy/ajuste.sql' not in paths, moved
+        patch, incoming_paths = (set(git(repo, 'diff', '--no-renames', '--name-only',
+                                         old_base, ref).stdout.splitlines())
+                                 for ref in ('revisado', 'destino'))
+        assert all(path.startswith(directory + '/') for path in patch & incoming_paths)
 
     git(repo, 'checkout', '-qb', 'nuevo', candidate_base)
     new_first, new_second, new_third = (entry(2, 201, 'primera'), entry(3, 202, 'segunda'),
@@ -2932,11 +2952,17 @@ for case, failure in cases.items():
     if mixed:
         theirs['inicio'] = mine['inicio']
         write(catalog, theirs)
-    if case == 'renombre-conservado' or split:
-        (repo / 'legacy').mkdir(exist_ok=True)
-        sql = git(repo, 'show', 'revisado:legacy/ajuste.sql').stdout
-        (repo / 'legacy/ajuste.sql').write_bytes(sql.encode())
+    if case in ('renombre-conservado', 'renombre-dividido', 'renombre-fuera'):
+        path = repo / ('ajustes' if case == 'renombre-fuera' else 'legacy') / 'ajuste.sql'
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(git(repo, 'show', 'revisado:legacy/ajuste.sql').stdout)
+    if case == 'vaciado-por-parche':
+        old_file.unlink()
     commit(repo, 'renumerado')
+    if case == 'modo-fuera':
+        (repo / 'parche.txt').chmod(0o755)
+        git(repo, 'update-index', '--chmod=+x', 'parche.txt')
+        git(repo, 'commit', '-qm', 'cambia sólo el modo')
 
     command = [bash, script, 'destino', 'revisado', 'nuevo']
     if case == 'error-python':
@@ -2952,27 +2978,25 @@ for case, failure in cases.items():
             assert 'falló el validador' in result.stderr, (case, result)
             print(f'migración {case} → Python sale con {exit_code}, apto-vigente con 2')
         continue
-    env = with_unknown_message(repo, f'{directory}/{journal}') if case == 'mensaje-desconocido' else None
-    result = subprocess.run(command, cwd=repo, env=env, capture_output=True, encoding='utf-8')
+    result = subprocess.run(command, cwd=repo, capture_output=True, encoding='utf-8')
     assert result.returncode == 0, (case, result)
     lines = result.stdout.splitlines()
     if failure:
         point, reason = failure
-        if (clean and case != 'mensaje-desconocido') or retreat:
+        if outside_edit or retreat or case == 'modo-fuera':
             assert lines[0].startswith('Ronda:'), (case, result)
         else:
             assert lines[0].startswith('Ronda delta:'), (case, result)
             assert f'{directory}/{journal}' in lines, (case, result)
-        assert f'punto {point}:' in lines[-1] and reason in lines[-1], (case, result)
-        if case in ('fuera', 'mensaje-desconocido') or directory_rename:
-            resolution = lines[1].split()
-            assert resolution[:4] == ['Resolución:', 'git', 'diff', '--no-relative'], (case, result)
-        if case == 'fuera' or (directory_rename and not split):
-            changed_path = 'parche.txt' if case == 'fuera' else f'{directory}/ajuste.sql'
-            if directory_rename:
-                assert changed_path in lines, (case, result)
-            paths = git(repo, 'diff', '--name-only', '--no-renames', *resolution[4:]).stdout.splitlines()
-            assert changed_path in paths
+        if point == 'vaciado':
+            added = reason if directory_rename else f'{directory}/{reason}'
+            emptied = added.rpartition('/')[0]
+            assert added in lines, (case, result)
+            assert lines[-1] == f'Directorio vaciado: {emptied}. Archivo añadido: {added}', (case, result)
+            assert lines[1].startswith('Resolución: git diff --no-relative '), (case, result)
+        else:
+            diagnostic = f'Excepción de migraciones: punto {point}:' if point else 'Excepción de catálogos:'
+            assert lines[-1].startswith(diagnostic) and reason in lines[-1], (case, result)
     else:
         assert lines[0].startswith('APTO vigente'), (case, result)
         assert 'Renumeración de Drizzle' in lines[1], (case, result)
@@ -2981,7 +3005,11 @@ for case, failure in cases.items():
             assert f'{directory}/{second["tag"]} → {directory}/{new_second["tag"]}' in lines[1], (case, result)
         if three:
             assert f'{directory}/{third["tag"]} → {directory}/{new_third["tag"]}' in lines[1], (case, result)
-    print(f'migración {case} → {lines[-1] if failure else lines[0]}')
+        if mixed:
+            assert lines[2:] == ['El catálogo se juntó por claves disjuntas:', 'messages/es.json'], result
+    print(f'migración {case} → {lines[0]}')
+    if failure:
+        print(lines[-1])
 PY_MIGRATIONS
 }
 

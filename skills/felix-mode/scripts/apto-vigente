@@ -2,10 +2,10 @@
 # Dice si un APTO sigue vigente cuando el head cambió por incorporar el destino.
 # `APTO vigente` confirma una mezcla limpia sin archivos compartidos o una
 # excepción de catálogos o Drizzle. `Ronda delta` lista archivos compartidos
-# o en conflicto y, con conflictos, el diff de resolución. `Ronda` pide una
-# ronda completa si la mezcla fue limpia y el head difiere sin excepción.
-# Un mensaje de Git que impida la excepción de Drizzle exige ronda delta.
-# Sale con 2 si no puede decidir. Necesita git 2.38+ (2.39+ para Drizzle) y python3.
+# o en conflicto y el diff de resolución cuando corresponde. Las excepciones
+# comparan rutas por blob y modo. `Ronda` pide revisión completa si difiere de
+# la referencia fuera de Drizzle o de la mezcla limpia sin excepción aplicable.
+# Sale con 2 si no puede decidir. Necesita git 2.38+ y python3.
 set -uo pipefail
 fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
 
@@ -39,47 +39,24 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 git init --quiet --bare --template= --object-format="$format" "$scratch" || fail 'no puedo crear el repositorio temporal'
 export GIT_DIR=$scratch GIT_OBJECT_DIRECTORY=$objects
 
-reviewed_base=$(git merge-base "$target" "$reviewed") || fail 'el head revisado no comparte historia con el destino'
 new_base=$(git merge-base "$target" "$new") || fail 'el head nuevo no comparte historia con el destino'
+base=$(git merge-base --all "$reviewed" "$new_base") || fail 'el head revisado no comparte historia con la base nueva'
+[[ "$base" != *$'\n'* ]] || fail 'la base común del head revisado y la base nueva no es única'
 
 # Con directoryRenames=true git mueve sin conflicto un archivo del parche al
 # directorio que el destino renombró, y ninguna de las dos listas lo muestra.
 # Con conflictos, el árbol que escribe lleva los marcadores, y su diff contra el
 # head nuevo es la resolución.
 merge_report=$scratch/merge-report
-LC_ALL=C git -c merge.directoryRenames=conflict merge-tree --write-tree --name-only --messages -z \
+LC_ALL=C git -c merge.directoryRenames=conflict merge-tree --write-tree --name-only --no-messages -z \
     "$new_base" "$reviewed" > "$merge_report" 2>/dev/null
 merge_status=$?
 case $merge_status in
     0|1) ;;
     *) fail 'git merge-tree --write-tree falló' ;;
 esac
-conflicted=''
-{
-    IFS= read -r -d '' auto || fail 'no puedo leer el árbol de la mezcla'
-    while IFS= read -r -d '' file && [ -n "$file" ]; do
-        case "$file" in *$'\n'*) printf -v file '%q' "$file" ;; esac
-        conflicted+=$file$'\n'
-    done
-} < "$merge_report"
-tree=$(git rev-parse --verify --quiet "$new^{tree}") || fail "no puedo leer el árbol de $new"
-# Rutas cuya entrada difiere entre dos árboles. Salen de `git ls-tree`, que
-# lista entradas y no tiene opciones de diff que escondan una.
-changed() (
-    export LC_ALL=C
-    { git ls-tree -r --full-tree "$1" && git ls-tree -r --full-tree "$2"; } | sort | uniq -u | cut -f2- | sort -u
-)
-patch=$(changed "$reviewed_base" "$reviewed") || fail 'no puedo listar el parche revisado'
-incoming=$(changed "$reviewed_base" "$new_base") || fail 'no puedo listar los cambios del destino'
-shared=''
-while IFS= read -r file; do
-    [ -n "$file" ] || continue
-    case $'\n'"$incoming"$'\n' in *$'\n'"$file"$'\n'*) shared+=$file$'\n' ;; esac
-done <<< "$patch"
-# Las excepciones leen los objetos del mismo repositorio aislado.
-sync_exceptions() {
-    python3 -I - "$reviewed_base" "$reviewed" "$new_base" "$tree" "$auto" "$shared" "$merge_report" <<'PY_EXCEPTIONS'
-import ast
+# El veredicto y las excepciones leen los objetos del mismo repositorio aislado.
+python3 -I - "$base" "$reviewed" "$new_base" "$new" "$merge_status" "$merge_report" <<'PY_EXCEPTIONS' || fail 'falló el validador de excepciones'
 import json
 import re
 import subprocess
@@ -164,7 +141,7 @@ def union(base, mine, theirs):
     return result
 
 
-MIGRATION = re.compile(r'(?:(.*/))?(?:[^/]+\.sql|meta/(?:_journal|[^/]+_snapshot)\.json)')
+JOURNAL = 'meta/_journal.json'
 SNAPSHOT = re.compile(r'meta/[^/]+_snapshot\.json')
 NUMBERED_SNAPSHOT = re.compile(r'meta/[0-9]{4}_snapshot\.json')
 TAG = re.compile(r'[0-9]{4}_[^/\x00]+')
@@ -341,120 +318,128 @@ def migration_pairs(trees):
         raise ValueError(f'punto {point}: {error}') from error
 
 
-def paths(lines):
-    return {ast.literal_eval('b' + path).decode('utf-8', 'surrogateescape')
-            if path.startswith('"') else path
-            for path in lines.split('\n') if path}
+def compare(trees):
+    base, reviewed, target, new = trees
+    shared, different = set(), set()
+    for path in base.keys() | reviewed.keys() | target.keys() | new.keys():
+        original, mine, theirs, candidate = (files.get(path) for files in trees)
+        if mine == original:
+            reference = theirs
+        elif theirs == original or mine == theirs:
+            reference = mine
+        else:
+            shared.add(path)
+            continue
+        if candidate != reference:
+            different.add(path)
+    return shared, different
 
 
-def rejected_message(messages, dirs):
-    fields = messages.split('\0')
-    offset = 0
-    # Git separa cada mensaje en número de rutas, rutas, tipo estable y texto.
-    while offset < len(fields) - 1 or fields[offset]:
-        count = fields[offset]
-        if not count.isascii() or not count.isdecimal():
-            return ' '.join(fields[offset:]).rstrip()
-        end = offset + 1 + int(count)
-        if end + 2 >= len(fields):
-            return ' '.join(fields[offset:]).rstrip()
-        named_paths = fields[offset + 1:end]
-        kind, message = fields[end:end + 2]
-        # Git agrupa content, add/add y submodule bajo el tipo contents.
-        allowed = kind in {'Auto-merging', 'CONFLICT (content)', 'CONFLICT (add/add)'} or (
-            kind == 'CONFLICT (contents)' and message.startswith(('CONFLICT (content): ', 'CONFLICT (add/add): ')))
-        if not allowed or not named_paths or not all(
-                path and any(path.startswith(prefix) for prefix in dirs) for path in named_paths):
-            return message.rstrip() or kind or count
-        offset = end + 2
-    return None
+def parent_dirs(path):
+    parent = path.rpartition('/')[0]
+    while parent:
+        yield parent
+        parent = parent.rpartition('/')[0]
 
 
-dirs = set()
-try:
-    shared = paths(sys.argv[6])
-    with open(sys.argv[7], encoding='utf-8', errors='surrogateescape', newline='') as report:
-        stages, separator, messages = report.read().partition('\0\0')
-    if not separator:
-        raise RuntimeError('informe de mezcla sin separador')
-    conflicts = set(stages.split('\0')[1:])
-    overlap = shared | conflicts
-    trees = [inventory(revision) for revision in sys.argv[1:5]]
-    migration_paths = set()
-    for path in overlap:
-        match = MIGRATION.fullmatch(path)
-        if match:
-            prefix = match[1] or ''
-            if any(prefix + 'meta/_journal.json' in files for files in trees):
-                dirs.add(prefix)
-                migration_paths.add(path)
-    catalogs = overlap - migration_paths
-    if not dirs and conflicts:
-        sys.exit(3)
-    if dirs:
-        message = rejected_message(messages, dirs)
-        if message is not None:
-            print(f'Excepción de migraciones: punto 1: {message}')
-            sys.exit(4)
-        ancestor = subprocess.run(['git', 'merge-base', '--is-ancestor', sys.argv[1], sys.argv[3]],
-                                  capture_output=True)
-        if ancestor.returncode != 1:
-            ancestor.check_returncode()
-        require(ancestor.returncode == 0, 'punto 1: la base nueva no incorpora la base revisada')
-        require(not (conflicts & catalogs), 'punto 1: hay conflictos fuera de las migraciones')
-        auto = inventory(sys.argv[5])
-        require(all(any(path.startswith(prefix) for prefix in dirs) for path in changes(auto, trees[-1])),
-                'punto 1: el árbol fuera de las migraciones difiere de la mezcla')
-    elif sys.argv[5] != sys.argv[4]:
-        sys.exit(3)
+def emptied_additions(trees):
+    base, reviewed, target = ({path for path, entry in files.items()
+                               if not entry.startswith(b'040000 tree ')} for files in trees[:3])
+    base_dirs = {parent for path in base for parent in parent_dirs(path)}
+    additions = {}
+    for emptied_side, adding_side in ((reviewed, target), (target, reviewed)):
+        emptied = base_dirs - {parent for path in emptied_side for parent in parent_dirs(path)}
+        for path in adding_side - base:
+            for parent in parent_dirs(path):
+                if parent in emptied:
+                    additions[path] = parent
+                    break
+    return additions
+
+
+def assess(trees, shared, dirs):
+    catalogs = {path for path in shared if not path.startswith(dirs)}
+    other = {path for path in catalogs if not CATALOG.fullmatch(path)}
+    if other:
+        return [], f'punto 1: ruta compartida sin excepción: {display_path(min(other))}'
     try:
         valid_catalogs = catalogs_disjoint(catalogs, trees)
     except (ValueError, RecursionError):
         valid_catalogs = False
-    require(valid_catalogs, 'punto 1: hay archivos compartidos sin excepción de catálogos')
-
+    if not valid_catalogs:
+        return [], 'el head nuevo no es la unión de altas disjuntas'
     movements = []
-    for prefix in sorted(dirs):
-        local = [{path[len(prefix):]: entry for path, entry in files.items() if path.startswith(prefix)}
-                 for files in trees]
-        movements.extend(f'{prefix}{old} → {prefix}{tag}' for old, tag in migration_pairs(local))
+    try:
+        for prefix in dirs:
+            local = [{path[len(prefix):]: entry for path, entry in files.items() if path.startswith(prefix)}
+                     for files in trees]
+            movements.extend(f'{prefix}{old} → {prefix}{tag}' for old, tag in migration_pairs(local))
+    except ValueError as error:
+        return [], str(error)
+    lines = []
     if movements:
-        print('Renumeración de Drizzle verificada: ' + ', '.join(movements))
+        lines.append('Renumeración de Drizzle verificada: ' + ', '.join(movements))
     if catalogs:
-        print('El catálogo se juntó por claves disjuntas:')
-        print(*sorted(catalogs), sep='\n')
-except (ValueError, RecursionError) as error:
-    if dirs:
-        print(f'Excepción de migraciones: {error}')
-    sys.exit(3)
-PY_EXCEPTIONS
-}
+        lines.extend(['El catálogo se juntó por claves disjuntas:', *map(display_path, sorted(catalogs))])
+    return lines, None
 
-exception=''
-# El código interno 3 indica rechazo. El 4 indica rechazo por un mensaje de Git.
-exception_status=3
-if [ -n "$shared$conflicted" ]; then
-    exception=$(sync_exceptions)
-    exception_status=$?
-    case $exception_status in
-        0|3|4) ;;
-        *) fail 'falló el validador de excepciones' ;;
-    esac
-fi
-if [ "$exception_status" = 0 ] ||
-   { [ "$merge_status" = 0 ] && [ "$auto" = "$tree" ] && [ -z "$shared" ]; }; then
-    printf 'APTO vigente: %s es %s más %s, árbol %s\n' \
-        "$(git rev-parse --short "$new")" "$(git rev-parse --short "$reviewed")" "$(git rev-parse --short "$new_base")" "$tree"
-elif [ "$merge_status" = 1 ]; then
-    printf 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos\nResolución: git diff --no-relative %s %s\n' "$auto" "$new"
-    printf '%s\n%s' "$conflicted" "$shared" | sed '/^$/d' | LC_ALL=C sort -u
-elif [ "$auto" != "$tree" ] && [ "$exception_status" != 4 ]; then
-    printf 'Ronda: el head nuevo no es la mezcla del head revisado con el destino\n'
-else
-    printf 'Ronda delta: el destino cambió archivos del parche\n'
-    if [ "$auto" != "$tree" ]; then
-        printf 'Resolución: git diff --no-relative %s %s\n' "$auto" "$new"
-    fi
-    printf '%s' "$shared"
-fi
-if [ -n "$exception" ]; then printf '%s\n' "$exception"; fi
+
+def display_path(path):
+    return json.dumps(path) if '\n' in path else path
+
+
+CATALOG = re.compile(r'(?:.*/)?(?:messages|translations)/[^/]+\.json')
+base, reviewed, target, new, merge_status, report_path = sys.argv[1:]
+with open(report_path, 'rb') as report:
+    auto, *conflicts, terminator = report.read().split(b'\0')
+if not re.fullmatch(rb'[0-9a-f]{40}|[0-9a-f]{64}', auto) or terminator:
+    raise RuntimeError('informe de mezcla sin árbol o sin separador final')
+auto = auto.decode('ascii')
+conflicts = {path.decode('utf-8', 'surrogateescape') for path in conflicts if path}
+tree = git('rev-parse', new + '^{tree}').decode('ascii').strip()
+trees = [inventory(revision) for revision in (base, reviewed, target, tree)]
+shared, different = compare(trees)
+emptied = emptied_additions(trees)
+shared.update(emptied)
+different.difference_update(emptied)
+migration_dirs = {path[:-len(JOURNAL)] for files in trees for path in files
+                  if path == JOURNAL or path.endswith('/' + JOURNAL)}
+dirs = tuple(sorted(prefix for prefix in migration_dirs
+                    if any(path.startswith(prefix) for path in shared | different)))
+outside = {path for path in different if not path.startswith(dirs)}
+has_exception = bool(dirs or any(CATALOG.fullmatch(path) for path in shared))
+# La regla de mezcla limpia también cuenta las ediciones iguales en ambos lados.
+overlap = changes(trees[0], trees[1]) & changes(trees[0], trees[2])
+ordinary = merge_status == '0' and auto == tree and not overlap and not emptied
+
+details, error = [], None
+if emptied:
+    details = [f'Directorio vaciado: {display_path(emptied[path])}. Archivo añadido: {display_path(path)}'
+               for path in sorted(emptied)]
+elif has_exception and not ordinary:
+    if outside:
+        error = 'punto 1: el árbol fuera de las migraciones difiere de la referencia: ' + display_path(min(outside))
+    else:
+        details, error = assess(trees, shared, dirs)
+    if error:
+        label = 'catálogos' if not dirs or not error.startswith('punto ') else 'migraciones'
+        details = [f'Excepción de {label}: {error}']
+
+if ordinary or (has_exception and error is None and not emptied):
+    new_short, reviewed_short, target_short = (git('rev-parse', '--short', revision).decode('ascii').strip()
+                                               for revision in (new, reviewed, target))
+    print(f'APTO vigente: {new_short} es {reviewed_short} más {target_short}, árbol {tree}')
+elif not emptied and ((has_exception and outside)
+                     or (merge_status == '0' and auto != tree and (not has_exception or not shared))):
+    print('Ronda: el head nuevo no es la mezcla del head revisado con el destino')
+else:
+    reason = ('la mezcla del head revisado con el destino tiene conflictos' if merge_status == '1'
+              else 'el destino cambió archivos del parche')
+    print(f'Ronda delta: {reason}')
+    if merge_status == '1' or auto != tree:
+        print(f'Resolución: git diff --no-relative {auto} {new}')
+    for path in sorted(conflicts | (shared if has_exception or emptied else overlap)):
+        print(display_path(path))
+for line in details:
+    print(line)
+PY_EXCEPTIONS

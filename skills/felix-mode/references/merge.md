@@ -245,32 +245,38 @@ restantes y la separación entre propietario, verificador y stacker.
    de esta skill y sigue su primera línea:
    - `APTO vigente`: el head nuevo es sólo la mezcla sin conflictos del head
      revisado con la rama destino, y esa rama no cambió archivos del parche.
-     También lo conserva si los únicos archivos compartidos son catálogos
+     También lo conserva si las rutas compartidas son de Drizzle o son catálogos
      `messages/*.json` o `translations/*.json` (en cualquier directorio),
      objetos anidados de cadenas: ambos lados sólo agregan claves disjuntas
      y el catálogo nuevo es exactamente su unión. La segunda línea confirma
      esa excepción. Valores cambiados, claves borradas o duplicadas, JSON
-     inválido y conflictos exigen revisión. El APTO sigue vigente sin ronda
+     inválido exigen revisión. El APTO sigue vigente sin ronda
      nueva; guarda la salida con la prueba del paso 2.
-     Lo mismo vale si los archivos compartidos o en conflicto son de un
-     directorio de Drizzle y la sincronización sólo renumeró sus
+     Para cada directorio de Drizzle con rutas compartidas o diferencias
+     frente a la referencia, la sincronización sólo puede renumerar sus
      migraciones: el journal de la base sigue intacto y le siguen las altas
      revisadas en orden, su SQL no cambió, y los snapshots nuevos encadenan
      con los de la base y reproducen el esquema por mezcla de tres vías.
-     Fuera de ese directorio, el árbol es la mezcla limpia y la mezcla sólo
-     emite `Auto-merging`, `CONFLICT (content)` o `CONFLICT (add/add)` sobre
-     rutas de migraciones. La segunda línea
+     Fuera de Drizzle, cada ruta no compartida debe conservar el blob y
+     modo que resultan de comparar el head revisado y la base nueva con su
+     base común, ruta por ruta y sin detectar renombres. Una ruta es
+     compartida si ambos lados la cambian de forma distinta. La segunda línea
      lista cada `viejo → nuevo`. Si el delta incluye catálogos y migraciones,
      cada parte debe cumplir su excepción.
+     Si un lado deja sin archivos un directorio que los tenía en la base
+     común y el otro añade un archivo bajo él, esa alta cuenta como
+     compartida y exige `Ronda delta`. El diagnóstico nombra el directorio
+     vaciado y el archivo añadido. La regla también rige dentro de Drizzle.
    - `Ronda delta`: la rama destino cambió los archivos del parche que
      lista, o la mezcla tuvo conflictos. La lista incluye los archivos en
      conflicto. Si aparece `Resolución`, revisa también ese diff contra la
      mezcla automática. Corre una ronda delta sobre esos cambios. Es una
      ronda de sincronización. Si se rechaza la excepción de Drizzle, la
      última línea `Excepción de migraciones: punto N: …` indica qué falló.
-     Si la mezcla fue limpia y el head difiere sin cumplir la excepción, la
-     salida es `Ronda`, salvo si un mensaje de Git rechazó la excepción de
-     Drizzle.
+     Si se rechaza la unión de un catálogo, aparece `Excepción de catálogos`.
+     Si el head difiere de la referencia en una ruta no compartida fuera de
+     Drizzle, la excepción se rechaza con `Ronda`. En una mezcla limpia sin
+     archivos compartidos, el head debe coincidir con la mezcla automática.
    - `Ronda`, o un error del script: corre la ronda que fija **Rondas**.
 
    Una ronda de sincronización no cuenta para el límite de **Rondas**. Las
