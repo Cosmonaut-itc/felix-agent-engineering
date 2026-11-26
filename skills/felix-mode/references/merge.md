@@ -252,8 +252,9 @@ restantes y la separación entre propietario, verificador y stacker.
      esa excepción. Valores cambiados, claves borradas o duplicadas, JSON
      inválido exigen revisión. El APTO sigue vigente sin ronda
      nueva; guarda la salida con la prueba del paso 2.
-     Para cada directorio de Drizzle con rutas compartidas o diferencias
-     frente a la referencia, la sincronización sólo puede renumerar sus
+     Un directorio de Drizzle tiene `meta/_journal.json` en la base común,
+     el head revisado o la base nueva. Para cada uno con rutas compartidas
+     o diferencias frente a la referencia, la sincronización sólo puede renumerar sus
      migraciones: el journal de la base sigue intacto y le siguen las altas
      revisadas en orden, su SQL no cambió, y los snapshots nuevos encadenan
      con los de la base y reproducen el esquema por mezcla de tres vías.
@@ -265,8 +266,9 @@ restantes y la separación entre propietario, verificador y stacker.
      cada parte debe cumplir su excepción.
      Si un lado deja sin archivos un directorio que los tenía en la base
      común y el otro añade un archivo bajo él, esa alta cuenta como
-     compartida y exige `Ronda delta`. El diagnóstico nombra el directorio
-     vaciado y el archivo añadido. La regla también rige dentro de Drizzle.
+     compartida y exige `Ronda delta` si no hay motivo para `Ronda`. El
+     diagnóstico nombra el directorio vaciado y el archivo añadido. La
+     regla también rige dentro de Drizzle.
    - `Ronda delta`: la rama destino cambió los archivos del parche que
      lista, o la mezcla tuvo conflictos. La lista incluye los archivos en
      conflicto. Si aparece `Resolución`, revisa también ese diff contra la
@@ -274,10 +276,15 @@ restantes y la separación entre propietario, verificador y stacker.
      ronda de sincronización. Si se rechaza la excepción de Drizzle, la
      última línea `Excepción de migraciones: punto N: …` indica qué falló.
      Si se rechaza la unión de un catálogo, aparece `Excepción de catálogos`.
+     Un conflicto de Git fuera de Drizzle en una ruta no compartida veta
+     la excepción. El diagnóstico nombra la ruta.
      Si el head difiere de la referencia en una ruta no compartida fuera de
-     Drizzle, la excepción se rechaza con `Ronda`. En una mezcla limpia sin
-     archivos compartidos, el head debe coincidir con la mezcla automática.
+     Drizzle, la excepción se rechaza con `Ronda`, aunque haya un directorio
+     vaciado. En una mezcla limpia sin archivos compartidos, el head debe
+     coincidir con la mezcla automática.
    - `Ronda`, o un error del script: corre la ronda que fija **Rondas**.
+     Si el destino y el head nuevo tienen varias bases comunes óptimas,
+     el script sale con 2 antes del veredicto.
 
    Una ronda de sincronización no cuenta para el límite de **Rondas**. Las
    demás rondas sí cuentan. Un veredicto de

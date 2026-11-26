@@ -1,11 +1,11 @@
 #!/bin/bash
 # Dice si un APTO sigue vigente cuando el head cambió por incorporar el destino.
 # `APTO vigente` confirma una mezcla limpia sin archivos compartidos o una
-# excepción de catálogos o Drizzle. `Ronda delta` lista archivos compartidos
-# o en conflicto y el diff de resolución cuando corresponde. Las excepciones
-# comparan rutas por blob y modo. `Ronda` pide revisión completa si difiere de
-# la referencia fuera de Drizzle o de la mezcla limpia sin excepción aplicable.
-# Sale con 2 si no puede decidir. Necesita git 2.38+ y python3.
+# excepción de catálogos o Drizzle. Las excepciones comparan rutas por blob y modo.
+# Drizzle se detecta en la base común, el head revisado y la base nueva.
+# `Ronda` tiene prioridad ante diferencias no compartidas fuera de Drizzle.
+# `Ronda delta` lista rutas y resolución. Un conflicto no compartido fuera de Drizzle veta la excepción.
+# Sale con 2 si no puede decidir o si la base nueva es ambigua. Requiere git 2.38+ y python3.
 set -uo pipefail
 fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
 
@@ -39,7 +39,8 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 git init --quiet --bare --template= --object-format="$format" "$scratch" || fail 'no puedo crear el repositorio temporal'
 export GIT_DIR=$scratch GIT_OBJECT_DIRECTORY=$objects
 
-new_base=$(git merge-base "$target" "$new") || fail 'el head nuevo no comparte historia con el destino'
+new_base=$(git merge-base --all "$target" "$new") || fail 'el head nuevo no comparte historia con el destino'
+[[ "$new_base" != *$'\n'* ]] || fail 'la base común del destino y el head nuevo no es única'
 base=$(git merge-base --all "$reviewed" "$new_base") || fail 'el head revisado no comparte historia con la base nueva'
 [[ "$base" != *$'\n'* ]] || fail 'la base común del head revisado y la base nueva no es única'
 
@@ -402,35 +403,43 @@ shared, different = compare(trees)
 emptied = emptied_additions(trees)
 shared.update(emptied)
 different.difference_update(emptied)
-migration_dirs = {path[:-len(JOURNAL)] for files in trees for path in files
-                  if path == JOURNAL or path.endswith('/' + JOURNAL)}
+migration_dirs = tuple({path[:-len(JOURNAL)] for files in trees[:3] for path in files
+                        if path == JOURNAL or path.endswith('/' + JOURNAL)})
 dirs = tuple(sorted(prefix for prefix in migration_dirs
                     if any(path.startswith(prefix) for path in shared | different)))
 outside = {path for path in different if not path.startswith(dirs)}
-has_exception = bool(dirs or any(CATALOG.fullmatch(path) for path in shared))
+has_exception = bool(emptied or dirs or any(CATALOG.fullmatch(path) for path in shared))
+unshared_conflicts = {path for path in conflicts - shared if not path.startswith(migration_dirs)}
+full_round = has_exception and bool(outside)
 # La regla de mezcla limpia también cuenta las ediciones iguales en ambos lados.
 overlap = changes(trees[0], trees[1]) & changes(trees[0], trees[2])
-ordinary = merge_status == '0' and auto == tree and not overlap and not emptied
+ordinary = merge_status == '0' and auto == tree and not overlap and not emptied and not full_round
 
-details, error = [], None
-if emptied:
+details, accepted = [], False
+if full_round:
+    prefix = 'Excepción: '
+    if dirs:
+        prefix = 'Excepción de migraciones: punto 1: '
+    elif not emptied:
+        prefix = 'Excepción de catálogos: punto 1: '
+    details = [prefix + 'el árbol fuera de las migraciones difiere de la referencia: ' + display_path(min(outside))]
+elif has_exception and (emptied or unshared_conflicts):
     details = [f'Directorio vaciado: {display_path(emptied[path])}. Archivo añadido: {display_path(path)}'
                for path in sorted(emptied)]
+    details.extend(f'Excepción: conflicto de la mezcla en una ruta no compartida: {display_path(path)}'
+                   for path in sorted(unshared_conflicts))
 elif has_exception and not ordinary:
-    if outside:
-        error = 'punto 1: el árbol fuera de las migraciones difiere de la referencia: ' + display_path(min(outside))
-    else:
-        details, error = assess(trees, shared, dirs)
+    details, error = assess(trees, shared, dirs)
+    accepted = error is None
     if error:
         label = 'catálogos' if not dirs or not error.startswith('punto ') else 'migraciones'
         details = [f'Excepción de {label}: {error}']
 
-if ordinary or (has_exception and error is None and not emptied):
+if ordinary or accepted:
     new_short, reviewed_short, target_short = (git('rev-parse', '--short', revision).decode('ascii').strip()
                                                for revision in (new, reviewed, target))
     print(f'APTO vigente: {new_short} es {reviewed_short} más {target_short}, árbol {tree}')
-elif not emptied and ((has_exception and outside)
-                     or (merge_status == '0' and auto != tree and (not has_exception or not shared))):
+elif full_round or (merge_status == '0' and auto != tree and (not has_exception or not shared)):
     print('Ronda: el head nuevo no es la mezcla del head revisado con el destino')
 else:
     reason = ('la mezcla del head revisado con el destino tiene conflictos' if merge_status == '1'
@@ -438,7 +447,7 @@ else:
     print(f'Ronda delta: {reason}')
     if merge_status == '1' or auto != tree:
         print(f'Resolución: git diff --no-relative {auto} {new}')
-    for path in sorted(conflicts | (shared if has_exception or emptied else overlap)):
+    for path in sorted(conflicts | (shared if has_exception else overlap)):
         print(display_path(path))
 for line in details:
     print(line)
