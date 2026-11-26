@@ -33,6 +33,53 @@ ERRORES_LECTURA = (OSError, ValueError, KeyError, TypeError, subprocess.Subproce
 SIN_LEER = object()
 
 
+class LimiteGitHub(Exception):
+    def __init__(self, recurso, reinicio):
+        super().__init__(recurso, reinicio)
+        self.recurso = recurso
+        self.reinicio = reinicio
+
+
+def segundos(valor):
+    try:
+        numero = int(valor)
+        if 0 <= numero <= 253402300799:
+            return numero
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def limite_http(codigo, cabeceras, mensaje):
+    if codigo not in (403, 429):
+        return None
+    agotado = cabeceras.get("x-ratelimit-remaining") == "0"
+    if not (agotado or "retry-after" in cabeceras or "rate limit" in mensaje):
+        return None
+    recurso = cabeceras.get("x-ratelimit-resource", "core")
+    if recurso not in ("core", "graphql"):
+        recurso = "core"
+    if "secondary rate limit" in mensaje or (not agotado and
+            ("retry-after" in cabeceras or codigo == 429)):
+        recurso = "secondary"
+    reinicio = segundos(cabeceras.get("x-ratelimit-reset"))
+    espera = segundos(cabeceras.get("retry-after"))
+    if espera is not None and (recurso == "secondary" or reinicio is None):
+        reinicio = min(int(time.time()) + espera, 253402300799)
+    # GitHub indica esperar al menos un minuto si el límite secundario no da plazo.
+    return LimiteGitHub(recurso, reinicio if reinicio is not None else int(time.time()) + 60)
+
+
+def siguiente_pagina(link):
+    siguiente = re.search(r'<([^>]+)>\s*;\s*rel="next"', link)
+    if siguiente is not None:
+        url = urlparse(siguiente[1])
+        if url.scheme == "https" and url.netloc == "api.github.com" and url.path:
+            return url._replace(scheme="", netloc="", fragment="").geturl().lstrip("/")
+        raise ValueError("página siguiente inválida")
+    return None
+
+
 class Observador(Protocol):
     def observar(self, estado, ahora):
         # type: (...) -> Observacion
@@ -78,7 +125,7 @@ def sha(valor):
 
 class GitHubGit:
     def __init__(self, config, ejecutar=None, sombra=False, activo=False, almacen=None,
-                 paralelas=1):
+                 paralelas=1, cache=None):
         # La sombra y --seco nunca traen objetos: sólo el tick activo recibe almacén.
         if almacen is not None and (sombra or not activo):
             raise ValueError("almacén sólo para el tick activo")
@@ -88,6 +135,7 @@ class GitHubGit:
         self.activo = activo
         self.almacen = almacen
         self.paralelas = paralelas
+        self.cache = cache
         self._autorizados_observacion = SIN_LEER
         self.reloj = time.monotonic
         self.reiniciar_transporte()
@@ -102,11 +150,70 @@ class GitHubGit:
                             timeout=60).stdout
 
     def api(self, endpoint, paginado=False):
+        if self.cache is not None:
+            paginas = []
+            while endpoint is not None:
+                valor, siguiente = self._pagina(endpoint)
+                if not paginado:
+                    return valor
+                paginas.append(valor)
+                endpoint = siguiente
+            return paginas
         args = ["gh", "api", "--method", "GET", endpoint]
         if paginado:
             args += ["--paginate", "--slurp"]
-        valor = json.loads(self.comando(args))
-        return valor
+        try:
+            return json.loads(self.comando(args))
+        except subprocess.CalledProcessError as exc:
+            mensaje = (exc.stderr or "").lower()
+            if "rate limit" not in mensaje:
+                raise
+            recurso = "secondary" if "secondary rate limit" in mensaje else "core"
+            reinicio = None
+            try:
+                recursos = json.loads(self.comando(
+                    ["gh", "api", "--method", "GET", "rate_limit"]))["resources"]
+                reinicio = segundos(recursos["core"]["reset"])
+            except ERRORES_LECTURA:
+                pass
+            raise LimiteGitHub(recurso, reinicio if reinicio is not None else
+                              int(time.time()) + 60) from None
+
+    def _pagina(self, endpoint):
+        args = ["gh", "api", "--method", "GET", endpoint, "-i"]
+        fila = self.cache.leer(endpoint)
+        if fila is not None:
+            try:
+                anterior = json.loads(fila[1])
+            except ValueError:
+                fila = None
+        try:
+            salida = self.comando(args + ["-H", "If-None-Match: " + fila[0]] if fila else args)
+            error = None
+        except subprocess.CalledProcessError as exc:
+            salida, error = exc.output or "", exc
+        bloque, separador, cuerpo = salida.replace("\r\n", "\n").partition("\n\n")
+        estado, _, encabezados = bloque.partition("\n")
+        match = re.fullmatch(r"HTTP/\S+ (\d{3})(?: .*)?", estado)
+        if match is not None and separador:
+            codigo = int(match[1])
+            cabeceras = {k.lower(): v.strip() for k, _, v in
+                         (linea.partition(":") for linea in encabezados.splitlines())}
+            if codigo == 200 and error is None:
+                valor = json.loads(cuerpo)
+                siguiente = siguiente_pagina(cabeceras.get("link", ""))
+                self.cache.guardar(endpoint, cabeceras.get("etag"), cuerpo, siguiente)
+                return valor, siguiente
+            if codigo == 304 and fila is not None:
+                self.cache.tocar(endpoint, fila[0])
+                return anterior, fila[2]
+            stderr = (error.stderr or "") if error else ""
+            limite = limite_http(codigo, cabeceras, (cuerpo + "\n" + stderr).lower())
+            if limite is not None:
+                raise limite from None
+        if error is not None:
+            raise error
+        raise subprocess.CalledProcessError(1, args, output=salida)
 
     def git(self, *args):
         return self.comando(["git", "-C", self.config["git"], *args]).strip()
