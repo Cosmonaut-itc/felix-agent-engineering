@@ -84,9 +84,9 @@ def leer_recibo(log, codigo, commit, modo, filtros, *, host):
     if codigo == 64:
         return RechazoLanzador(str(Path(log).with_name('coordinador.log')))
     try:
-        # Un 75 del desk puede dejar salida de pruebas sin texto UTF-8.
-        lineas = Path(log).read_text(
-            encoding='utf-8', errors='replace' if codigo == 75 else 'strict').splitlines()
+        # Boat y un 75 del desk pueden traer salida de pruebas con bytes no UTF-8.
+        errores = 'replace' if host == 'boat' or codigo == 75 else 'strict'
+        lineas = Path(log).read_text(encoding='utf-8', errors=errores).splitlines()
     except OSError:
         lineas = []
     except UnicodeError:
@@ -100,10 +100,9 @@ def leer_recibo(log, codigo, commit, modo, filtros, *, host):
         coordinador = str(Path(log).with_name('coordinador.log'))
         if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas:
             return RechazoLanzador(coordinador, 'corrida-interrumpida')
-        # Boat republica el resultado terminal al reenviar la misma identidad.
-        if (host == 'boat' and f'EXIT={codigo}' in lineas and
-                any(linea.startswith('RESULT ') and f'exit={codigo}' in linea.split()
-                    for linea in lineas)):
+        # Boat sólo deja este encabezado al publicar, también si cae al desk.
+        if host == 'boat' and any(re.fullmatch(
+                r'HOST=(?:boat|desktop) fallback=.+ run_id=\S+', linea) for linea in lineas):
             return RechazoLanzador(str(log), 'boat-sin-recibo')
         return RechazoLanzador(coordinador, 'salida-sin-recibo')
     exigir(len(recibos) == 1, 'salida-sin-recibo')
@@ -372,10 +371,13 @@ class Jale:
             except ResultadoInvalido as exc:
                 recibos.append(exc)
         rechazos = [r for r in recibos if isinstance(r, RechazoLanzador)]
-        if not any(r.detalle == 'cobertura-parcial-boat' for r in rechazos):
-            for r in recibos:
-                if isinstance(r, ResultadoInvalido):
-                    raise r
+        invalidos = [r for r in recibos if isinstance(r, ResultadoInvalido)]
+        # Sin salida durable, el mismo intento debe poder recuperar la corrida.
+        for r in invalidos:
+            if r.resultado.codigo == 'corrida-interrumpida':
+                raise r
+        if invalidos and not rechazos:
+            raise invalidos[0]
         if reenganche and any(proceso is False and
                               str(registro / 'coordinador.log') == reenganche[1]
                               for _, registro, proceso in lanzadas):
