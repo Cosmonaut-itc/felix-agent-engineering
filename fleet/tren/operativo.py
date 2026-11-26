@@ -14,8 +14,8 @@ import time
 
 from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
                      Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, base_vieja, clave,
-                     datos, desde_datos, paso)
-from efectos import EfectoFallido, ejecutar, prelanzar_ci
+                     datos, desde_datos, paso, recibo_ci)
+from efectos import EfectoFallido, ejecutar, prelanzar_ci, suite_autorizada
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
 from operador import FalloSnapshot, Snapshots
@@ -24,15 +24,16 @@ from preaterrizaje import Previo
 
 EJECUTABLES = frozenset(("armar-candidato", "solicitar-ci", "iniciar-suite",
                         "reanudar-suite", "repetir", "armar-subconjunto", "promover")) | FEEDBACK
+EFECTOS_SUITE = ("iniciar-suite", "reanudar-suite", "repetir")
 CAMPOS_RESULTADO = ("candidato", "suite", "conflicto_cadena", "main", "tren_id",
                     "intento_promocion", "rama_ocupada", "resultado_suite",
                     "suite_intento", "repeticion", "reproduccion_id")
 
 
-def resultado_observacion(efecto, observacion):
+def resultado_observacion(efecto, observacion, *, conserva_ci=True):
     campos = CAMPOS_RESULTADO
-    if efecto.tipo == "iniciar-suite":
-        # Evidencia de CI con la que se lanzó la suite, ligada al mismo C.
+    if efecto.tipo == "iniciar-suite" and conserva_ci:
+        # Evidencia de CI con la que se emitió el efecto de suite.
         campos += ("ci_candidato", "ci_recibo")
     return {k: datos(getattr(observacion, k)) for k in campos}
 
@@ -182,6 +183,23 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 detalle="checkout-operador:" + str(previo.fallo_snapshot)))
         return nuevo
 
+    def suite_de_ci_vigente(tren):
+        # El IO de la suite empieza con su primer efecto-iniciado: drenar no
+        # inicia iniciar-suite sin el verde de la solicitud vigente. Ese verde
+        # llega después del primer efecto-iniciado del solicitar-ci de N.
+        # Reiniciar una fila no cambia la solicitud con la que empezó.
+        if not isinstance(tren.fase, EsperandoCI):
+            return False
+        inicio = ledger.primer_inicio(repo, clave("suite", tren.id))
+        if inicio is None or not tren.fase.solicitud:
+            return inicio is not None
+        ci = ledger.primer_inicio(repo, clave("ci", tren.id, tren.fase.solicitud))
+        return ci is not None and ci < inicio
+
+    def suite_de_ci_anterior(tren):
+        return (isinstance(tren.fase, EsperandoCI) and tren.fase.solicitud > 0 and
+                not suite_de_ci_vigente(tren))
+
     previo.limpiar(estado)
     observacion = observador.observar(estado, ahora)
     activo = next((t for t in estado.trenes if not isinstance(t.fase, Terminal)), None)
@@ -189,7 +207,8 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     if activo is not None and ledger.efecto_iniciado(
             repo, clave("suite", activo.id),
             None if consulta is None else (lambda: consulta(activo.id))):
-        observacion = replace(observacion, suite_iniciada=True)
+        observacion = replace(observacion, suite_iniciada=True,
+                              suite_de_ci_vigente=suite_de_ci_vigente(activo))
     if not estado.pausa and any(isinstance(t.fase, Diagnosticando) for t in estado.trenes):
         observacion = replace(
             observacion, absoluciones_recientes=ledger.absoluciones_recientes(repo, ahora),
@@ -198,16 +217,29 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     previo.limpiar(estado, observacion)
 
     def guardar_paso(nuevo, efectos, consumido=None, fallo=None):
+        cerrados = {t.id for t in nuevo.trenes if isinstance(t.fase, Terminal)}
+        terminales = [t for t in trenes_antes if t.id in cerrados and
+                      not isinstance(t.fase, Terminal)]
         cancelar = getattr(adaptador, "cancelar_corridas", None)
-        prelanzadas = ()
-        if cancelar is not None:
-            cerrados = {t.id for t in nuevo.trenes if isinstance(t.fase, Terminal)}
-            terminales = [t for t in trenes_antes if t.id in cerrados and
-                          not isinstance(t.fase, Terminal)]
-            if terminales:
-                prelanzadas = cancelar(terminales)
+        prelanzadas = cancelar(terminales) if terminales and cancelar is not None else ()
         ledger.guardar_paso(nuevo, efectos, ahora, consumido, fallo_operador=fallo,
-                            prelanzadas=prelanzadas)
+                            prelanzadas=prelanzadas, suites_sin_leer=corridas_sin_leer(
+                                {t.id for t in terminales}, consumido))
+
+    def corridas_sin_leer(cerrados, consumido):
+        consultar = getattr(adaptador, "corridas_sin_leer", None)
+        if consultar is None or not cerrados:
+            return
+        vistos = set()
+        for fila in ledger.outbox(repo):
+            if fila["estado"] == "pendiente" or fila["clave"] == consumido:
+                continue
+            efecto = desde_datos(json.loads(fila["payload"]))
+            if efecto.tipo in EFECTOS_SUITE and efecto.datos[0] in cerrados:
+                for registro, aviso in consultar(efecto):
+                    if registro not in vistos:
+                        vistos.add(registro)
+                        yield aviso
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()
@@ -222,8 +254,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             # Los fallos de suite pueden tener una salida durable del lanzador.
             # Incorporarla antes del paso permite recuperar instalaciones viejas.
             if recuperacion and fila["estado"] != "ejecutando" and not (
-                    fila["estado"] == "fallido" and efecto.tipo in
-                    ("iniciar-suite", "reanudar-suite", "repetir")):
+                    fila["estado"] == "fallido" and efecto.tipo in EFECTOS_SUITE):
                 continue
             if efecto.tipo not in EJECUTABLES:
                 continue
@@ -249,8 +280,16 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 if any(not isinstance(admision_entrada(e, vistas, observacion), Admitido)
                        for e in estado.entradas if e.entrega.recibo in tren.recibos):
                     continue
+            # Una fila emitida con otro verde no autoriza lanzar: iniciarla
+            # adelantaría el efecto-iniciado que fecha el arranque de la suite.
+            if (efecto.tipo == "iniciar-suite" and fila["estado"] == "pendiente" and
+                    isinstance(tren.fase, EsperandoCI) and
+                    not suite_autorizada(estado, tren, observacion)):
+                continue
             intentados.add(efecto.clave)
-            ledger.iniciar_efecto(repo, efecto, ahora)
+            if fila["estado"] != "ejecutando" or efecto.tipo not in EFECTOS_SUITE:
+                ledger.iniciar_efecto(repo, efecto, ahora, limpiar_resultado=(
+                    fila["estado"] == "fallido" and efecto.tipo in EFECTOS_SUITE))
             frontera("antes-ejecutar", efecto)
             try:
                 if feedback:
@@ -258,9 +297,14 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     completo = True
                 else:
                     ejecucion = ejecutar(efecto, estado, observacion, git, adaptador, previo)
-                    resultado = {"observacion": resultado_observacion(efecto, ejecucion.observacion)}
                     if ejecucion.aviso is not None:
                         ledger.evento(repo, "prelanzamiento-fallido", ahora, ejecucion.aviso)
+                    if ejecucion.en_curso:
+                        frontera("efecto-ejecutado", efecto)
+                        continue
+                    ci_anterior = efecto.tipo == "iniciar-suite" and suite_de_ci_anterior(tren)
+                    resultado = {"observacion": resultado_observacion(
+                        efecto, ejecucion.observacion, conserva_ci=not ci_anterior)}
                     completo = ejecucion.completo
                     if not completo:
                         resultado["error"] = "ejecucion-incompleta"
@@ -365,6 +409,17 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             if fila["estado"] == "resultado":
                 recibida = json.loads(fila["resultado"])["observacion"]
                 efecto = desde_datos(json.loads(fila["payload"]))
+                if efecto.tipo == "iniciar-suite":
+                    tren = next((t for t in estado.trenes if t.id == efecto.datos[0]), None)
+                    if tren is None:
+                        continue
+                    if suite_de_ci_anterior(tren):
+                        if (observacion.tren_id != tren.id or observacion.ci_candidato != "verde" or
+                                observacion.ci_recibo != recibo_ci(tren)):
+                            continue
+                        # Un resultado guardado antes de esta versión puede traer otro verde.
+                        recibida.pop("ci_candidato", None)
+                        recibida.pop("ci_recibo", None)
                 if efecto.tipo == "promover":
                     tren = next(t for t in estado.trenes if t.id == efecto.datos[0])
                     if not isinstance(tren.fase, Promoviendo):

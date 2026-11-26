@@ -15,7 +15,7 @@ from test_hasito import B, C, CANDIDATO
 from test_tren import Aislado, estado, observacion, vista
 from adaptadores import seleccionar
 from adaptadores.hasito import Hasito, ResultadoInvalido
-from adaptadores.jale import Jale
+from adaptadores.jale import EN_CURSO, Jale
 from atribucion import planificar
 from dominio import (Candidato, ConflictoCadena, Diagnosticando, Evidencia, Incompleto,
                      Intento, RechazoLanzador, Repeticion, Reproduccion, Terminal, Tren,
@@ -188,7 +188,7 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
 
     def repetir(self, pedido=None, adaptador=None, **kwargs):
         s, commit = pedido or self.pedidos[0]
-        return (adaptador or self.adaptador).repetir(
+        return jale.esperar_resultado((adaptador or self.adaptador).repetir,
             CANDIDATO, self.origen, s, commit, TREN, **kwargs)
 
     def registros(self, pedido):
@@ -238,7 +238,7 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
         base = self.pedidos[1]
         self.assertEqual(base[0].objetivo, 'B')
         self.plan([{}, {'codigo': 75, 'sin_linea': True}])
-        anterior = self.jale(1).repetir(CANDIDATO, self.origen, base[0], base[1], 'lote-anterior')
+        anterior = jale.esperar_resultado(self.jale(1).repetir, CANDIDATO, self.origen, base[0], base[1], 'lote-anterior')
         self.assertIsInstance(anterior, Incompleto)
         self.assertEqual(self.adaptador.adelanto(CANDIDATO, TREN, base[0]), '')
         self.plan([{}])
@@ -268,6 +268,32 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
             with self.assertRaisesRegex(ResultadoInvalido, 'lanzador-no-disponible'):
                 self.repetir(self.pedidos[1])
 
+    def test_fallo_al_lanzar_el_primer_intento_espera_al_segundo(self):
+        self.plan([{'esperar': True}])
+        pedido, commit = self.pedidos[0]
+        primero, segundo = self.registros(self.pedidos[0])
+        popen = subprocess.Popen
+
+        def sin_primero(argv, *args, **kwargs):
+            if argv[-1] == str(primero):
+                raise OSError('sin procesos')
+            return popen(argv, *args, **kwargs)
+
+        with patch('adaptadores.jale.subprocess.Popen', side_effect=sin_primero):
+            self.assertIs(self.adaptador.repetir(
+                CANDIDATO, self.origen, pedido, commit, TREN), EN_CURSO)
+            self.esperar_archivo(self.raiz / 'listo')
+            self.assertTrue(lanzamiento_activo(segundo / 'candado'))
+            self.assertIs(self.adaptador.repetir(
+                CANDIDATO, self.origen, pedido, commit, TREN), EN_CURSO)
+            (self.raiz / 'seguir').touch()
+            self.esperar_archivo(segundo / 'codigo.json')
+            with self.assertRaisesRegex(ResultadoInvalido, 'lanzador-no-disponible'):
+                self.adaptador.repetir(CANDIDATO, self.origen, pedido, commit, TREN)
+        self.assertIsInstance(self.repetir(), Repeticion)
+        self.assertCountEqual([i['log'] for i in self.invocaciones()],
+                              [str(r / 'corrida.log') for r in (primero, segundo)])
+
     def test_otra_instancia_recupera_coordinadores_vivos_y_terminados(self):
         self.plan([{'esperar': True}])
         pedidos = self.pedidos[:2]
@@ -287,10 +313,10 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
         self.plan([{'esperar': True}])
         self.adelantar(self.pedidos[:1])
         with patch('adaptadores.jale.leer_salida') as leer, \
-             patch.object(self.adaptador, 'esperar') as esperar:
+             patch('adaptadores.jale.subprocess.Popen') as popen:
             self.assertIsNone(self.repetir(permitir_lanzar=False))
             leer.assert_not_called()
-            esperar.assert_not_called()
+            popen.assert_not_called()
         (self.raiz / 'seguir').touch()
         confirmada = self.repetir()
         self.assertIsInstance(confirmada, Repeticion)
@@ -537,11 +563,14 @@ class TickTests(ProductorParalelo, unittest.TestCase):
             if punto != 'efecto-ejecutado' or efecto.tipo != 'repetir':
                 return
             fase = self.estado().trenes[0].fase
-            if fase.pendiente.prs:
+            if fase.pendiente.prs and not vistos:
+                esperados = subconjuntos if paralelas > 1 else [fase.subconjunto.C]
+                for sha in esperados:
+                    self.esperar_archivo(self.raiz / ('inicio-' + sha + '-1'))
                 vistos.append({sha for sha in subconjuntos
                               if (self.raiz / ('inicio-' + sha + '-1')).exists()})
 
-        for _ in range(24):
+        for _ in range(40):
             self.tick(frontera=frontera)
             final = self.estado()
             self.assertIsNone(final.pausa, final.pausa)
