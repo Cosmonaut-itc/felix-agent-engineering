@@ -22,11 +22,8 @@ class ContextoR3(ContextoR2):
         self.config['pre_aterrizaje']['plazo_s'] = 10
 
     def combinacion(self):
-        """Contexto nuevo sobre la raíz ya preparada, como un proceso nuevo.
-
-        Comparte rutas, SHA y el entorno de esta instancia; el transporte,
-        la configuración y lo que instrumentar() parchea son propios.
-        """
+        """Comparte rutas, SHA y entorno; transporte, configuración y lo que
+        parchea instrumentar() son propios de cada combinación."""
         c = ContextoR3()
         c.__dict__.update({k: v for k, v in vars(self).items() if not k.startswith('_')})
         c.contexto = Contexto(self.ruta_contexto)
@@ -136,11 +133,10 @@ class RegresionTests(ContextoR3):
 
 class InvarianteTests(unittest.TestCase):
     def test_combinaciones_por_tick_con_origen_y_gancho_reales(self):
-        # preparar() deja el mismo tren certificado en cada combinación y
-        # cuesta más procesos git que los ticks que se prueban. Se ejecuta
-        # una vez y cada combinación parte de una copia de esa raíz. La copia
-        # vuelve a la misma ruta porque el ledger, los worktrees y la
-        # configuración guardan rutas absolutas.
+        # preparar() cuesta más procesos git que los ticks que se prueban y
+        # deja el mismo tren certificado. La copia vuelve a la misma ruta
+        # porque el ledger, los worktrees y la configuración guardan rutas
+        # absolutas.
         plantilla = ContextoR3()
         plantilla.setUp()
         self.addCleanup(plantilla.doCleanups)
@@ -156,8 +152,7 @@ class InvarianteTests(unittest.TestCase):
         for n, (primero, segundo) in enumerate(product(opciones, repeat=2)):
             with self.subTest(primero=primero, segundo=segundo):
                 if n:
-                    # Conserva la raíz de la combinación anterior, como
-                    # antes conservaba cada mkdtemp.
+                    # Conserva la raíz de la combinación anterior como evidencia.
                     raiz.rename(raiz.with_name('{}-combinacion-{:02d}'.format(raiz.name, n - 1)))
                     shutil.copytree(copia, raiz, symlinks=True)
                 c = plantilla.combinacion()

@@ -24,7 +24,6 @@ from ledger import Ledger, codificar
 
 @cache
 def version_git():
-    # Un proceso por módulo: los demás contextos reutilizan este setUp.
     return subprocess.run(["git", "version"], capture_output=True,
                           text=True, check=True).stdout
 
