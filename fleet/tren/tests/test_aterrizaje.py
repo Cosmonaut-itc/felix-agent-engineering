@@ -1,5 +1,6 @@
 """U2: sólo en el host de pruebas, sin red; fixtures conservadas."""
 from dataclasses import replace
+from functools import cache
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,13 @@ from git_ops import ErrorGit, GitTren, Publicado, RamaOcupada
 from ledger import Ledger, codificar
 
 
+@cache
+def version_git():
+    # Un proceso por módulo: los demás contextos reutilizan este setUp.
+    return subprocess.run(["git", "version"], capture_output=True,
+                          text=True, check=True).stdout
+
+
 class AterrizajeTests(unittest.TestCase):
     def setUp(self):
         # Canónica como las referencias que congela `entregar` (macOS: /var -> /private/var).
@@ -33,8 +41,7 @@ class AterrizajeTests(unittest.TestCase):
             "GIT_CONFIG_NOSYSTEM": "1"})
         self.env.start()
         self.addCleanup(self.env.stop)
-        version = subprocess.run(["git", "version"], capture_output=True,
-                                 text=True, check=True).stdout
+        version = version_git()
         numeros = re.search(r"git version (\d+)\.(\d+)", version)
         self.assertIsNotNone(numeros, version)
         self.assertGreaterEqual(tuple(map(int, numeros.groups())), (2, 38),
@@ -44,6 +51,10 @@ class AterrizajeTests(unittest.TestCase):
         for ruta in (self.origen, self.fuente):
             subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(ruta)],
                            capture_output=True, check=True, text=True)
+            # receive-pack lanza `git gc --auto` tras cada push salvo con
+            # receive.autogc=false; se escribe sin lanzar `git config`.
+            with (ruta / "config").open("a") as config:
+                config.write("[gc]\n\tauto = 0\n[receive]\n\tautogc = false\n")
         self.B = self.commit({"comun": "base\n"}, mensaje="base")
         self.push(self.B, "refs/heads/main")
         self.miembros = []
