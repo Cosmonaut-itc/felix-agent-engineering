@@ -54,7 +54,7 @@ def limite_http(codigo, cabeceras, mensaje):
     if codigo not in (403, 429):
         return None
     agotado = cabeceras.get("x-ratelimit-remaining") == "0"
-    if not (agotado or "retry-after" in cabeceras or "rate limit" in mensaje):
+    if codigo == 403 and not (agotado or "retry-after" in cabeceras or "rate limit" in mensaje):
         return None
     recurso = cabeceras.get("x-ratelimit-resource", "core")
     if recurso not in ("core", "graphql"):
@@ -64,10 +64,12 @@ def limite_http(codigo, cabeceras, mensaje):
         recurso = "secondary"
     reinicio = segundos(cabeceras.get("x-ratelimit-reset"))
     espera = segundos(cabeceras.get("retry-after"))
-    if espera is not None and (recurso == "secondary" or reinicio is None):
+    if espera is not None:
         reinicio = min(int(time.time()) + espera, 253402300799)
-    # GitHub indica esperar al menos un minuto si el límite secundario no da plazo.
-    return LimiteGitHub(recurso, reinicio if reinicio is not None else int(time.time()) + 60)
+    elif recurso == "secondary" or reinicio is None:
+        # GitHub indica esperar al menos un minuto si el límite secundario no da plazo.
+        reinicio = int(time.time()) + 60
+    return LimiteGitHub(recurso, reinicio)
 
 
 def siguiente_pagina(link):
@@ -166,9 +168,10 @@ class GitHubGit:
             return json.loads(self.comando(args))
         except subprocess.CalledProcessError as exc:
             mensaje = (exc.stderr or "").lower()
-            if "rate limit" not in mensaje:
+            if "rate limit" not in mensaje or not re.search(r"\bhttp 4(03|29)\b", mensaje):
                 raise
-            recurso = "secondary" if "secondary rate limit" in mensaje else "core"
+            if "secondary rate limit" in mensaje:
+                raise LimiteGitHub("secondary", int(time.time()) + 60) from None
             reinicio = None
             try:
                 recursos = json.loads(self.comando(
@@ -176,7 +179,7 @@ class GitHubGit:
                 reinicio = segundos(recursos["core"]["reset"])
             except ERRORES_LECTURA:
                 pass
-            raise LimiteGitHub(recurso, reinicio if reinicio is not None else
+            raise LimiteGitHub("core", reinicio if reinicio is not None else
                               int(time.time()) + 60) from None
 
     def _pagina(self, endpoint):

@@ -281,13 +281,17 @@ Las lecturas guardan el ETag, el cuerpo y el enlace siguiente de cada página
 en `github-cache.sqlite3`, junto al ledger. GitHub revalida cada página con
 `If-None-Match`. Un 304 autorizado reutiliza el cuerpo y el enlace guardados
 sin gastar cuota primaria. Al abrir se podan las respuestas sin uso durante
-siete días. Si falla la caché, la lectura sigue contra GitHub.
+siete días. El archivo y sus `-wal` y `-shm` quedan en modo 0600, porque
+guardan cuerpos de repositorios privados. Si falla la caché, la lectura sigue
+contra GitHub.
 
 Un límite de GitHub durante el tick o el sondeo de CI corta la cadena con
 salida 75 y emite un JSON como
 `{"error":"limite-github","recurso":"core","reinicio":"2026-01-01T12:00:00+00:00"}`.
 El tick que encuentra el límite conserva la fase, la cola y las admisiones.
 No guarda un paso operativo ni consume plazos o reintentos con esa lectura.
+`reinicio` sale de `Retry-After` cuando GitHub lo envía. Si no, sale de
+`X-RateLimit-Reset`, salvo en un límite secundario, que espera un minuto.
 La limpieza local previa a observar sigue ocurriendo. Los POST de feedback
 conservan su reintento habitual.
 
