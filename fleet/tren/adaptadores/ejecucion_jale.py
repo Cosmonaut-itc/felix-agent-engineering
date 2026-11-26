@@ -13,6 +13,10 @@ INTENTOS_TRANSPORTE = 3
 SALIDAS_TRANSPORTE = {255, 127}
 
 
+def clave_registro(registro):
+    return 'pao-jale-' + hashlib.sha256(os.fsencode(registro.resolve())).hexdigest()
+
+
 def guardar(ruta, valor):
     temporal = ruta.with_suffix('.tmp')
     with temporal.open('w', encoding='utf-8') as archivo:
@@ -32,6 +36,8 @@ def coordinar(registro):
         fcntl.flock(candado, fcntl.LOCK_EX)
         if (registro / 'codigo.json').exists():
             return
+        entorno_guardado = registro / 'entorno.json'
+        variables = json.loads(entorno_guardado.read_text()) if entorno_guardado.exists() else {}
         iniciado = registro / 'iniciado.json'
         if iniciado.exists():
             anterior = json.loads(iniciado.read_text())
@@ -40,10 +46,15 @@ def coordinar(registro):
             if not isinstance(clave, str) or not re.fullmatch(r'[A-Za-z0-9._-]{8,128}', clave):
                 return
         else:
-            clave = 'pao-jale-' + hashlib.sha256(os.fsencode(registro.resolve())).hexdigest()
+            clave = variables.get('SEN_RUN_ID') or clave_registro(registro)
             guardar(iniciado, {'clave': clave})
         argv = json.loads((registro / 'solicitud.json').read_text())
         entorno = dict(os.environ, REMOTE_RUN_CLAVE=clave)
+        for nombre, valor in variables.items():
+            if valor is None:
+                entorno.pop(nombre, None)
+            else:
+                entorno[nombre] = valor
         try:
             with (registro / 'coordinador.log').open('a') as salida:
                 for _ in range(INTENTOS_TRANSPORTE):

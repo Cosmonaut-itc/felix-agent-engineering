@@ -234,20 +234,21 @@ class TickActivoTests(Productor, unittest.TestCase):
                     if e['tipo'] == tipo]
 
     def test_tick_publica_y_prelanza_con_ci_pendiente_y_recoge_en_verde(self):
-        self.plan([{'esperar': True}, {}])
+        self.plan([{'barrera': True, 'esperar': True}])
         _, resultado = self.hasta(EsperandoCI)
         self.assertTrue(any(':refs/heads/tren/' in p for p in self.lineas('pushes.log')))
         self.assertTrue(any(f['efecto']['tipo'] == 'solicitar-ci' and f['estado'] == 'resultado'
                             for f in resultado['outbox']))
-        self.esperar_archivo(self.raiz / 'listo')
-        self.assertEqual([fila[2] for fila in self.lanzamientos()], ['contract'])
+        for modo in ('contract', 'e2e'):
+            self.esperar_archivo(self.raiz / ('cruzado-' + modo))
+        self.assertCountEqual([fila[2] for fila in self.lanzamientos()], ['contract', 'e2e'])
         self.ci = 'verde'
         (self.raiz / 'seguir').touch()
         resultado = self.tick()
         self.assertTrue(any(f['efecto']['tipo'] == 'iniciar-suite' and f['estado'] == 'resultado'
                             for f in resultado['outbox']))
         self.hasta(Certificado)
-        self.assertEqual([fila[2] for fila in self.lanzamientos()], ['contract', 'e2e'])
+        self.assertCountEqual([fila[2] for fila in self.lanzamientos()], ['contract', 'e2e'])
         self.assertEqual(len(self.invocaciones()), 2)
         self.assertEqual(self.eventos('suite-prelanzada-sin-leer'), [])
 
@@ -295,24 +296,27 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.tick()
         [vivo] = [t for t in self.estado().trenes if t.id == tren.id]
         self.assertEqual((type(vivo.fase), vivo.fase.solicitud), (EsperandoCI, 1))
-        self.esperar_archivo(Jale(self.lanzador).estado / clave('suite', tren.id) /
-                             'contract' / '0' / 'codigo.json')
-        self.assertEqual([fila[2] for fila in self.lanzamientos()], ['contract'])
+        for modo in ('contract', 'e2e'):
+            self.esperar_archivo(Jale(self.lanzador).estado / clave('suite', tren.id) /
+                                 modo / '0' / 'codigo.json')
+        self.assertCountEqual([fila[2] for fila in self.lanzamientos()], ['contract', 'e2e'])
 
-    def assert_sin_leer_una_vez(self, tren):
-        registro = Jale(self.lanzador).estado / clave('suite', tren.id) / 'contract' / '0'
-        self.esperar_archivo(registro / 'codigo.json')
-        iniciado = json.loads((registro / 'iniciado.json').read_text())
+    def assert_sin_leer_por_modo(self, tren):
+        esperado = []
+        for modo in ('contract', 'e2e'):
+            registro = Jale(self.lanzador).estado / clave('suite', tren.id) / modo / '0'
+            self.esperar_archivo(registro / 'codigo.json')
+            iniciado = json.loads((registro / 'iniciado.json').read_text())
+            esperado.append(dict(tren=tren.id, clave=iniciado['clave'], terminada=True))
         self.hasta(Terminal)
-        esperado = [dict(tren=tren.id, clave=iniciado['clave'], terminada=True)]
-        self.assertEqual(self.eventos('suite-prelanzada-sin-leer'), esperado)
+        self.assertCountEqual(self.eventos('suite-prelanzada-sin-leer'), esperado)
         self.tick()
         with self.ledger() as ledger:
             filas = ledger.db.execute("SELECT payload FROM events WHERE repo=? AND tipo=?",
                                       (REPO, 'suite-prelanzada-sin-leer'))
-            self.assertEqual([json.loads(fila[0]) for fila in filas], esperado)
+            self.assertCountEqual([json.loads(fila[0]) for fila in filas], esperado)
 
-    def test_ci_rojo_registra_una_sola_corrida_sin_leer(self):
+    def test_ci_rojo_registra_los_modos_sin_leer(self):
         tren, _ = self.hasta(EsperandoCI)
         self.ci = 'verde'
 
@@ -323,17 +327,17 @@ class TickActivoTests(Productor, unittest.TestCase):
         with self.assertRaises(InterruptedError):
             self.tick(detener)
         self.ci = 'rojo'
-        self.assert_sin_leer_una_vez(tren)
+        self.assert_sin_leer_por_modo(tren)
 
     def abortar(self, tren):
         self.cli('juicio', '--tren', tren.id, '--decision', 'abortar', '--motivo', 'prueba')
 
-    def test_aborto_por_juicio_registra_una_sola_corrida_sin_leer(self):
+    def test_aborto_por_juicio_registra_los_modos_sin_leer(self):
         tren, _ = self.hasta(EsperandoCI)
         self.reloj = count(4000)
         self.tick()
         self.abortar(tren)
-        self.assert_sin_leer_una_vez(tren)
+        self.assert_sin_leer_por_modo(tren)
 
     def test_aborto_despues_de_consumir_75_no_registra_corrida_sin_leer(self):
         self.plan([{'codigo': 75}])

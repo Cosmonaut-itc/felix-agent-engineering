@@ -100,14 +100,12 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     previo.limpiar(estado, observacion)
 
     def prelanzadas(nuevo):
-        consultar = getattr(adaptador, "prelanzada_sin_leer", None)
+        consultar = getattr(adaptador, "prelanzadas_sin_leer", None)
         if consultar is not None:
             esperando = {t.id for t in estado.trenes if isinstance(t.fase, EsperandoCI)}
             for tren in nuevo.trenes:
                 if tren.id in esperando and isinstance(tren.fase, Terminal):
-                    aviso = consultar(tren.id)
-                    if aviso is not None:
-                        yield aviso
+                    yield from consultar(tren.id)
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()

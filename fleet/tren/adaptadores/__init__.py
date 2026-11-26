@@ -17,6 +17,7 @@ def seleccionar(config, git):
     resolver = checkout_configurado(config) is None
     if nombre == 'hasito':
         return Hasito(lanzador, git, resolver_lanzador=resolver)
-    from adaptadores.jale import Jale, MODOS
+    from adaptadores.jale import ESPERA_BOAT_S, Jale, MODOS
     return Jale(lanzador, git, host=config.get('host', 'auto'), modos=config.get('modos', MODOS),
-                resolver_lanzador=resolver, prelanzar=config.get('prelanzar', False))
+                resolver_lanzador=resolver, prelanzar=config.get('prelanzar', False),
+                boat_esperar_s=config.get('boat_esperar_s', ESPERA_BOAT_S))

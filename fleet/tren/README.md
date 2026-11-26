@@ -1317,9 +1317,17 @@ La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
 actual de Hasito con `lanzador_hasito` sigue siendo válida. Esta selección no
 inscribe ni activa repositorios.
 
-`"prelanzar": true` adelanta sólo el primer modo configurado de Jale al tick
-que publica C y pide su CI. La clave es booleana, vale `false` por omisión y
-se lee en cada tick. Apagarla surte efecto en el tick siguiente sin instalar.
+`"host": "boat"` envía ambos modos al pool de Boat. Para elegir por modo, usa
+`"host": {"contract": "auto", "e2e": "boat"}`. Los valores aceptados son
+`auto`, `mini`, `desktop` y `boat`. Un modo ausente del mapa usa `auto`.
+`"boat_esperar_s": 180` fija cuánto espera Boat un lugar con prioridad
+`tren` antes de enviar al desk en la misma invocación. Acepta enteros entre
+0 y 7200 y vale 180 por omisión. Las repeticiones filtradas de un modo
+configurado en Boat usan `auto`.
+
+`"prelanzar": true` adelanta todos los modos configurados de Jale al tick que
+publica C y pide su CI. La clave es booleana, vale `false` por omisión y se
+lee en cada tick. Apagarla surte efecto en el tick siguiente sin instalar.
 
 ### Checkout del operador
 
@@ -1375,8 +1383,9 @@ sin push ni rojo. El tick sigue limpiando el diario, drenando feedback y
 consumiendo decisiones: retirar el bloque cancela la operación pendiente con
 el comando guardado, como en U18, y detiene el carril antes del push.
 
-Jale corre ambos modos sobre C sin filtros y valida `jale-recibo@1`: SHA,
-modo, selección, firmas, orden, unicidad, cobertura y código de salida.
+Jale corre los modos configurados en paralelo sobre C sin filtros. Valida el
+SHA, modo, selección, firmas, orden, unicidad, cobertura y código de salida
+de `jale-recibo@1`.
 Cada fallo conserva su firma sin declararlo preexistente; la atribución
 requiere dos observaciones sobre C y dos sobre B. Las repeticiones usan la
 ruta exacta como único filtro, guardan duración y versiones del entorno en
@@ -1390,12 +1399,13 @@ traer unidades `falla` cuando el juicio contra la base de main las dio por
 compartidas; el adaptador las trata como fallos que la atribución repite. En
 contract, una `falla` exige un código distinto de 0.
 
-Con `prelanzar` habilitado, el primer modo empieza al pedir el CI. Cuando
-`iniciar-suite` observa CI verde y miembros admitidos, confirma el registro
-especulativo, recoge esa corrida y sigue con los demás modos. La confirmación
-es durable y permite recuperar el resultado tras una caída del tick.
-Una salida 75 que se produzca antes del verde ocupa la primera reanudación
-cuando `iniciar-suite` la consume.
+Con `prelanzar` habilitado, los modos empiezan al pedir el CI. Cuando
+`iniciar-suite` observa CI verde y miembros admitidos, confirma los registros
+especulativos y recoge las corridas. La confirmación es durable y permite
+recuperar los resultados tras una caída del tick. Una salida 75 que se
+produzca antes del verde ocupa la primera reanudación cuando `iniciar-suite`
+la consume. Cada modo con recibo válido y código distinto de 75 se conserva
+en caché para la reanudación.
 
 Si `solicitar-ci` se reintenta tras la muerte de un tick, vuelve a prelanzar
 sobre el mismo registro, salvo que ese tick ya lea en rojo el CI de esa
@@ -1405,19 +1415,21 @@ una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza.
 Si falla el prelanzamiento, `prelanzamiento-fallido` registra el tren y
 el error, y la solicitud de CI se completa. Si el CI sale rojo o un juicio
 aborta el tren antes de confirmar la corrida, `suite-prelanzada-sin-leer`
-registra la clave de la corrida (si llegó a escribirse) y si ya terminó.
-La corrida sigue en el host hasta terminar y su resultado queda sin consumir.
+registra por modo la clave de la corrida (si llegó a escribirse) y si ya
+terminó. Cada corrida sigue en el host hasta terminar y su resultado queda
+sin consumir.
 SEN-7331 añadirá la cancelación.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
-el resultado tras una caída del tick. Cada registro deriva una clave estable
-de su ruta y la guarda en `iniciado.json` antes de lanzar el hijo con
+el resultado tras una caída del tick. Cada registro guarda su clave en
+`iniciado.json` antes de lanzar el hijo. Boat recibe la clave como
+`SEN_RUN_ID` desde `entorno.json`. Los demás hosts la reciben como
 `REMOTE_RUN_CLAVE`. Si muere también el coordinador sin salida durable, el
 siguiente tick relanza el mismo argv con la clave guardada y recupera el
-trabajo aceptado por el lanzador, sin otro envío. Cada intento, modo y tren
-tiene su propio registro y clave. Los registros antiguos con `iniciado.json`
-sin clave conservan el lanzamiento incierto y detienen su recuperación.
+trabajo aceptado por el lanzador, sin otro envío. Los registros antiguos con
+`iniciado.json` sin clave conservan el lanzamiento incierto y detienen su
+recuperación.
 El coordinador permite como máximo tres invocaciones ante una salida 255
 o 127. Usa la misma clave y guarda la última salida. Guarda el 125 sin
 reintentar. Un 75 sigue la política de reanudación del tren. Un 64 cierra
@@ -1431,11 +1443,17 @@ intento con registro y clave nuevos. Con `salida-sin-recibo`, `reanudar`
 reengancha el mismo registro con la misma clave y conserva la salida
 anterior. Si hay un checkout del operador, usa su lanzador vigente.
 `abortar` libera las entregas sin rojo.
+Cuando Boat devuelve 75 pendiente, el siguiente intento usa la misma
+identidad con un log nuevo. Esto también recupera un envío del fallback cuyo
+desk devolvió 75 sin resultado. Una causa de interrupción o de resultado
+desconocido en Boat abre otro intento con una identidad nueva.
+Un marcador `PARTIAL: boat omitted=N` con N mayor que cero deja el efecto
+pendiente por cobertura insuficiente. El marcador `types-omitted` por sí
+solo permite usar el recibo.
 Hasito aplica la pausa del 64 y conserva su log y recibo. Estas pausas
 no consumen reanudaciones de 75 ni presupuesto de diagnóstico. Tampoco
 generan feedback de producto. Los recibos duplicados, malformados o
 incoherentes dejan el efecto pendiente como error de infraestructura.
-No hay cambio automático de host.
 
 La regresión U9 y toda la suite del tren, dividida exhaustivamente entre dos
 procesos aislados para el carril rápido, se verifican en el host de pruebas con
