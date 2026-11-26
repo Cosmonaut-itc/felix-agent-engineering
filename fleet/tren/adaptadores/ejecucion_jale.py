@@ -5,12 +5,17 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
+import time
 
 
 INTENTOS_TRANSPORTE = 3
 SALIDAS_TRANSPORTE = {255, 127}
+CANCELAR = 'cancelar.json'
+ACUSE_CANCELACION = 'cancelacion.json'
+SONDEO_CANCELACION_S = .1
 
 
 def clave_registro(registro):
@@ -31,10 +36,36 @@ def guardar(ruta, valor):
         os.close(descriptor)
 
 
+def ejecutar(registro, argv, entorno, salida):
+    pedido = registro / CANCELAR
+    if pedido.exists():
+        return 75
+    if not (registro / 'prelanzada.json').exists():
+        return subprocess.run(argv, env=entorno, stdout=salida, stderr=salida,
+                              check=False).returncode
+    # Sólo el coordinador que tiene el candado puede señalar a su propio hijo.
+    # El tick no necesita conocer ni recuperar un PID.
+    with subprocess.Popen(argv, env=entorno, stdout=salida, stderr=salida) as lanzador:
+        while lanzador.poll() is None:
+            if pedido.exists():
+                try:
+                    lanzador.send_signal(signal.SIGTERM)
+                    acuse = 'senal-enviada' if lanzador.returncode is None else 'lanzador-terminado'
+                except OSError as error:
+                    acuse = type(error).__name__
+                guardar(registro / ACUSE_CANCELACION, acuse)
+                return lanzador.wait()
+            time.sleep(SONDEO_CANCELACION_S)
+        return lanzador.returncode
+
+
 def coordinar(registro):
     with (registro / 'candado').open('a') as candado:
         fcntl.flock(candado, fcntl.LOCK_EX)
         if (registro / 'codigo.json').exists():
+            return
+        if (registro / CANCELAR).exists():
+            guardar(registro / 'codigo.json', 75)
             return
         entorno_guardado = registro / 'entorno.json'
         variables = json.loads(entorno_guardado.read_text()) if entorno_guardado.exists() else {}
@@ -58,9 +89,8 @@ def coordinar(registro):
         try:
             with (registro / 'coordinador.log').open('a') as salida:
                 for _ in range(INTENTOS_TRANSPORTE):
-                    codigo = subprocess.run(argv, env=entorno, stdout=salida,
-                                            stderr=salida, check=False).returncode
-                    if codigo not in SALIDAS_TRANSPORTE:
+                    codigo = ejecutar(registro, argv, entorno, salida)
+                    if codigo not in SALIDAS_TRANSPORTE or (registro / CANCELAR).exists():
                         break
         except (OSError, subprocess.SubprocessError):
             codigo = None

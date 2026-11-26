@@ -12,7 +12,7 @@ import subprocess
 from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
                      Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, base_vieja, clave,
                      datos, desde_datos, paso)
-from efectos import EfectoFallido, ejecutar
+from efectos import EfectoFallido, ejecutar, prelanzar_ci
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
 from operador import FalloSnapshot, Snapshots
@@ -74,6 +74,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     # Sólo para entregas aún no incorporadas: conserva la primera admisión
     # muestreada en custodia, sin importar ningún lote simulado de sombra.
     estado = ledger.estado(repo, operativo=True)
+    trenes_antes = estado.trenes
     config = getattr(observador, "config", {})
     snapshots = Snapshots(ledger, repo, git, config)
     if adaptador is not None and hasattr(adaptador, "operador"):
@@ -106,13 +107,17 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             repeticiones_en_paralelo=getattr(adaptador, "repeticiones_paralelas", 1) > 1)
     previo.limpiar(estado, observacion)
 
-    def prelanzadas(nuevo):
-        consultar = getattr(adaptador, "prelanzadas_sin_leer", None)
-        if consultar is not None:
-            esperando = {t.id for t in estado.trenes if isinstance(t.fase, EsperandoCI)}
-            for tren in nuevo.trenes:
-                if tren.id in esperando and isinstance(tren.fase, Terminal):
-                    yield from consultar(tren.id)
+    def guardar_paso(nuevo, efectos, consumido=None, fallo=None):
+        cancelar = getattr(adaptador, "cancelar_corridas", None)
+        prelanzadas = ()
+        if cancelar is not None:
+            cerrados = {t.id for t in nuevo.trenes if isinstance(t.fase, Terminal)}
+            terminales = [t for t in trenes_antes if t.id in cerrados and
+                          not isinstance(t.fase, Terminal)]
+            if terminales:
+                prelanzadas = cancelar(terminales)
+        ledger.guardar_paso(nuevo, efectos, ahora, consumido, fallo_operador=fallo,
+                            prelanzadas=prelanzadas)
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()
@@ -192,7 +197,28 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             frontera("resultado-guardado", efecto)
         return estado, fallo_operador
 
+    def reintentar_prelanzamiento(nuevo):
+        aplazado = getattr(adaptador, "prelanzamiento_aplazado", None)
+        if nuevo.pausa or aplazado is None:
+            return
+        for tren in nuevo.trenes:
+            if not isinstance(tren.fase, EsperandoCI) or not aplazado(tren.id):
+                continue
+            # Si falta publicar CI, el efecto hará el prelanzamiento tras publicar.
+            if any(efecto.tipo == "solicitar-ci" and efecto.datos == (tren.id,) and
+                   fila["estado"] != "resultado"
+                   for fila, efecto, _ in outbox_en_orden(ledger, repo, nuevo, set())):
+                continue
+            vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+            if any(not isinstance(admision_entrada(e, vistas, observacion), Admitido)
+                   for e in nuevo.entradas if e.entrega.recibo in tren.recibos):
+                continue
+            aviso = prelanzar_ci(adaptador, tren, observacion)
+            if aviso is not None:
+                ledger.evento(repo, "prelanzamiento-fallido", ahora, aviso)
+
     def terminar(nuevo, efectos):
+        reintentar_prelanzamiento(nuevo)
         nuevo, fallo = drenar(nuevo, observacion)
         if fallo is not None:
             ledger.guardar_paso(nuevo, (), ahora, fallo_operador=fallo)
@@ -234,7 +260,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         efectos = recuperados + efectos
         frontera("decision-reducida", None)
         nuevo = limpiar(nuevo)
-        ledger.guardar_paso(nuevo, efectos, ahora, prelanzadas=prelanzadas(nuevo))
+        guardar_paso(nuevo, efectos)
         frontera("paso-guardado", None)
         return terminar(nuevo, efectos)
     # La limpieza no crea pausas: sólo retiene el push, incluso al reanudar.
@@ -269,7 +295,6 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 break
     nuevo, efectos = paso(estado, observacion)
     nuevo = limpiar(nuevo)
-    ledger.guardar_paso(nuevo, efectos, ahora, consumido, fallo_operador=fallo,
-                        prelanzadas=prelanzadas(nuevo))
+    guardar_paso(nuevo, efectos, consumido, fallo)
     frontera("paso-guardado", None)
     return terminar(nuevo, efectos)
