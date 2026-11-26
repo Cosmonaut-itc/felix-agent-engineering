@@ -4,6 +4,7 @@ La observación devuelta conserva las vistas de admisión del llamador. Publicar
 la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
 """
 from dataclasses import dataclass, replace
+from itertools import islice
 import subprocess
 from typing import Optional
 
@@ -133,10 +134,10 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                           if s.objetivo == "B" else fase.subconjunto.C)
                 aviso = None
                 adelantar = getattr(adaptador, "adelantar_repeticiones", None)
-                if (admitidos and not estado.pausa and adelantar is not None and
-                        getattr(adaptador, "repeticiones_paralelas", 1) > 1):
+                paralelas = getattr(adaptador, "repeticiones_paralelas", 1)
+                if admitidos and not estado.pausa and adelantar is not None and paralelas > 1:
                     try:
-                        pedidos = tuple(pedidos_adelantados(fase, git))
+                        pedidos = tuple(islice(pedidos_adelantados(fase, git), paralelas - 1))
                         adelantar(fase.candidato, fase.suite, pedidos, tren.id)
                     except (ResultadoInvalido, FalloSnapshot, FalloGit, OSError,
                             subprocess.SubprocessError) as exc:

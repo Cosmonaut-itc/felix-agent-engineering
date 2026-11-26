@@ -326,6 +326,14 @@ class EfectoTests(unittest.TestCase):
         lectura = replace(self.obs, **{k: desde_datos(v) for k, v in anterior.items()})
         self.assertEqual(lectura, r.observacion)
 
+    def test_arma_solo_los_subconjuntos_que_caben_en_el_tope(self):
+        self.adaptador.repeticiones_paralelas = 2
+        self.ejecutar()
+        self.assertEqual([c.args for c in self.git.armar.call_args_list],
+                         [(B, ((pr, 'a' * 40),)) for pr in (2, 3)])
+        self.adaptador.adelantar_repeticiones.assert_called_once_with(
+            LOTE, 'suite.json', ((self.demas[1], '3' * 40),), TREN)
+
     def test_fallos_de_adelanto_avisan_y_conservan_efecto_serial(self):
         hasito = Hasito('/sintetico', self.git)
         with patch.object(hasito, 'repetir', return_value=self.adaptador.repetir.return_value):
