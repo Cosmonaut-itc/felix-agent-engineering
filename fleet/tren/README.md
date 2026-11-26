@@ -1346,7 +1346,10 @@ Con 1, el valor por omisión, los intentos corren en serie. Con un valor N
 mayor, cada efecto `repetir` adelanta reproducciones de la tanda hasta
 completar N vivas: cuentan la pendiente y las adelantadas de la tanda cuyo
 coordinador sigue vivo. Una adelantada que ya terminó no ocupa lugar ni se
-vuelve a lanzar.
+vuelve a lanzar. Si uno de los dos intentos simultáneos de una reproducción
+sale con un rechazo del lanzador, el efecto recoge antes el otro intento: su
+recibo válido queda en la caché y el intento que abre `absolver` o `reanudar`
+no lo vuelve a lanzar.
 Las corridas filtradas conservan el host que decide `host_de`.
 
 ### Checkout del operador

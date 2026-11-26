@@ -495,20 +495,33 @@ class Jale:
             lanzadas = simultaneas
             if any(proceso is False for *_, proceso in lanzadas):
                 return None
+        rechazo = None
         for n, cache, cache_disponible, desde_base, ultimo, proceso in lanzadas:
-            if desde_base:
-                r = self.recoger(ultimo, proceso, commit, fallo.check, filtros)
-                exigir(isinstance(r, dict) and r['codigo'] != 75, 'cache-invalida')
-            else:
-                r = self.recoger_corrida(ultimo, proceso, commit, fallo.check, filtros)
-                if isinstance(r, dict) and r['codigo'] != 75:
-                    if cache is not None and not cache_disponible:
-                        cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                        guardar(cache, str(ultimo.relative_to(self.estado)))
+            try:
+                if desde_base:
+                    r = self.recoger(ultimo, proceso, commit, fallo.check, filtros)
+                    exigir(isinstance(r, dict) and r['codigo'] != 75, 'cache-invalida')
+                else:
+                    r = self.recoger_corrida(ultimo, proceso, commit, fallo.check, filtros)
+                    if isinstance(r, dict) and r['codigo'] != 75:
+                        if cache is not None and not cache_disponible:
+                            cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                            guardar(cache, str(ultimo.relative_to(self.estado)))
+            except ResultadoInvalido:
+                if rechazo is None:
+                    raise
+                continue
+            if rechazo is not None:
+                continue
             if r is False:
                 return None
             if isinstance(r, RechazoLanzador):
-                return r
+                if self.repeticiones_paralelas == 1:
+                    return r
+                # El otro intento ya corre: su recibo queda en la caché y el
+                # intento siguiente no lo vuelve a lanzar.
+                rechazo = r
+                continue
             if r is None or r['codigo'] == 75:
                 return Incompleto(75, str(raiz))
             u = r['unidades'][0]

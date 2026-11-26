@@ -331,6 +331,40 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
         self.assertEqual(len(self.lanzamientos()), 2)
         self.assertEqual(len(self.invocaciones()), 3)
 
+    def test_rechazo_del_primer_intento_conserva_el_recibo_del_segundo(self):
+        (self.raiz / 'sin-recibo').touch()
+        self.adelantar(self.pedidos[:1])
+        r = self.repetir()
+        primero, segundo = self.registros(self.pedidos[0])
+        self.assertEqual(r, RechazoLanzador(str(primero / 'coordinador.log'), 'salida-sin-recibo'))
+        self.assertTrue((segundo.parent / 'completo.json').exists())
+        (self.raiz / 'sin-recibo').unlink()
+        self.assertIsInstance(self.repetir(intento=1), Repeticion)
+        relanzados = [json.loads(solicitud.read_text())[3] for solicitud in
+                      sorted(primero.parents[1].glob('*/1/solicitud.json'))]
+        self.assertEqual(relanzados, [str(primero.parent / '1' / 'corrida.log')])
+
+    def test_rechazo_del_primero_prevalece_si_el_segundo_no_deja_salida(self):
+        rechazo = RechazoLanzador('coordinador.log', 'salida-sin-recibo')
+
+        def recoger(salidas):
+            def siguiente(registro, proceso, *args):
+                proceso.wait()
+                salida = salidas.pop(0)
+                if isinstance(salida, Exception):
+                    raise salida
+                return salida
+            return siguiente
+
+        with patch.object(self.adaptador, 'recoger_corrida', side_effect=recoger(
+                [rechazo, ResultadoInvalido('corrida-interrumpida')])):
+            self.assertEqual(self.repetir(), rechazo)
+        serie = self.jale(1, 'serie')
+        with patch.object(serie, 'recoger_corrida', side_effect=recoger([rechazo])):
+            self.assertEqual(self.repetir(adaptador=serie), rechazo)
+        raiz = serie.estado / clave('repetir', TREN, self.pedidos[0][0].id)
+        self.assertFalse((raiz / '2').exists())
+
     def test_adelantada_con_75_pide_la_primera_reanudacion(self):
         (self.raiz / 'primero-75').touch()
         self.adelantar(self.pedidos[:1])
