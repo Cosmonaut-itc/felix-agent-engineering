@@ -1477,16 +1477,33 @@ una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza, salvo
 que main haya dejado atrás la B del lote, que entonces se rearma.
 
 Si falla el prelanzamiento, `prelanzamiento-fallido` registra el tren y
-el error, y la solicitud de CI se completa. Si el CI sale rojo, un juicio
-aborta el tren o main deja atrás su B antes de confirmar la corrida, `suite-prelanzada-sin-leer`
-registra el modo, la clave de la corrida (si llegó a escribirse) y si ya
-terminó. Cada corrida sigue en el host hasta terminar y su resultado queda
-sin consumir.
-SEN-7331 añadirá la cancelación.
+el error, y la solicitud de CI se completa. Cuando el tren pasa a
+`Terminal`, el tick pide cancelar sus suites y repeticiones adelantadas sin
+confirmar. Cada coordinador lee la solicitud durable bajo el candado de su
+corrida, manda TERM al lanzador que creó y conserva el candado hasta que
+éste sale. La corrida pedida para cancelación queda fuera de los reintentos
+y su salida queda sin consumir. El evento `suite-prelanzada-sin-leer`
+registra en el mismo paso el modo, la clave (si llegó a escribirse), si ya
+había terminado, si se pidió cancelar y si el candado se liberó dentro del
+plazo. Los errores de cancelación se registran en ese aviso.
 
-Las reproducciones adelantadas también quedan en el host hasta terminar
-si el tren se pausa o termina. El reductor sólo consume su salida si llega
-a pedirlas y el efecto las confirma con los miembros admitidos.
+El tick espera hasta 30 s en total por los candados. Si quedan ocupados,
+el siguiente lote puede publicar el CI y conserva en disco el
+prelanzamiento aplazado. Un tick posterior lo ejecuta cuando los candados
+se liberan y el lote sigue esperando CI con sus miembros admitidos.
+Una pausa por sí sola conserva las repeticiones adelantadas. El reductor
+sólo consume su salida cuando pide la repetición y el efecto la confirma
+con los miembros admitidos.
+
+Boat atrapa TERM, pide la cancelación de la corrida despachada y al salir
+intenta soltar el arriendo. Si el pool no confirma la liberación, el
+arriendo vence por su TTL. En `desktop`, TERM pide cancelar la tarea
+identificada de Pueue. `auto` hereda el comportamiento del host que
+elige. El lanzador de `mini` usa transporte SSH directo, sin cancelación
+acreditada en el host. TERM se entrega al lanzador supervisado. Esto deja
+sin garantía de cancelación remota la caída de Boat a desktop ya en curso.
+Los coordinadores de la versión anterior no leen la nueva solicitud y
+conservan su candado hasta salir por su cuenta.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
