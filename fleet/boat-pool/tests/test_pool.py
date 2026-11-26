@@ -391,6 +391,21 @@ class Harness(unittest.TestCase):
 
         self.assertEqual(self.get_grant('contrato')['vm'], other)
 
+    def test_ejemplo_jale_protege_una_contract_en_la_segunda_vm(self):
+        example_path = Path(pool.__file__).with_name('pool.example.json')
+        first, second = json.loads(example_path.read_text())['vms'][:2]
+        for declaration in (first, second):
+            declaration.pop('nombre')
+            declaration.pop('repo')
+        self.config['vms'][0].update(first)
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'), overrides=second)
+        code, _, stderr = self.run_cli('apagar', NAME)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(self.get_grant('contrato')['vm'], other)
+
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], NAME)
+
     def test_e2e_agota_la_espera_con_una_contract_en_cada_vm(self):
         self.config['vms'][0].update(lugares=2, peso_clase={'contract': 2})
         other = 'vm-otra'
