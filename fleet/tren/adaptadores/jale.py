@@ -3,7 +3,7 @@ import base64
 import binascii
 import fcntl
 import hashlib
-from itertools import combinations, islice
+from itertools import chain, combinations, islice
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -330,32 +330,34 @@ class Jale:
             return set()
         rutas = leer_json(archivo)
         exigir(isinstance(rutas, list) and all(isinstance(ruta, str) and re.fullmatch(
-            r'[a-f0-9]{64}/(?:contract|e2e|1|2)/0', ruta) for ruta in rutas),
+            r'[a-f0-9]{64}/(?:contract|e2e|1|2)/(?:0|[1-9][0-9]*)', ruta) for ruta in rutas),
             'cancelaciones-invalidas')
         return {ruta for ruta in rutas
                 if lanzamiento_activo(self.estado / ruta / 'candado')}
 
-    def cancelar_corridas(self, terminales):
-        avisos, activas = [], {}
-        for tren in terminales:
-            for registro, aviso in self.prelanzadas_sin_leer(tren.id, tren.fase):
-                avisos.append(aviso)
-                if aviso['terminada']:
+    def cancelar_corridas(self, terminales, confirmadas):
+        prelanzadas = [corrida for tren in terminales
+                       for corrida in self.prelanzadas_sin_leer(tren.id, tren.fase)]
+        activas = {}
+        for registro, aviso in chain(prelanzadas, confirmadas):
+            if aviso['terminada']:
+                continue
+            try:
+                activa = con_candado(registro)
+                if (registro / 'codigo.json').exists():
                     continue
-                try:
-                    activa = con_candado(registro)
-                    if activa:
-                        activas[registro] = aviso
-                    # La marca impide el arranque incluso si el coordinador
-                    # todavía no tomó el candado o el tick muere tras pedirlo.
-                    guardar(registro / CANCELAR, True)
-                    if activa or con_candado(registro):
-                        activas[registro] = aviso
-                        aviso['cancelacion_pedida'] = True
-                    elif not (registro / 'codigo.json').exists():
-                        aviso['error_cancelacion'] = 'coordinador-ausente'
-                except OSError as error:
-                    aviso['error_cancelacion'] = type(error).__name__
+                if activa:
+                    activas[registro] = aviso
+                # La marca impide el arranque incluso si el coordinador
+                # todavía no tomó el candado o el tick muere tras pedirlo.
+                guardar(registro / CANCELAR, True)
+                if activa or con_candado(registro):
+                    activas[registro] = aviso
+                    aviso['cancelacion_pedida'] = True
+                elif not (registro / 'codigo.json').exists():
+                    aviso['error_cancelacion'] = 'coordinador-ausente'
+            except OSError as error:
+                aviso['error_cancelacion'] = type(error).__name__
 
         # Un plazo común para todos los lanzadores. El candado se conserva
         # hasta que sale el launcher que hace la cancelación en su host.
@@ -392,7 +394,7 @@ class Jale:
             except (OSError, ResultadoInvalido) as error:
                 for registro in pendientes:
                     activas[registro]['error_barrera_cancelacion'] = type(error).__name__
-        return avisos
+        return [aviso for _, aviso in prelanzadas]
 
     def corridas_sin_leer(self, efecto):
         tren_id = efecto.datos[0]
@@ -436,7 +438,8 @@ class Jale:
                     id_corrida = valor
                     break
             yield registro, {'tren': tren_id, 'modo': modo, 'clave': id_corrida,
-                             'terminada': terminada}
+                             'terminada': terminada, 'cancelacion_pedida': False,
+                             'cancelacion_confirmada': False}
 
     def lanzar(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None,
                reenganche=None, *, prelanzamiento=False):

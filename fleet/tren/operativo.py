@@ -220,11 +220,13 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         cerrados = {t.id for t in nuevo.trenes if isinstance(t.fase, Terminal)}
         terminales = [t for t in trenes_antes if t.id in cerrados and
                       not isinstance(t.fase, Terminal)]
+        # Captura los avisos antes de que cancelar.json oculte los registros.
+        confirmadas = tuple(corridas_sin_leer({t.id for t in terminales}, consumido))
         cancelar = getattr(adaptador, "cancelar_corridas", None)
-        prelanzadas = cancelar(terminales) if terminales and cancelar is not None else ()
+        prelanzadas = cancelar(terminales, confirmadas) if terminales and cancelar is not None else ()
         ledger.guardar_paso(nuevo, efectos, ahora, consumido, fallo_operador=fallo,
-                            prelanzadas=prelanzadas, suites_sin_leer=corridas_sin_leer(
-                                {t.id for t in terminales}, consumido))
+                            prelanzadas=prelanzadas,
+                            suites_sin_leer=(aviso for _, aviso in confirmadas))
 
     def corridas_sin_leer(cerrados, consumido):
         consultar = getattr(adaptador, "corridas_sin_leer", None)
@@ -239,7 +241,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 for registro, aviso in consultar(efecto):
                     if registro not in vistos:
                         vistos.add(registro)
-                        yield aviso
+                        yield registro, aviso
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()
