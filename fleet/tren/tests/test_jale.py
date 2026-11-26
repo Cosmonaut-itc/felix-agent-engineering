@@ -43,9 +43,9 @@ invocaciones = raiz / 'invocaciones.jsonl'
 with (raiz / 'candado-productor').open('a') as candado:
     fcntl.flock(candado, fcntl.LOCK_EX)
     previas = invocaciones.read_text().splitlines() if invocaciones.exists() else []
-    clave = os.environ.get('REMOTE_RUN_CLAVE', '')
     boat = {k: os.environ.get(k) for k in ('REMOTE_RUN_CLAVE', 'SEN_E2E_FRAGMENTO',
         'SEN_RUN_OWNER', 'SEN_RUN_ID', 'SEN_BOAT_PRIORIDAD', 'SEN_BOAT_ESPERAR', 'TURBO_FORCE')}
+    clave = boat['SEN_RUN_ID'] if host == 'boat' else boat['REMOTE_RUN_CLAVE'] or ''
     with invocaciones.open('a') as archivo:
         archivo.write(json.dumps(dict(clave=clave, log=log, pgid=os.getpgrp(), modo=modo,
                                       host=host, boat=boat)) + '\n')
@@ -54,7 +54,7 @@ with (raiz / 'candado-productor').open('a') as candado:
     identidad = clave or 'sin-clave-' + str(len(previas))
     if host == 'boat':
         assert boat['REMOTE_RUN_CLAVE'] is None and boat['SEN_RUN_OWNER'] == 'pao-tren'
-        identidad = json.dumps([boat['SEN_RUN_ID'], modo, sha, filtros])
+        identidad = json.dumps([clave, modo, sha, filtros])
     registro = registros / (hashlib.sha256(identidad.encode()).hexdigest() + '.json')
     conocido = registro.exists()
     if conocido:
