@@ -665,7 +665,8 @@ def linux_processes(proc, deadline=None):
             text = (path / 'stat').read_text()
             name, _, tail = text.partition('(')[2].rpartition(')')
             fields = tail.split()
-            rows[int(path.name)] = dict(ppid=int(fields[1]), ticks=int(fields[11]) + int(fields[12]),
+            # utime+stime más cutime+cstime: la CPU de los hijos ya cosechados sigue en el árbol.
+            rows[int(path.name)] = dict(ppid=int(fields[1]), ticks=sum(int(n) for n in fields[11:15]),
                                         start=int(fields[19]), mem=max(0, int(fields[21])) * os.sysconf('SC_PAGE_SIZE'),
                                         born=boot + int(fields[19]) / hertz if boot else None, daemon=name == 'pueued')
         except (OSError, ValueError, IndexError):  # procesos que terminaron durante la lectura
@@ -693,10 +694,24 @@ def process_sample(mode, cores, proc, deadline):
     total = last[0] - first[0]
     if total <= 0:
         raise ValueError('Contadores de CPU sin avance')
+    def alive(pid):
+        return pid in rows and rows[pid]['start'] == before[pid]['start']
+    # Un proceso que murió en la muestra entra entero al cutime de quien lo cosechó; su parte
+    # anterior a la primera lectura se descuenta del primer ancestro que sigue vivo.
+    reaped = {}
+    for pid, old in before.items():
+        if alive(pid):
+            continue
+        parent, seen = old['ppid'], {pid}
+        while parent in before and not alive(parent) and parent not in seen:
+            seen.add(parent)
+            parent = before[parent]['ppid']
+        if parent in before:
+            reaped[parent] = reaped.get(parent, 0) + old['ticks']
     for pid, row in rows.items():
         old = before.get(pid)
         if old and old['start'] == row['start']:
-            used = max(0, row['ticks'] - old['ticks'])
+            used = max(0, row['ticks'] - old['ticks'] - reaped.get(pid, 0))
         else:  # nació durante la muestra: todo su contador cae en el intervalo
             used = row['ticks'] if first[2] and row['start'] >= first[2] else 0
         row['cpu'] = used * cores / total
