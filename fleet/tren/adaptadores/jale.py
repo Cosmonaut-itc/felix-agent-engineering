@@ -80,14 +80,14 @@ def objeto(pares):
     return resultado
 
 
-def leer_recibo(log, codigo, commit, modo, filtros):
+def leer_recibo(log, codigo, commit, modo, filtros, *, host):
     exigir(type(codigo) is int, 'salida-no-utilizable')
     if codigo == 64:
         return RechazoLanzador(str(Path(log).with_name('coordinador.log')))
     try:
-        # Un 75 del desk puede dejar salida de pruebas sin texto UTF-8.
-        lineas = Path(log).read_text(
-            encoding='utf-8', errors='replace' if codigo == 75 else 'strict').splitlines()
+        # Boat y un 75 del desk pueden traer salida de pruebas con bytes no UTF-8.
+        errores = 'replace' if host == 'boat' or codigo == 75 else 'strict'
+        lineas = Path(log).read_text(encoding='utf-8', errors=errores).splitlines()
     except OSError:
         lineas = []
     except UnicodeError:
@@ -98,9 +98,10 @@ def leer_recibo(log, codigo, commit, modo, filtros):
     if not recibos:
         if codigo == 75:
             return None
-        detalle = ('corrida-interrumpida' if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas
-                   else 'salida-sin-recibo')
-        return RechazoLanzador(str(Path(log).with_name('coordinador.log')), detalle)
+        coordinador = str(Path(log).with_name('coordinador.log'))
+        if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas:
+            return RechazoLanzador(coordinador, 'corrida-interrumpida')
+        return RechazoLanzador(coordinador, 'salida-sin-recibo')
     exigir(len(recibos) == 1, 'salida-sin-recibo')
     exigir(0 <= codigo <= 255, 'salida-no-utilizable')
     match = re.fullmatch(r'RECIBO jale-recibo@1 ([A-Za-z0-9+/]+={0,2})', recibos[0])
@@ -157,7 +158,8 @@ def leer_salida(registro, log, codigo, commit, modo, filtros):
     estado = leer_json(codigo)
     if estado == 75 and leer_pendiente_boat(log) is not None:
         return None
-    resultado = leer_recibo(log, estado, commit, modo, filtros)
+    host = leer_json(registro / 'solicitud.json')[2]
+    resultado = leer_recibo(log, estado, commit, modo, filtros, host=host)
     # Tras un reenganche la tarea original puede seguir viva: un 64 no autoriza otra clave.
     if (isinstance(resultado, RechazoLanzador) and resultado.detalle == 'lanzador-rechazo' and
             any(registro.glob('codigo-reenganche-*.json'))):
@@ -238,7 +240,7 @@ class Jale:
                 if not isinstance(id_corrida, str) or not re.fullmatch(
                         r'[A-Za-z0-9._-]{8,128}', id_corrida):
                     id_corrida = None
-                yield {'tren': tren_id, 'clave': id_corrida,
+                yield {'tren': tren_id, 'modo': modo, 'clave': id_corrida,
                        'terminada': (registro / 'codigo.json').exists()}
 
     def lanzar(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None,
@@ -374,16 +376,20 @@ class Jale:
                 recibos.append(self.recoger_corrida(registro, proceso, candidato.C, modo, ()))
             except ResultadoInvalido as exc:
                 recibos.append(exc)
-        for r in recibos:
-            if isinstance(r, ResultadoInvalido):
+        rechazos = [r for r in recibos if isinstance(r, RechazoLanzador)]
+        invalidos = [r for r in recibos if isinstance(r, ResultadoInvalido)]
+        # Sin salida durable, el mismo intento debe poder recuperar la corrida.
+        for r in invalidos:
+            if r.resultado.codigo == 'corrida-interrumpida':
                 raise r
+        if invalidos and not rechazos:
+            raise invalidos[0]
         if reenganche and any(proceso is False and
                               str(registro / 'coordinador.log') == reenganche[1]
                               for _, registro, proceso in lanzadas):
             return None
-        rechazos = [r for r in recibos if isinstance(r, RechazoLanzador)]
         if rechazos:
-            # Un salida-sin-recibo se reengancha a su envío; los demás rechazos abren otro intento.
+            # Prioriza el envío incierto: con reanudar conserva su identidad.
             return str(raiz), next((r for r in rechazos if r.detalle == 'salida-sin-recibo'),
                                   rechazos[0])
         if any(r is False for r in recibos):

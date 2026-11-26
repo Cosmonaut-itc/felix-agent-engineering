@@ -18,7 +18,8 @@
       "repo": "<organizacion>/<repo-jale>",
       "tipo": "large",
       "lugares": 2,
-      "limite_clase": {"e2e": 1}
+      "limite_clase": {"e2e": 1},
+      "peso_clase": {"contract": 2}
     },
     {
       "nombre": "<vm-jale-2>",
@@ -26,6 +27,7 @@
       "tipo": "large",
       "lugares": 2,
       "limite_clase": {"e2e": 1},
+      "peso_clase": {"contract": 2},
       "inactividad_min": 45
     },
     {
