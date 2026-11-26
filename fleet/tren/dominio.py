@@ -538,15 +538,40 @@ def aterrizaje(estado, tren, observacion):
         elif isinstance(lectura, EnBase):
             fase = replace(fase, reintento_pendiente=True)
         elif isinstance(lectura, EscritorExterno):
-            fase = Terminal("REARMAR")
-            estado = replace(estado,
-                pausa=Pausa("escritor-externo", main=lectura.main),
-                entradas=tuple(replace(e, tren=None) if e.entrega.recibo in tren.recibos
-                               else e for e in estado.entradas))
+            return rearmar(estado, tren, lectura.main, pausar=True), ()
         else:
             return estado, ()
     return replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
                                        else t for t in estado.trenes)), efectos
+
+
+# Política al ver main fuera de la B de un tren antes de su suite. True pausa
+# escritor-externo como en la promoción; False rearma sobre main sin pausa.
+PAUSAR_REARMAR_TEMPRANO = True
+
+
+def rearmar(estado, tren, main, pausar):
+    """C ya no aterriza sobre main: cierra el tren y devuelve sus miembros a la fila.
+
+    Las fechas FIFO no cambian; el reductor congela el lote siguiente sobre main.
+    """
+    estado = replace(estado,
+        trenes=tuple(replace(t, fase=Terminal("REARMAR")) if t.id == tren.id else t
+                     for t in estado.trenes),
+        entradas=tuple(replace(e, tren=None) if e.entrega.recibo in tren.recibos
+                       else e for e in estado.entradas))
+    return replace(estado, pausa=Pausa("escritor-externo", main=main)) if pausar else estado
+
+
+def base_vieja(fase, observacion):
+    """main ya no es la B de un tren que aún no corre su suite."""
+    if isinstance(fase, Congelado):
+        base = fase.B
+    elif isinstance(fase, (Armado, EsperandoCI)):
+        base = fase.candidato.B
+    else:
+        return False
+    return bool(observacion.base) and observacion.base != base
 
 
 ESPERAS_SUITE = (300, 900, 3600)
@@ -955,6 +980,10 @@ def paso(estado, observacion):
         fase = tren.fase
         if observacion.tren_id and observacion.tren_id != tren.id:
             return estado, tuple(efectos)
+        # Un merge por fuera deja a C sin poder aterrizar: no gastar CI ni suite.
+        if base_vieja(fase, observacion):
+            return (rearmar(estado, tren, observacion.base, PAUSAR_REARMAR_TEMPRANO),
+                    tuple(efectos))
         ocupada = observacion.rama_ocupada
         if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
                 observacion.tren_id == tren.id and
