@@ -1347,9 +1347,12 @@ mayor, cada efecto `repetir` adelanta reproducciones de la tanda hasta
 completar N vivas: cuentan la pendiente y las adelantadas de la tanda cuyo
 coordinador sigue vivo. Una adelantada que ya terminó no ocupa lugar ni se
 vuelve a lanzar. Si uno de los dos intentos simultáneos de una reproducción
-sale con un rechazo del lanzador, el efecto recoge antes el otro intento: su
-recibo válido queda en la caché y el intento que abre `absolver` o `reanudar`
-no lo vuelve a lanzar.
+sale con un rechazo del lanzador, el efecto recoge antes el otro intento. Si
+ese intento deja un recibo válido con código distinto de 75, queda en la
+caché y el intento que abre `absolver` o `reanudar` no lo vuelve a lanzar.
+El efecto espera a que ese otro intento termine antes de devolver el
+rechazo, como la suite espera a todos sus modos: la pausa se declara cuando
+ya no queda ninguna corrida de la reproducción en vuelo.
 Las corridas filtradas conservan el host que decide `host_de`.
 
 ### Checkout del operador
