@@ -154,6 +154,77 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual(self.lineas('versiones.log'), ['exige-c exige-c'])
         self.assertEqual(self.comando(self.operador, 'cat-file', '-t', C), 'commit')
 
+    def pausar_por_c_sin_transferir(self, bloquear):
+        """Pausa por una transferencia fallida de C; devuelve el main que avanza."""
+        tercero = self.version('tercero', self.nuevo)
+        original = Snapshots.comando_git
+
+        def comando_git(snapshots, ruta, *args, verificar=True):
+            if bloquear.activo and args and args[0] == 'fetch-pack' and not (
+                    args[-1].endswith(self.nuevo) or args[-1].endswith(tercero)):
+                raise FalloSnapshot('git-del-operador')
+            return original(snapshots, ruta, *args, verificar=verificar)
+
+        bloquear.parche = patch.object(Snapshots, 'comando_git', comando_git)
+        bloquear.parche.start()
+        self.addCleanup(bloquear.parche.stop)
+        self.assertEqual(self.hasta_pausa().pausa.detalle, 'checkout-operador:sha-no-disponible')
+        self.assertFalse(self.lineas('lanzamientos.jsonl'))
+        self.assertFalse(list(self.contexto.hasito.estado.rglob('iniciado.json')))
+        self.push(tercero, 'refs/heads/main')
+        return tercero
+
+    def assert_rearma_sin_lanzar(self, tercero):
+        self.juicio('reanudar')
+        self.contexto.tick(9000)
+        self.contexto.tick(9120)
+        estado = self.estado()
+        self.assertEqual(estado.trenes[0].fase, Terminal('REARMAR'))
+        self.assertIsNone(estado.pausa)
+        self.assertFalse(self.lineas('lanzamientos.jsonl'))
+        self.contexto.tick(9240)
+        self.assertEqual(self.estado().trenes[-1].fase, Congelado(tercero))
+
+    def test_primer_lanzamiento_fallido_con_transferencia_restaurada_rearma(self):
+        # disponer(C) falla antes de Popen: ningún coordinador, ningún iniciado.json.
+        bloquear = type('Bloqueo', (), {'activo': True})
+        tercero = self.pausar_por_c_sin_transferir(bloquear)
+        bloquear.activo = False
+        self.assert_rearma_sin_lanzar(tercero)
+
+    def test_primer_lanzamiento_fallido_con_fallo_persistente_rearma(self):
+        bloquear = type('Bloqueo', (), {'activo': True})
+        tercero = self.pausar_por_c_sin_transferir(bloquear)
+        self.assert_rearma_sin_lanzar(tercero)
+
+    def test_dos_modos_con_contract_vivo_y_e2e_fallido_no_rearma(self):
+        self.config['modos'] = ['contract', 'e2e']
+        self.contexto.hasito = seleccionar(self.config, self.contexto.git)
+        tercero = self.version('tercero', self.nuevo)
+        original = Snapshots.disponer
+        llamadas = []
+
+        def disponer(snapshots, commit):
+            llamadas.append(commit)
+            if len(llamadas) == 2:
+                raise FalloSnapshot('sha-no-disponible')
+            return original(snapshots, commit)
+
+        with patch.object(Snapshots, 'disponer', disponer):
+            self.assertEqual(self.hasta_pausa().pausa.detalle,
+                             'checkout-operador:sha-no-disponible')
+        self.esperar(next(self.contexto.hasito.estado.rglob('contract')) / '0' / 'iniciado.json')
+        self.assertFalse(list(self.contexto.hasito.estado.rglob('e2e/0/iniciado.json')))
+        self.push(tercero, 'refs/heads/main')
+        self.juicio('reanudar')
+        for n in range(15):
+            self.contexto.tick(9000 + n * 120)
+            fase = self.estado().trenes[0].fase
+            self.assertNotEqual(fase, Terminal('REARMAR'))
+            if isinstance(fase, Certificado):
+                break
+        self.assertIsInstance(fase, Certificado)
+
     def test_origin_ajeno_e_insteadof_sobre_la_ruta_local(self):
         ajeno = self.raiz / 'ajeno.git'
         self.comando(self.raiz, 'init', '--bare', str(ajeno))
