@@ -61,7 +61,7 @@ def identidad_boat_pendiente(registro):
                      pendiente['cause'], re.IGNORECASE):
             return None
         return identidad
-    # El fallback puede devolver un 75 del desk sin generar un sidecar.
+    # Un 75 del desk en el fallback no deja sidecar ni RECIBO ni RESULT.
     if log.exists():
         lineas = log.read_text(encoding='utf-8', errors='replace').splitlines()
         if (any(linea.startswith('HOST=desktop fallback=') for linea in lineas) and
@@ -373,7 +373,7 @@ class Jale:
             return None
         rechazos = [r for r in recibos if isinstance(r, RechazoLanzador)]
         if rechazos:
-            # Conciliar cualquier envío incierto antes de que un juicio abra otro intento.
+            # Un salida-sin-recibo se reengancha a su envío; los demás rechazos abren otro intento.
             return str(raiz), next((r for r in rechazos if r.detalle == 'salida-sin-recibo'),
                                   rechazos[0])
         if any(r is False for r in recibos):

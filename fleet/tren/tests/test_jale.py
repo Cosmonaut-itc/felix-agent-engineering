@@ -993,7 +993,6 @@ class JaleTests(Aislado):
         self.assertEqual(resultado, Incompleto(75, raiz))
         primera, = self.invocaciones()
         self.assertIn('HOST=desktop fallback=sin-lugar', Path(primera['log']).read_text())
-        # El desk confirma el mismo envío al recuperar la conexión.
         self.assertEqual(self.suite(intento=1, reanudar=raiz)[1], Completo('verde', costo_s=4))
         self.assertEqual(self.invocaciones()[-1]['boat']['SEN_RUN_ID'],
                          primera['boat']['SEN_RUN_ID'])
