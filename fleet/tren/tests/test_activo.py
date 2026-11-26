@@ -96,6 +96,9 @@ class Contexto:
                      "changed_files": 1, "labels": [], "mergeable": True}
             if (self.raiz / ("pr-cerrado-" + str(pr))).exists():
                 valor["state"] = "closed"
+        if "-i" in argv:
+            pagina = valor[0] if isinstance(valor, list) else valor
+            return subprocess.CompletedProcess(argv, 0, "HTTP/2.0 200 OK\n\n" + json.dumps(pagina), "")
         return subprocess.CompletedProcess(argv, 0, json.dumps(valor), "")
 
     def feedback_gh(self, argv, **kwargs):

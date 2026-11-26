@@ -288,6 +288,20 @@ Cada tick de la cadena toma y suelta el candado del carril y observa de nuevo.
 `stdout.log` recibe una línea JSON por tick y el proceso sale con el código
 del último. `tick --seco` corre un solo tick.
 
+Las lecturas guardan el ETag, el cuerpo y el enlace siguiente de cada página
+en `github-cache.sqlite3`, junto al ledger. GitHub revalida cada página con
+`If-None-Match`. Un 304 autorizado reutiliza el cuerpo y el enlace guardados
+sin gastar cuota primaria. Al abrir se podan las respuestas sin uso durante
+siete días. Si falla la caché, la lectura sigue contra GitHub.
+
+Un límite de GitHub durante el tick o el sondeo de CI corta la cadena con
+salida 75 y emite un JSON como
+`{"error":"limite-github","recurso":"core","reinicio":"2026-01-01T12:00:00+00:00"}`.
+El tick que encuentra el límite conserva la fase, la cola y las admisiones.
+No guarda un paso operativo ni consume plazos o reintentos con esa lectura.
+La limpieza local previa a observar sigue ocurriendo. Los POST de feedback
+conservan su reintento habitual.
+
 La cadena termina también en dos casos:
 
 - Cambió algún módulo instalado de `fleet/tren` desde que el proceso arrancó.
