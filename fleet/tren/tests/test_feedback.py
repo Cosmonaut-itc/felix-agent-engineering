@@ -64,6 +64,14 @@ class ComandoFeedbackTests(unittest.TestCase):
             "bash scripts/test-hosts/run-remote.sh desktop '<log>' contract "
             + self.causal + " apps/api/src/a.contract.test.ts")
 
+    def test_jale_en_boat_publica_el_comando_del_lanzador(self):
+        argv = ("bash", "/privado/envoltorio", "boat", "/privado/corrida.log",
+                self.jale.check, self.causal, self.jale.unidad)
+        cuerpo = self.publicar(*self.atribuir(self.jale, argv))
+        self.comprobar_atribuido(self.jale, cuerpo,
+            "bash scripts/test-hosts/run-remote.sh boat '<log>' contract "
+            + self.causal + " apps/api/src/a.contract.test.ts")
+
     def test_hasito_conserva_texto_del_comando_publicado(self):
         argv = ("bash", "/privado/envoltorio", "--repetir", "/privado/resultado.json",
                 "--sha", self.causal, "--worktree", "/privado/arbol", "--veces", "2",
