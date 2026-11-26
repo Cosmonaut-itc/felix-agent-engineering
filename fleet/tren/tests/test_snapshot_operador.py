@@ -316,6 +316,61 @@ c.tick(2000)
         self.contexto.tick(2120)
         self.assertEqual(self.estado().trenes[-1].fase, Congelado(tercero))
 
+    def prelanzar(self):
+        self.config['prelanzar'] = True
+        self.contexto.hasito = seleccionar(self.config, self.contexto.git)
+
+    def ramas_ci(self):
+        return self.comando(self.origen, 'for-each-ref', '--format=%(refname)',
+                            'refs/heads/tren/').split()
+
+    def test_main_avanza_tras_morir_al_pedir_ci_no_publica_ni_lanza(self):
+        self.prelanzar()
+        self.ruta_contexto.write_text(json.dumps(self.config))
+        codigo = """import os
+from adaptadores import seleccionar
+from test_activo import Contexto
+c = Contexto(sys.argv[3])
+c.hasito = seleccionar(c.config, c.git)
+def morir(nombre, efecto):
+    if nombre == 'antes-ejecutar' and efecto.tipo == 'solicitar-ci':
+        os._exit(77)
+for n in range(15):
+    c.tick(100 + n * 120, morir)
+"""
+        with self.hijo(codigo) as hijo:
+            salida, error = hijo.communicate(timeout=30)
+            self.assertEqual(hijo.returncode, 77, (salida, error))
+        tercero = self.version('tercero', self.nuevo)
+        self.push(tercero, 'refs/heads/main')
+        self.contexto.tick(2000)
+        estado = self.estado()
+        self.assertEqual(estado.trenes[0].fase, Terminal('REARMAR'))
+        self.assertIsNone(estado.pausa)
+        self.assertEqual(self.ramas_ci(), [])
+        self.assertFalse(self.solicitudes())
+        self.contexto.tick(2120)
+        self.assertEqual(self.estado().trenes[-1].fase, Congelado(tercero))
+
+    def test_main_avanza_en_pausa_y_reanudar_no_pide_ci_ni_lanza(self):
+        self.prelanzar()
+        (self.raiz / 'ci-pendiente').touch()
+        self.hasta_fase(EsperandoCI)
+        self.assertEqual(self.hasta_pausa().pausa.detalle, 'ci-sin-resultado')
+        ramas, lanzamientos = self.ramas_ci(), self.lineas('lanzamientos.jsonl')
+        tercero = self.version('tercero', self.nuevo)
+        self.push(tercero, 'refs/heads/main')
+        self.juicio('reanudar')
+        self.contexto.tick(9000)
+        self.contexto.tick(9120)
+        estado = self.estado()
+        self.assertEqual(estado.trenes[0].fase, Terminal('REARMAR'))
+        self.assertIsNone(estado.pausa)
+        self.assertEqual(self.ramas_ci(), ramas)
+        self.assertEqual(self.lineas('lanzamientos.jsonl'), lanzamientos)
+        self.contexto.tick(9240)
+        self.assertEqual(self.estado().trenes[-1].fase, Congelado(tercero))
+
     def test_recupera_argv_legacy_de_jale(self):
         ruta = self.config.pop('checkout_operador')
         self.hasta_fase(EsperandoCI)

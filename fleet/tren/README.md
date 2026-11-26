@@ -419,11 +419,14 @@ lanzar la suite, porque su C ya no puede aterrizar. Esto ocurre, por ejemplo,
 al levantar una pausa larga durante la que se mergeó por fuera. Los miembros
 vuelven a la fila igual que en la promoción, pero sin pausa: en el tick
 siguiente el lote se congela sobre main. En `EsperandoCI` sólo se rearma
-mientras el efecto `iniciar-suite` del tren no haya empezado. Desde que la
-outbox lo marca `ejecutando`, puede haber coordinadores vivos aunque la fase
+mientras el efecto `iniciar-suite` del tren siga `pendiente` en la outbox.
+Desde que deja de estarlo, puede haber coordinadores vivos aunque la fase
 no haya cambiado, y el tren sigue por la suite y la promoción, que pausa
 `escritor-externo`. Un tren en `Corriendo` o `Diagnosticando` tampoco se
-rearma por este camino.
+rearma por este camino. La misma regla rige al ejecutar la outbox: al
+recuperar tras una muerte, al levantar una pausa o al resolver un juicio,
+`solicitar-ci` e `iniciar-suite` de un tren con la B atrás de main esperan
+sin publicar ni lanzar, y el paso siguiente rearma el tren.
 
 Los campos añadidos tienen defaults; el encoding etiquetado y esquema 1
 del ledger siguen vigentes. Sólo el tick activo importa este ejecutor.
@@ -1456,11 +1459,12 @@ en caché para la reanudación.
 Si `solicitar-ci` se reintenta tras la muerte de un tick, vuelve a prelanzar
 sobre el mismo registro, salvo que ese tick ya lea en rojo el CI de esa
 misma solicitud. El rojo de una solicitud anterior no lo impide: al reanudar
-una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza.
+una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza, salvo
+que main haya dejado atrás la B del lote, que entonces se rearma.
 
 Si falla el prelanzamiento, `prelanzamiento-fallido` registra el tren y
-el error, y la solicitud de CI se completa. Si el CI sale rojo o un juicio
-aborta el tren antes de confirmar la corrida, `suite-prelanzada-sin-leer`
+el error, y la solicitud de CI se completa. Si el CI sale rojo, un juicio
+aborta el tren o main deja atrás su B antes de confirmar la corrida, `suite-prelanzada-sin-leer`
 registra el modo, la clave de la corrida (si llegó a escribirse) y si ya
 terminó. Cada corrida sigue en el host hasta terminar y su resultado queda
 sin consumir.
