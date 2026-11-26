@@ -2708,7 +2708,8 @@ cases = {
     'retroceso': (1, 'la base nueva no incorpora la base revisada'),
     'sin-conflicto-fuera': (1, 'árbol fuera'), 'id-base-nombrado': (4, 'id repetido'),
     'snapshot-agregado': (4, 'presencia del snapshot'), 'snapshot-borrado': (4, 'presencia del snapshot'),
-    'renombre': (1, 'árbol fuera'), 'when-no-seguro': (2, 'rango de enteros seguros'),
+    'renombre': (1, 'renombres de directorio'), 'renombre-conservado': (1, 'renombres de directorio'),
+    'when-no-seguro': (2, 'rango de enteros seguros'),
     'when-negativo': (2, 'rango de enteros seguros'), 'error-python': None,
 }
 for case, failure in cases.items():
@@ -2724,6 +2725,7 @@ for case, failure in cases.items():
     base = entry(0, 100, 'base')
     incoming = entry(1, 200, 'destino')
     clean = case.startswith('sin-conflicto')
+    directory_rename = case in ('renombre', 'renombre-conservado')
     retreat = case == 'retroceso'
     first = entry(2 if clean or retreat else 1, 250 if retreat else 150, 'primera')
     second, third = entry(2, 175, 'segunda'), entry(3, 180, 'tercera')
@@ -2766,7 +2768,7 @@ for case, failure in cases.items():
         write(catalog, catalog_base)
     if case == 'compartido-fuera':
         (repo / 'compartido.txt').write_text('base\n' + '\n' * 12 + 'base\n')
-    if case == 'renombre':
+    if directory_rename:
         (repo / 'legacy').mkdir()
         (repo / 'legacy/marcador.txt').write_text('marcador\n')
     commit(repo, 'base')
@@ -2790,7 +2792,7 @@ for case, failure in cases.items():
     if clean:
         padded(first)
     (repo / 'parche.txt').write_text('cambio revisado\n')
-    if case == 'renombre':
+    if directory_rename:
         (repo / 'legacy/ajuste.sql').write_bytes(b'UPDATE original SET id = 1 WHERE id IS NULL;\n')
     if mixed:
         mine = deepcopy(catalog_base)
@@ -2828,7 +2830,7 @@ for case, failure in cases.items():
         (repo / 'compartido.txt').write_text('base\n' + '\n' * 12 + 'destino\n')
     if case == 'conflicto-fuera':
         (repo / 'parche.txt').write_text('cambio incompatible\n')
-    if case == 'renombre':
+    if directory_rename:
         git(repo, 'mv', 'legacy/marcador.txt', f'{directory}/marcador.txt')
     if not retreat:
         commit(repo, 'destino')
@@ -2897,6 +2899,10 @@ for case, failure in cases.items():
     if mixed:
         theirs['inicio'] = mine['inicio']
         write(catalog, theirs)
+    if case == 'renombre-conservado':
+        (repo / 'legacy').mkdir(exist_ok=True)
+        sql = git(repo, 'show', 'revisado:legacy/ajuste.sql').stdout
+        (repo / 'legacy/ajuste.sql').write_bytes(sql.encode())
     commit(repo, 'renumerado')
 
     command = [bash, script, 'destino', 'revisado', 'nuevo']
@@ -2924,11 +2930,14 @@ for case, failure in cases.items():
             assert lines[0].startswith('Ronda delta:'), (case, result)
             assert f'{directory}/{journal}' in lines, (case, result)
         assert f'punto {point}:' in lines[-1] and reason in lines[-1], (case, result)
-        if case in ('fuera', 'renombre'):
+        if case == 'fuera' or directory_rename:
             resolution = lines[1].split()
             assert resolution[:4] == ['Resolución:', 'git', 'diff', '--no-relative'], (case, result)
             changed_path = 'parche.txt' if case == 'fuera' else f'{directory}/ajuste.sql'
-            assert changed_path in git(repo, 'diff', '--name-only', *resolution[4:]).stdout
+            if directory_rename:
+                assert changed_path in lines, (case, result)
+            paths = git(repo, 'diff', '--name-only', '--no-renames', *resolution[4:]).stdout.splitlines()
+            assert changed_path in paths
     else:
         assert lines[0].startswith('APTO vigente'), (case, result)
         assert 'Renumeración de Drizzle' in lines[1], (case, result)

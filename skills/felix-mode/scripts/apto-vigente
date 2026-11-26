@@ -370,9 +370,9 @@ try:
         if merge.returncode != 1:
             merge.check_returncode()
         unmoved_tree, _, unmoved_conflicts = merge.stdout.decode('utf-8', 'surrogateescape').partition('\n')
-        require(paths(unmoved_conflicts) <= migration_paths,
-                'punto 1: hay conflictos fuera de las migraciones')
-        auto = inventory(unmoved_tree)
+        require(unmoved_tree == sys.argv[5] and paths(unmoved_conflicts) == conflicts,
+                'punto 1: la detección de renombres de directorio cambia la mezcla')
+        auto = inventory(sys.argv[5])
         require(all(any(path.startswith(prefix) for prefix in dirs) for path in changes(auto, trees[-1])),
                 'punto 1: el árbol fuera de las migraciones difiere de la mezcla')
     elif sys.argv[5] != sys.argv[4]:

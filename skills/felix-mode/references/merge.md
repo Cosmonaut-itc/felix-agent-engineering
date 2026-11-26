@@ -264,8 +264,10 @@ restantes y la separación entre propietario, verificador y stacker.
      lista, o la mezcla tuvo conflictos. La lista incluye los archivos en
      conflicto. Si aparece `Resolución`, revisa también ese diff contra la
      mezcla automática. Corre una ronda delta sobre esos cambios. Es una
-     ronda de sincronización. Si la mezcla fue limpia y el head difiere sin
-     cumplir la excepción, la salida es `Ronda`.
+     ronda de sincronización. Si se rechaza la excepción de Drizzle, la
+     última línea `Excepción de migraciones: punto N: …` indica qué falló.
+     Si la mezcla fue limpia y el head difiere sin cumplir la excepción, la
+     salida es `Ronda`.
    - `Ronda`, o un error del script: corre la ronda que fija **Rondas**.
 
    Una ronda de sincronización no cuenta para el límite de **Rondas**. Las
