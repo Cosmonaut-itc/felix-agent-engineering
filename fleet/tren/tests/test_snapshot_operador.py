@@ -552,15 +552,16 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.contexto.tick(2200)
         self.assertEqual(self.estado().trenes[0].fase, Terminal('ABORTADO'))
         esperado = {'tren': tren.id, 'modo': 'contract', 'terminada': False,
+                    'cancelacion_pedida': True, 'cancelacion_confirmada': True,
                     'clave': json.loads((registro / 'iniciado.json').read_text())['clave']}
         self.assertEqual(self.eventos_suite('suite-sin-leer'), [esperado])
         self.assertEqual(self.eventos_suite('suite-prelanzada-sin-leer'), [])
+        self.assertTrue((registro / 'cancelar.json').exists())
         with self.ledger() as ledger:
             clave_efecto = clave('suite', tren.id)
             fila = ledger.db.execute('SELECT estado FROM outbox WHERE clave=?',
                                      (clave_efecto,)).fetchone()
             self.assertEqual(fila[0], 'cancelado')
-        (self.raiz / 'seguir').touch()
         self.esperar(registro / 'codigo.json')
         self.contexto.tick(2300)
         self.assertEqual(self.eventos_suite('suite-sin-leer'), [esperado])
@@ -691,12 +692,12 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
             self.coordinador_vivo(registro / 'listo', registro)
             iniciado = json.loads((registro / 'iniciado.json').read_text())
             aviso = {'tren': tren.id, 'modo': 'contract', 'clave': iniciado['clave'],
-                     'terminada': False}
+                     'terminada': False, 'cancelacion_pedida': True,
+                     'cancelacion_confirmada': True}
             if registro.parents[1] == raiz_confirmada:
                 confirmadas.append(aviso)
             else:
-                adelantos.append(dict(aviso, cancelacion_pedida=True,
-                                      cancelacion_confirmada=True))
+                adelantos.append(aviso)
         self.assertEqual((len(confirmadas), len(adelantos)), (2, 2))
         (self.raiz / 'pr-cerrado-1').touch()
         self.contexto.tick(1800)

@@ -1511,14 +1511,14 @@ que main haya dejado atrás la B del lote, que entonces se rearma.
 
 Si falla el prelanzamiento, `prelanzamiento-fallido` registra el tren y
 el error, y la solicitud de CI se completa. Cuando el tren pasa a
-`Terminal`, el tick pide cancelar sus suites y repeticiones adelantadas sin
-confirmar. Cada coordinador lee la solicitud durable bajo el candado de su
-corrida, manda TERM al lanzador que creó y conserva el candado hasta que
-éste sale. La corrida pedida para cancelación queda fuera de los reintentos
-y su salida queda sin consumir. El evento `suite-prelanzada-sin-leer`
-registra en el mismo paso el modo, la clave (si llegó a escribirse), si ya
-había terminado, si se pidió cancelar y si el candado se liberó dentro del
-plazo. `cancelacion_confirmada` indica que el lanzador salió y soltó el
+`Terminal`, el tick pide cancelar sus suites y repeticiones vivas, tanto
+confirmadas como especulativas. Cada coordinador lee la solicitud durable
+bajo el candado de su corrida, manda TERM al lanzador que creó y conserva
+el candado hasta que éste sale. La corrida pedida para cancelación queda fuera de los reintentos
+y su salida queda sin consumir. Los eventos `suite-prelanzada-sin-leer` y
+`suite-sin-leer` registran en el mismo paso el modo, la clave (si llegó a
+escribirse), si ya había terminado, si se pidió cancelar y si el candado se
+liberó dentro del plazo. `cancelacion_confirmada` indica que el lanzador salió y soltó el
 candado. La liberación del recurso en el host depende del lanzador. Los
 errores de cancelación se registran en ese aviso.
 
@@ -1538,9 +1538,9 @@ vence por su TTL. En `desktop`, TERM pide cancelar la tarea identificada
 de Pueue. Si Boat ya cayó a `desktop`, la corrida sigue en el desk
 (SEN-7715). `auto` hereda el comportamiento del host que elige. El
 lanzador de `mini` usa transporte SSH directo y carece de cancelación en
-el host. Los coordinadores de la versión anterior no leen `cancelar.json`.
-Antes de instalar, espera a que salgan las prelanzadas vivas o cancélalas
-a mano.
+el host. Los coordinadores de la versión anterior sólo leen `cancelar.json`
+en registros prelanzados. Antes de instalar, espera a que salgan las corridas
+vivas o cancélalas a mano.
 
 La suite de Jale libera el candado del carril al final del tick que lanza
 o consulta los coordinadores. Mientras siga vivo algún modo o intento,
@@ -1565,9 +1565,9 @@ pendiente al vencer ese plazo, vuelve a pausar con `ci-sin-resultado`.
 
 Si el tren pasa a `Terminal` con una corrida confirmada viva o con salida
 pendiente de leer, el mismo paso emite `suite-sin-leer` con `tren`, `modo`,
-`clave` y `terminada`. La corrida confirmada puede terminar en el host y su
-resultado queda sin consumir. La clave identifica la corrida para una
-intervención manual.
+`clave`, `terminada`, `cancelacion_pedida` y `cancelacion_confirmada`. Si
+ocurre un error al cancelar, el aviso incluye `error_cancelacion`. La fila
+de la outbox queda en `cancelado` y el resultado queda sin consumir.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar

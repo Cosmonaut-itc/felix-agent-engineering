@@ -46,9 +46,6 @@ def ejecutar(registro, argv, entorno, salida):
     pedido = registro / CANCELAR
     if pedido.exists():
         return 75
-    if not (registro / 'prelanzada.json').exists():
-        return subprocess.run(argv, env=entorno, stdout=salida, stderr=salida,
-                              check=False).returncode
     # Sólo el coordinador que tiene el candado puede señalar a su propio hijo.
     # El tick no necesita conocer ni recuperar un PID.
     with subprocess.Popen(argv, env=entorno, stdout=salida, stderr=salida) as lanzador:
