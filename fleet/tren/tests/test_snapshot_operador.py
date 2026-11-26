@@ -129,6 +129,31 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual(self.comando(self.operador, 'rev-parse', 'refs/pao-tren/operador/' + C), C)
         self.assertEqual(self.cabeza(self.operador), self.viejo)
 
+    def test_c_sin_transferir_pausa_sin_lanzar_y_reanuda(self):
+        exige = self.version('exige-c', self.nuevo,
+                             'git -C "$(dirname "$0")" cat-file -e "$4^{commit}" || exit 97')
+        self.push(exige, 'refs/heads/main')
+        original = Snapshots.comando_git
+        bloqueados = []
+
+        def comando_git(snapshots, ruta, *args, verificar=True):
+            # Falla sólo la transferencia de C, no la del main del snapshot.
+            if args and args[0] == 'fetch-pack' and not args[-1].endswith(exige):
+                bloqueados.append(args[-1])
+                raise FalloSnapshot('git-del-operador')
+            return original(snapshots, ruta, *args, verificar=verificar)
+
+        with patch.object(Snapshots, 'comando_git', comando_git):
+            pausa = self.hasta_pausa().pausa
+        self.assertEqual(pausa.detalle, 'checkout-operador:sha-no-disponible')
+        self.assertTrue(bloqueados)
+        self.assertEqual(len(self.solicitudes()), 1)
+        self.assertFalse(self.lineas('versiones.log'))
+        self.juicio('reanudar')
+        C = self.hasta_fase(Certificado).trenes[0].fase.C
+        self.assertEqual(self.lineas('versiones.log'), ['exige-c exige-c'])
+        self.assertEqual(self.comando(self.operador, 'cat-file', '-t', C), 'commit')
+
     def test_origin_ajeno_e_insteadof_sobre_la_ruta_local(self):
         ajeno = self.raiz / 'ajeno.git'
         self.comando(self.raiz, 'init', '--bare', str(ajeno))
