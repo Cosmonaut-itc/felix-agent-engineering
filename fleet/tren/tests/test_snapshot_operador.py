@@ -116,6 +116,19 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual(self.lineas('versiones.log'), ['nuevo nuevo'])
         self.assertEqual(self.comando(self.operador, 'status', '--porcelain'), antes)
 
+    def test_c_recien_armado_existe_en_el_repo_del_lanzador(self):
+        # Como el export de Boat: el lanzador lee C de su propio repositorio.
+        exige = self.version('exige-c', self.nuevo,
+                             'git -C "$(dirname "$0")" cat-file -e "$4^{commit}" || exit 97')
+        self.push(exige, 'refs/heads/main')
+        estado = self.hasta_fase(Certificado)
+        C = estado.trenes[0].fase.C
+        self.comprobar_snapshot(self.argv(), exige)
+        self.assertEqual(self.lineas('versiones.log'), ['exige-c exige-c'])
+        self.assertEqual(self.comando(self.operador, 'cat-file', '-t', C), 'commit')
+        self.assertEqual(self.comando(self.operador, 'rev-parse', 'refs/pao-tren/operador/' + C), C)
+        self.assertEqual(self.cabeza(self.operador), self.viejo)
+
     def test_origin_ajeno_e_insteadof_sobre_la_ruta_local(self):
         ajeno = self.raiz / 'ajeno.git'
         self.comando(self.raiz, 'init', '--bare', str(ajeno))
