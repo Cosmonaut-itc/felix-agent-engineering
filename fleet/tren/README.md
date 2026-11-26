@@ -1340,8 +1340,11 @@ publica C y pide su CI. La clave es booleana, vale `false` por omisión y se
 lee en cada tick. Apagarla surte efecto en el tick siguiente sin instalar.
 
 `"repeticiones_paralelas"` acepta enteros de 1 a 8 y se lee en cada tick.
-Con 1, el valor por omisión, los intentos corren en serie. Los valores mayores
-incluyen la reproducción pendiente en el límite de reproducciones por tanda.
+Con 1, el valor por omisión, los intentos corren en serie. Con un valor N
+mayor, cada efecto `repetir` adelanta reproducciones de la tanda hasta
+completar N vivas: cuentan la pendiente y las adelantadas de la tanda cuyo
+coordinador sigue vivo. Una adelantada que ya terminó no ocupa lugar ni se
+vuelve a lanzar.
 Las corridas filtradas conservan el host que decide `host_de`.
 
 ### Checkout del operador

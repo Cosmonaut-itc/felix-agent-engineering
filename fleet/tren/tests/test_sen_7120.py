@@ -4,6 +4,7 @@ from itertools import combinations, count
 import json
 import os
 import subprocess
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -216,6 +217,37 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
             self.assertIsInstance(self.repetir(pedido), Repeticion)
         self.assertEqual(len(self.invocaciones()), 6)
 
+    def test_adelanto_distingue_vivo_terminado_y_sin_lanzar(self):
+        self.plan([{'esperar': True}])
+        pedido, otro = self.pedidos[:2]
+        self.adelantar((pedido,))
+        self.assertEqual(self.adaptador.adelanto(TREN, pedido[0]), 'vivo')
+        self.assertEqual(self.adaptador.adelanto(TREN, otro[0]), '')
+        (self.raiz / 'seguir').touch()
+        for registro in self.registros(pedido):
+            self.esperar_archivo(registro / 'codigo.json')
+        limite = time.monotonic() + 5
+        while (any(lanzamiento_activo(r / 'candado') for r in self.registros(pedido))
+               and time.monotonic() < limite):
+            time.sleep(.01)
+        self.assertEqual(self.adaptador.adelanto(TREN, pedido[0]), 'terminado')
+
+    def test_fallo_al_lanzar_el_segundo_intento_conserva_el_75_del_primero(self):
+        (self.raiz / 'primero-75').touch()
+        popen = subprocess.Popen
+        llamadas = count(1)
+
+        def sin_segundo(*args, **kwargs):
+            if next(llamadas) == 2:
+                raise OSError('sin procesos')
+            return popen(*args, **kwargs)
+
+        with patch('adaptadores.jale.subprocess.Popen', side_effect=sin_segundo):
+            self.assertIsInstance(self.repetir(), Incompleto)
+        with patch('adaptadores.jale.subprocess.Popen', side_effect=OSError('sin procesos')):
+            with self.assertRaisesRegex(ResultadoInvalido, 'lanzador-no-disponible'):
+                self.repetir(self.pedidos[1])
+
     def test_otra_instancia_recupera_coordinadores_vivos_y_terminados(self):
         self.plan([{'esperar': True}])
         pedidos = self.pedidos[:2]
@@ -304,6 +336,7 @@ class EfectoTests(unittest.TestCase):
         self.obs = observacion(4)
         self.adaptador = Mock(spec=Jale)
         self.adaptador.repeticiones_paralelas = 4
+        self.adaptador.adelanto.return_value = ''
         self.adaptador.repetir.return_value = evidencia(self.s).resultado
         self.git = Mock()
         self.git.armar.side_effect = (ConflictoCadena(2, ('conflicto',)), *(
@@ -333,6 +366,22 @@ class EfectoTests(unittest.TestCase):
                          [(B, ((pr, 'a' * 40),)) for pr in (2, 3)])
         self.adaptador.adelantar_repeticiones.assert_called_once_with(
             LOTE, 'suite.json', ((self.demas[1], '3' * 40),), TREN)
+
+    def test_adelantadas_vivas_ocupan_lugar_y_las_terminadas_no_se_repiten(self):
+        self.adaptador.repeticiones_paralelas = 3
+        self.git.armar.side_effect = None
+        self.git.armar.return_value = Candidato(B, LOTE.eslabones[3:], '4' * 40, LOTE.arbol)
+        self.adaptador.adelanto.side_effect = ('vivo', 'terminado', '')
+        self.ejecutar()
+        self.assertEqual([c.args for c in self.adaptador.adelanto.call_args_list],
+                         [(TREN, s) for s in self.demas])
+        self.git.armar.assert_called_once_with(B, ((4, 'a' * 40),))
+        self.adaptador.adelantar_repeticiones.assert_called_once_with(
+            LOTE, 'suite.json', ((self.demas[2], '4' * 40),), TREN)
+        self.adaptador.adelanto.side_effect = ('vivo', 'vivo', '')
+        self.ejecutar()
+        self.git.armar.assert_called_once()
+        self.assertEqual(self.adaptador.adelantar_repeticiones.call_args.args[2], ())
 
     def test_fallos_de_adelanto_avisan_y_conservan_efecto_serial(self):
         hasito = Hasito('/sintetico', self.git)

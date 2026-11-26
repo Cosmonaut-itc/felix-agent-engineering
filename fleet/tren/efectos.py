@@ -4,7 +4,6 @@ La observación devuelta conserva las vistas de admisión del llamador. Publicar
 la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
 """
 from dataclasses import dataclass, replace
-from itertools import islice
 import subprocess
 from typing import Optional
 
@@ -40,21 +39,27 @@ def aviso_prelanzamiento(tren, exc):
     return {"tren": tren, "motivo": motivo, "clase": clase}
 
 
-def pedidos_adelantados(fase, git):
+def pedidos_adelantados(fase, git, adaptador, tren):
     c = fase.candidato
     prs = tuple(pr for pr, _, _ in c.eslabones)
     plan = planificar(fase.fallos, prs, fase.evidencias,
                       fase.presupuesto_s - fase.costo_infra_s, en_paralelo=True)
-    for solicitud in plan.tanda:
-        if solicitud.id == fase.pendiente.id:
+    demas = [(s, adaptador.adelanto(tren, s)) for s in plan.tanda if s.id != fase.pendiente.id]
+    cupo = adaptador.repeticiones_paralelas - 1 - sum(a == "vivo" for _, a in demas)
+    for solicitud, adelanto in demas:
+        if cupo <= 0:
+            return
+        if adelanto:
             continue
+        commit = c.C if solicitud.objetivo == "C" else c.B
         if solicitud.objetivo == "subconjunto":
             miembros = tuple((pr, head) for pr, head, _ in c.eslabones if pr in solicitud.prs)
             subconjunto = git.armar(c.B, miembros)
-            if isinstance(subconjunto, Candidato):
-                yield solicitud, subconjunto.C
-        else:
-            yield solicitud, c.C if solicitud.objetivo == "C" else c.B
+            if not isinstance(subconjunto, Candidato):
+                continue
+            commit = subconjunto.C
+        cupo -= 1
+        yield solicitud, commit
 
 
 def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
@@ -134,10 +139,10 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                           if s.objetivo == "B" else fase.subconjunto.C)
                 aviso = None
                 adelantar = getattr(adaptador, "adelantar_repeticiones", None)
-                paralelas = getattr(adaptador, "repeticiones_paralelas", 1)
-                if admitidos and not estado.pausa and adelantar is not None and paralelas > 1:
+                if (admitidos and not estado.pausa and adelantar is not None and
+                        getattr(adaptador, "repeticiones_paralelas", 1) > 1):
                     try:
-                        pedidos = tuple(islice(pedidos_adelantados(fase, git), paralelas - 1))
+                        pedidos = tuple(pedidos_adelantados(fase, git, adaptador, tren.id))
                         adelantar(fase.candidato, fase.suite, pedidos, tren.id)
                     except (ResultadoInvalido, FalloSnapshot, FalloGit, OSError,
                             subprocess.SubprocessError) as exc:

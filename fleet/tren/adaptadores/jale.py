@@ -420,6 +420,13 @@ class Jale:
             exigir(isinstance(publicado, Publicado), 'subconjunto-no-publicado')
         return raiz, base
 
+    def adelanto(self, tren_id, solicitud):
+        raiz = self.estado / clave('repetir', tren_id, solicitud.id)
+        registros = [raiz / n / '0' for n in ('1', '2')]
+        if any(lanzamiento_activo(r / 'candado') for r in registros):
+            return 'vivo'
+        return 'terminado' if all((r / 'codigo.json').exists() for r in registros) else ''
+
     def adelantar_repeticiones(self, candidato, suite, pedidos, tren_id):
         if self.repeticiones_paralelas == 1:
             return
@@ -465,8 +472,14 @@ class Jale:
 
         intentos = []
         lanzadas = lanzar_intentos()
+        fallo_al_lanzar = None
         if self.repeticiones_paralelas > 1:
-            lanzadas = tuple(lanzadas)
+            simultaneas = []
+            try:
+                simultaneas.extend(lanzadas)
+            except ResultadoInvalido as exc:
+                fallo_al_lanzar = exc
+            lanzadas = simultaneas
             if any(proceso is False for *_, proceso in lanzadas):
                 return None
         for n, cache, cache_disponible, desde_base, ultimo, proceso in lanzadas:
@@ -489,6 +502,8 @@ class Jale:
             intentos.append(Intento(n, 'omitida' if u['resultado'] == 'no-corrida' else
                 u['resultado'], u['firma'], u['duracion_s'], str(ultimo.parent),
                 json.dumps(r['huella_entorno'], sort_keys=True)))
+        if fallo_al_lanzar is not None:
+            raise fallo_al_lanzar
         return Repeticion(commit, candidato.C, candidato.B,
             hashlib.sha256(Path(suite).read_bytes()).hexdigest(),
             (UnidadRepetida(fallo.check, fallo.unidad, fallo.parte,
