@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from adaptadores.ejecucion_jale import guardar
+from adaptadores.ejecucion_jale import clave_registro, guardar
 from adaptadores.hasito import ResultadoInvalido, exigir, leer_json
 from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
                      UnidadRepetida, RechazoLanzador, clave)
@@ -20,12 +20,54 @@ from operador import lanzamiento_activo
 
 
 MODOS = ('contract', 'e2e')
+HOSTS = ('auto', 'mini', 'desktop', 'boat')
+ESPERA_BOAT_S = 180
 PLAZO_PRELANZAMIENTO_S = 5
 
 
 def especulativa(registro):
     return ((registro / 'prelanzada.json').exists() and
             not (registro / 'confirmada.json').exists())
+
+
+def leer_pendiente_boat(log):
+    sidecar = log.with_name(log.name + '.boat-pendiente')
+    if not sidecar.exists():
+        return None
+    pendiente = leer_json(sidecar)
+    exigir(isinstance(pendiente, dict) and pendiente.get('status') == 'pending' and
+           isinstance(pendiente.get('cause'), str), 'pendiente-boat-invalido')
+    return pendiente
+
+
+def identidad_boat_pendiente(registro):
+    codigo = registro / 'codigo.json'
+    if not codigo.exists() or leer_json(codigo) != 75:
+        return None
+    archivo = registro / 'entorno.json'
+    if not archivo.exists():
+        return None
+    entorno = leer_json(archivo)
+    identidad = entorno.get('SEN_RUN_ID') if isinstance(entorno, dict) else None
+    if identidad is None:
+        return None
+    exigir(isinstance(identidad, str) and re.fullmatch(
+        r'[A-Za-z0-9][A-Za-z0-9_.-]{0,95}', identidad), 'pendiente-boat-invalido')
+    log = registro / 'corrida.log'
+    pendiente = leer_pendiente_boat(log)
+    if pendiente is not None:
+        # Boat conserva indefinidamente estas salidas sin un resultado recuperable.
+        if re.search(r'\b(?:interrupted|interrumpid[ao]s?|resultado desconocido|sin VM)\b|\bcancelaci',
+                     pendiente['cause'], re.IGNORECASE):
+            return None
+        return identidad
+    # Un 75 del desk en el fallback no deja sidecar ni RECIBO ni RESULT.
+    if log.exists():
+        lineas = log.read_text(encoding='utf-8', errors='replace').splitlines()
+        if (any(linea.startswith('HOST=desktop fallback=') for linea in lineas) and
+                not any(linea.startswith(('RECIBO ', 'RESULT ')) for linea in lineas)):
+            return identidad
+    return None
 
 
 def objeto(pares):
@@ -37,23 +79,28 @@ def objeto(pares):
     return resultado
 
 
-def leer_recibo(log, codigo, commit, modo, filtros):
+def leer_recibo(log, codigo, commit, modo, filtros, *, host):
     exigir(type(codigo) is int, 'salida-no-utilizable')
     if codigo == 64:
         return RechazoLanzador(str(Path(log).with_name('coordinador.log')))
     try:
-        lineas = Path(log).read_text(encoding='utf-8').splitlines()
+        # Boat y un 75 del desk pueden traer salida de pruebas con bytes no UTF-8.
+        errores = 'replace' if host == 'boat' or codigo == 75 else 'strict'
+        lineas = Path(log).read_text(encoding='utf-8', errors=errores).splitlines()
     except OSError:
         lineas = []
     except UnicodeError:
         raise ResultadoInvalido('recibo-malformado') from None
+    if any(re.fullmatch(r'PARTIAL: boat omitted=0*[1-9][0-9]*', linea) for linea in lineas):
+        return RechazoLanzador(str(log), 'cobertura-parcial-boat')
     recibos = [linea for linea in lineas if linea.startswith('RECIBO')]
     if not recibos:
         if codigo == 75:
             return None
-        detalle = ('corrida-interrumpida' if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas
-                   else 'salida-sin-recibo')
-        return RechazoLanzador(str(Path(log).with_name('coordinador.log')), detalle)
+        coordinador = str(Path(log).with_name('coordinador.log'))
+        if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas:
+            return RechazoLanzador(coordinador, 'corrida-interrumpida')
+        return RechazoLanzador(coordinador, 'salida-sin-recibo')
     exigir(len(recibos) == 1, 'salida-sin-recibo')
     exigir(0 <= codigo <= 255, 'salida-no-utilizable')
     match = re.fullmatch(r'RECIBO jale-recibo@1 ([A-Za-z0-9+/]+={0,2})', recibos[0])
@@ -107,7 +154,11 @@ def leer_recibo(log, codigo, commit, modo, filtros):
 
 
 def leer_salida(registro, log, codigo, commit, modo, filtros):
-    resultado = leer_recibo(log, leer_json(codigo), commit, modo, filtros)
+    estado = leer_json(codigo)
+    if estado == 75 and leer_pendiente_boat(log) is not None:
+        return None
+    host = leer_json(registro / 'solicitud.json')[2]
+    resultado = leer_recibo(log, estado, commit, modo, filtros, host=host)
     # Tras un reenganche la tarea original puede seguir viva: un 64 no autoriza otra clave.
     if (isinstance(resultado, RechazoLanzador) and resultado.detalle == 'lanzador-rechazo' and
             any(registro.glob('codigo-reenganche-*.json'))):
@@ -119,35 +170,54 @@ class Jale:
     firma_distingue_fallo = False
 
     def __init__(self, lanzador, git=None, host='auto', modos=MODOS, estado=None, *,
-                 resolver_lanzador=True, prelanzar=False):
-        if not isinstance(host, str) or host not in ('auto', 'mini', 'desktop'):
-            raise ValueError('host-invalido')
+                 resolver_lanzador=True, prelanzar=False, boat_esperar_s=ESPERA_BOAT_S):
         if not (isinstance(modos, (tuple, list)) and modos and
                 all(m in MODOS for m in modos) and len(set(modos)) == len(modos)):
             raise ValueError('modos-invalidos')
+        if not ((isinstance(host, str) and host in HOSTS) or
+                (isinstance(host, dict) and set(modos) <= set(host) <= set(MODOS) and
+                 all(isinstance(valor, str) and valor in HOSTS for valor in host.values()))):
+            raise ValueError('host-invalido')
         if type(prelanzar) is not bool:
             raise ValueError('prelanzar-invalido')
+        if type(boat_esperar_s) is not int or not 0 <= boat_esperar_s <= 7200:
+            raise ValueError('boat-esperar-invalido')
         self.prelanzar_habilitado = prelanzar
+        self.boat_esperar_s = boat_esperar_s
         self.lanzador = str(Path(lanzador).resolve()) if resolver_lanzador else str(lanzador)
         self.lanzador_configurado = str(lanzador)
         self.operador = None
         self.git = git
-        self.host, self.modos = host, tuple(modos)
+        self.host, self.modos = host.copy() if isinstance(host, dict) else host, tuple(modos)
         self.estado = (Path(estado) if estado is not None else
                        directorio_estado() / 'jale').expanduser().resolve()
 
     def esperar(self, proceso):
         proceso.wait()
 
-    def prelanzar(self, candidato, tren_id):
-        if self.prelanzar_habilitado:
-            modo = self.modos[0]
-            raiz = self.estado / clave('suite', tren_id) / modo
-            if not (raiz / 'completo.json').exists():
-                self.correr(raiz / '0', candidato.C, modo, (), True, tren_id,
-                            prelanzamiento=True)
+    def host_de(self, modo, filtros):
+        host = self.host[modo] if isinstance(self.host, dict) else self.host
+        return 'auto' if filtros and host == 'boat' else host
 
-    def prelanzada_sin_leer(self, tren_id):
+    def prelanzar(self, candidato, tren_id):
+        if not self.prelanzar_habilitado:
+            return
+        raiz = self.estado / clave('suite', tren_id)
+        lanzadas = []
+        for modo in self.modos:
+            if not (raiz / modo / 'completo.json').exists():
+                registro = raiz / modo / '0'
+                proceso = self.lanzar(registro, candidato.C, modo, (), True, tren_id,
+                                      prelanzamiento=True)
+                if proceso:
+                    lanzadas.append((registro / 'candado', proceso))
+        limite = time.monotonic() + PLAZO_PRELANZAMIENTO_S
+        for candado, proceso in lanzadas:
+            while (proceso.poll() is None and not lanzamiento_activo(candado)
+                   and time.monotonic() < limite):
+                time.sleep(.01)
+
+    def prelanzadas_sin_leer(self, tren_id):
         raiz = self.estado / clave('suite', tren_id)
         for modo in MODOS:
             registro = raiz / modo / '0'
@@ -160,26 +230,27 @@ class Jale:
                 if not isinstance(id_corrida, str) or not re.fullmatch(
                         r'[A-Za-z0-9._-]{8,128}', id_corrida):
                     id_corrida = None
-                return {'tren': tren_id, 'clave': id_corrida,
-                        'terminada': (registro / 'codigo.json').exists()}
-        return None
+                yield {'tren': tren_id, 'modo': modo, 'clave': id_corrida,
+                       'terminada': (registro / 'codigo.json').exists()}
 
-    def correr(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None,
+    def lanzar(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None,
                reenganche=None, *, prelanzamiento=False):
+        """Devuelve el coordinador, None si ya hay salida o False si no se autorizó."""
         sin_confirmar = especulativa(registro)
         if sin_confirmar and not permitir_lanzar:
             return False
         registro.mkdir(parents=True, exist_ok=True, mode=0o700)
         log = registro / 'corrida.log'
         codigo = registro / 'codigo.json'
-        argv = ['bash', self.lanzador, self.host, str(log), modo, commit, *filtros]
+        host = self.host_de(modo, filtros)
+        argv = ['bash', self.lanzador, host, str(log), modo, commit, *filtros]
         solicitud = registro / 'solicitud.json'
         candado_corrida = registro / 'candado'
         if solicitud.exists():
             guardado = leer_json(solicitud)
             exigir(isinstance(guardado, list) and len(guardado) == len(argv) and
                    guardado[0] == 'bash' and isinstance(guardado[1], str) and
-                   Path(guardado[1]).is_absolute() and guardado[2] in ('auto', 'mini', 'desktop') and
+                   Path(guardado[1]).is_absolute() and guardado[2] in HOSTS and
                    guardado[3:] == argv[3:], 'recibo-no-corresponde')
             if prelanzamiento and not sin_confirmar:
                 return
@@ -188,6 +259,21 @@ class Jale:
         else:
             if self.operador is not None and self.operador.checkout is not None:
                 argv[1] = self.operador.lanzador(self.lanzador_configurado, tren_id, codigo)
+            variables = {}
+            if host == 'boat':
+                intento = int(registro.name)
+                identidad = (identidad_boat_pendiente(registro.with_name(str(intento - 1)))
+                             if intento else None)
+                variables = {
+                    'REMOTE_RUN_CLAVE': None,
+                    'SEN_E2E_FRAGMENTO': None,
+                    'SEN_RUN_OWNER': 'pao-tren',
+                    'SEN_RUN_ID': identidad or clave_registro(registro),
+                    'SEN_BOAT_PRIORIDAD': 'tren',
+                    'SEN_BOAT_ESPERAR': str(self.boat_esperar_s),
+                    'TURBO_FORCE': 'true',
+                }
+            guardar(registro / 'entorno.json', variables)
             if prelanzamiento:
                 guardar(registro / 'prelanzada.json', True)
             guardado = argv
@@ -227,47 +313,79 @@ class Jale:
             # Otro coordinador espera el mismo candado y recupera su resultado.
             # La sesión nueva sigue viva aunque muera el proceso del tick.
             try:
-                proceso = subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name(
+                return subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name(
                     'ejecucion_jale.py')), str(registro)], start_new_session=True,
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     env=env)
-                if prelanzamiento:
-                    limite = time.monotonic() + PLAZO_PRELANZAMIENTO_S
-                    while (proceso.poll() is None and not lanzamiento_activo(candado_corrida)
-                           and time.monotonic() < limite):
-                        time.sleep(.01)
-                    return
+            except (OSError, subprocess.SubprocessError):
+                raise ResultadoInvalido('lanzador-no-disponible') from None
+
+    def recoger(self, registro, proceso, commit, modo, filtros):
+        if proceso is False:
+            return False
+        if proceso is not None:
+            try:
                 self.esperar(proceso)
             except (OSError, subprocess.SubprocessError):
                 raise ResultadoInvalido('lanzador-no-disponible') from None
+        log = registro / 'corrida.log'
+        codigo = registro / 'codigo.json'
         exigir(codigo.exists(), 'corrida-interrumpida')
         return leer_salida(registro, log, codigo, commit, modo, filtros)
 
-    def corrida(self, raiz, commit, modo, filtros, intento, permitir_lanzar, tren_id, reenganche=None):
+    def lanzar_corrida(self, raiz, commit, modo, filtros, intento, permitir_lanzar, tren_id,
+                       reenganche):
         cache = raiz / 'completo.json'
         if cache.exists():
             guardado = leer_json(cache)
             exigir(type(guardado) is int and guardado >= 0, 'cache-invalida')
-            return self.correr(raiz / str(guardado), commit, modo, filtros, False)
-        r = self.correr(raiz / str(intento), commit, modo, filtros, permitir_lanzar, tren_id, reenganche)
-        if isinstance(r, dict) and r['codigo'] != 75:
-            guardar(cache, intento)
+            registro = raiz / str(guardado)
+            return registro, self.lanzar(registro, commit, modo, filtros, False)
+        registro = raiz / str(intento)
+        return registro, self.lanzar(registro, commit, modo, filtros, permitir_lanzar,
+                                     tren_id, reenganche)
+
+    def recoger_corrida(self, registro, proceso, commit, modo, filtros):
+        cache = registro.parent / 'completo.json'
+        r = self.recoger(registro, proceso, commit, modo, filtros)
+        if isinstance(r, dict) and r['codigo'] != 75 and not cache.exists():
+            guardar(cache, int(registro.name))
         return r
 
     def suite(self, candidato, tren_id, intento=0, reanudar='', permitir_lanzar=True, *, reenganche=None):
         raiz = self.estado / clave('suite', tren_id)
         exigir(not reanudar or reanudar == str(raiz), 'reanudar-no-corresponde')
-        recibos = []
+        lanzadas = []
         for modo in self.modos:
-            r = self.corrida(raiz / modo, candidato.C, modo, (), intento, permitir_lanzar,
-                             tren_id, reenganche)
-            if r is False:
-                return None
-            if isinstance(r, RechazoLanzador):
-                return str(raiz), r
-            if r is None or r['codigo'] == 75:
-                return str(raiz), Incompleto(75, str(raiz))
-            recibos.append(r)
+            registro, proceso = self.lanzar_corrida(raiz / modo, candidato.C, modo, (), intento,
+                                                      permitir_lanzar, tren_id, reenganche)
+            lanzadas.append((modo, registro, proceso))
+        recibos = []
+        for modo, registro, proceso in lanzadas:
+            try:
+                recibos.append(self.recoger_corrida(registro, proceso, candidato.C, modo, ()))
+            except ResultadoInvalido as exc:
+                recibos.append(exc)
+        rechazos = [r for r in recibos if isinstance(r, RechazoLanzador)]
+        invalidos = [r for r in recibos if isinstance(r, ResultadoInvalido)]
+        # Sin salida durable, el mismo intento debe poder recuperar la corrida.
+        for r in invalidos:
+            if r.resultado.codigo == 'corrida-interrumpida':
+                raise r
+        if invalidos and not rechazos:
+            raise invalidos[0]
+        if reenganche and any(proceso is False and
+                              str(registro / 'coordinador.log') == reenganche[1]
+                              for _, registro, proceso in lanzadas):
+            return None
+        if rechazos:
+            # Prioriza el envío incierto: con reanudar conserva su identidad.
+            return str(raiz), next((r for r in rechazos if r.detalle == 'salida-sin-recibo'),
+                                  rechazos[0])
+        if any(r is False for r in recibos):
+            return None
+        if any(r is None or r['codigo'] == 75 for r in recibos):
+            return str(raiz), Incompleto(75, str(raiz))
         ruta = raiz / 'suite.json'
         guardar(ruta, recibos)
         fallos = tuple(Fallo(u['unidad'], u['firma'], 'solo-candidato', r['modo'],
@@ -308,13 +426,14 @@ class Jale:
                 exigir(isinstance(puntero, str) and re.fullmatch(
                     r'[0-9a-f]{64}/' + str(n) + r'/[0-9]+', puntero), 'cache-invalida')
                 ultimo = self.estado / puntero
-                r = self.correr(ultimo, commit, fallo.check, (fallo.unidad,), False)
+                proceso = self.lanzar(ultimo, commit, fallo.check, (fallo.unidad,), False)
+                r = self.recoger(ultimo, proceso, commit, fallo.check, (fallo.unidad,))
                 exigir(isinstance(r, dict) and r['codigo'] != 75, 'cache-invalida')
             else:
-                r = self.corrida(raiz_corrida, commit, fallo.check, (fallo.unidad,), intento,
-                                 permitir_lanzar, tren_id, reenganche)
+                ultimo, proceso = self.lanzar_corrida(raiz_corrida, commit, fallo.check,
+                    (fallo.unidad,), intento, permitir_lanzar, tren_id, reenganche)
+                r = self.recoger_corrida(ultimo, proceso, commit, fallo.check, (fallo.unidad,))
                 if isinstance(r, dict) and r['codigo'] != 75:
-                    ultimo = raiz_corrida / str(leer_json(raiz_corrida / 'completo.json'))
                     if cache is not None and not cache_disponible:
                         cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                         guardar(cache, str(ultimo.relative_to(self.estado)))
