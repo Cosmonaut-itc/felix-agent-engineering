@@ -142,6 +142,8 @@ if filtros:
         f.update(codigo=1, sin_linea=True)
     if (raiz / 'primero-75').exists() and intento == '1' and registro.name == '0':
         f.update(codigo=75, sin_linea=True)
+    if (raiz / 'primero-malformado').exists() and intento == '1':
+        f.update(malformado=True)
 
 producto = raiz / 'producto.json'
 if producto.exists():
@@ -362,6 +364,34 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
         serie = self.jale(1, 'serie')
         with patch.object(serie, 'recoger_corrida', side_effect=recoger([rechazo])):
             self.assertEqual(self.repetir(adaptador=serie), rechazo)
+        raiz = serie.estado / clave('repetir', TREN, self.pedidos[0][0].id)
+        self.assertFalse((raiz / '2').exists())
+
+    def test_75_del_primer_intento_conserva_el_recibo_del_segundo(self):
+        (self.raiz / 'primero-75').touch()
+        r = self.repetir()
+        primero, segundo = self.registros(self.pedidos[0])
+        self.assertEqual(r, Incompleto(75, str(primero.parents[1])))
+        self.assertTrue((segundo.parent / 'completo.json').exists())
+        self.assertIsInstance(self.repetir(intento=1, reanudar=r.reanudar), Repeticion)
+        relanzados = [json.loads(solicitud.read_text())[3] for solicitud in
+                      sorted(primero.parents[1].glob('*/1/solicitud.json'))]
+        self.assertEqual(relanzados, [str(primero.parent / '1' / 'corrida.log')])
+        serie = self.jale(1, 'serie')
+        self.assertIsInstance(self.repetir(adaptador=serie), Incompleto)
+        raiz = serie.estado / clave('repetir', TREN, self.pedidos[0][0].id)
+        self.assertFalse((raiz / '2').exists())
+
+    def test_recibo_invalido_del_primer_intento_conserva_el_recibo_del_segundo(self):
+        (self.raiz / 'primero-malformado').touch()
+        with self.assertRaises(ResultadoInvalido) as error:
+            self.repetir()
+        self.assertEqual(error.exception.resultado.codigo, 'recibo-malformado')
+        _, segundo = self.registros(self.pedidos[0])
+        self.assertTrue((segundo.parent / 'completo.json').exists())
+        serie = self.jale(1, 'serie')
+        with self.assertRaises(ResultadoInvalido):
+            self.repetir(adaptador=serie)
         raiz = serie.estado / clave('repetir', TREN, self.pedidos[0][0].id)
         self.assertFalse((raiz / '2').exists())
 

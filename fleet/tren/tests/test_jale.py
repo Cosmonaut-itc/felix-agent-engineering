@@ -1311,7 +1311,7 @@ Jale({str(self.lanzador)!r}, host='boat').suite(Candidato({B!r}, (), {C!r}, 'd' 
         self.assertEqual(self.invocaciones(), procesos)
         self.assertEqual(len(self.lanzamientos()), 2)
 
-    def test_boat_mapa_por_modo_y_repeticion_filtrada_en_auto(self):
+    def test_boat_mapa_por_modo_y_repeticion_filtrada_en_el_host_de_su_modo(self):
         from adaptadores import seleccionar
         config = {'adaptador': 'jale', 'lanzador': str(self.lanzador),
                   'host': {'contract': 'boat', 'e2e': 'desktop'}}
@@ -1320,9 +1320,64 @@ Jale({str(self.lanzador)!r}, host='boat').suite(Candidato({B!r}, (), {C!r}, 'd' 
         self.assertCountEqual([(a[0], a[2]) for a in self.lanzamientos()],
                              [('boat', 'contract'), ('desktop', 'e2e')])
         self.plan([{}])
+        with patch.dict(os.environ, {'REMOTE_RUN_CLAVE': 'clave-heredada',
+                                     'SEN_E2E_FRAGMENTO': '1/2', 'TURBO_FORCE': 'false'}):
+            self.assertIsInstance(self.repetir(origen), Repeticion)
+        self.assertEqual([(a[0], a[4:]) for a in self.lanzamientos()[2:]],
+                         [('boat', [UNIDAD]), ('boat', [UNIDAD])])
+        repeticiones = self.invocaciones()[2:]
+        for i in repeticiones:
+            variables = dict(i['boat'])
+            self.assertRegex(variables.pop('SEN_RUN_ID'), r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$')
+            self.assertEqual(variables, {'REMOTE_RUN_CLAVE': None, 'SEN_E2E_FRAGMENTO': None,
+                'SEN_RUN_OWNER': 'pao-tren', 'SEN_BOAT_PRIORIDAD': 'tren',
+                'SEN_BOAT_ESPERAR': '180', 'TURBO_FORCE': 'true'})
+        self.assertNotEqual(*[i['boat']['SEN_RUN_ID'] for i in repeticiones])
+
+    def test_repeticion_filtrada_fuera_de_boat_conserva_su_host(self):
+        self.adaptador = self.Jale(self.lanzador, host={'contract': 'desktop', 'e2e': 'boat'})
+        origen = self.origen()
+        self.plan([{}])
         self.assertIsInstance(self.repetir(origen), Repeticion)
         self.assertEqual([(a[0], a[4:]) for a in self.lanzamientos()[2:]],
-                         [('auto', [UNIDAD]), ('auto', [UNIDAD])])
+                         [('desktop', [UNIDAD]), ('desktop', [UNIDAD])])
+
+    def test_boat_repeticion_pendiente_reengancha_la_misma_corrida(self):
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',))
+        origen = self.origen()
+        self.plan([{}, {'pendiente': 'intento desconocido'}, {}])
+        resultado = self.repetir(origen)
+        self.assertIsInstance(resultado, Incompleto)
+        self.assertEqual(resultado.codigo, 75)
+        self.assertIsInstance(self.repetir(origen, intento=1, reanudar=resultado.reanudar),
+                              Repeticion)
+        primera, segunda, tercera = self.invocaciones()[1:]
+        self.assertEqual([Path(i['log']).parent.name for i in (primera, segunda, tercera)],
+                         ['0', '1', '1'])
+        self.assertEqual(Path(primera['log']).parent.parent, Path(segunda['log']).parent.parent)
+        self.assertEqual(segunda['boat']['SEN_RUN_ID'], primera['boat']['SEN_RUN_ID'])
+        self.assertNotEqual(tercera['boat']['SEN_RUN_ID'], primera['boat']['SEN_RUN_ID'])
+        self.assertEqual([a[4:] for a in self.lanzamientos()[1:]], [[UNIDAD], [UNIDAD]])
+
+    def test_boat_repeticion_sin_lugar_lee_el_recibo_del_desk(self):
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',))
+        origen = self.origen()
+        self.plan([{'fallback': True}])
+        self.assertIsInstance(self.repetir(origen), Repeticion)
+        repeticiones = self.invocaciones()[1:]
+        self.assertEqual([i['host'] for i in repeticiones], ['boat', 'boat'])
+        for i in repeticiones:
+            self.assertIn('HOST=desktop fallback=sin-lugar', Path(i['log']).read_text())
+
+    def test_repeticion_lanzada_en_auto_se_recupera_con_el_modo_ya_en_boat(self):
+        origen = self.origen()
+        self.plan([{}])
+        self.assertIsInstance(self.repetir(origen), Repeticion)
+        lanzadas = self.lanzamientos()
+        self.assertEqual([a[0] for a in lanzadas[2:]], ['auto', 'auto'])
+        self.adaptador = self.Jale(self.lanzador, host='boat')
+        self.assertIsInstance(self.repetir(origen, permitir_lanzar=False), Repeticion)
+        self.assertEqual(self.lanzamientos(), lanzadas)
 
     def test_boat_config_valida_host_y_espera(self):
         from adaptadores import seleccionar

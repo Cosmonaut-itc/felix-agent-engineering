@@ -1334,8 +1334,12 @@ inscribe ni activa repositorios.
 configurados y sólo puede tener claves `contract` y `e2e`.
 `"boat_esperar_s": 180` fija cuánto espera Boat un lugar con prioridad
 `tren` antes de enviar al desk en la misma invocación. Acepta enteros entre
-0 y 7200 y vale 180 por omisión. Las repeticiones filtradas de un modo
-configurado en Boat usan `auto`.
+0 y 7200 y vale 180 por omisión. Las repeticiones filtradas usan el host de
+su modo. En Boat piden el lugar con la misma prioridad y la misma espera que
+la suite, y sin lugar corren en el desk en la misma invocación. Esto exige un
+lanzador de Jale que emita en Boat el recibo parcial de una corrida filtrada
+(SEN-7601) y VMs preparadas con esa revisión: sin él, la repetición termina
+sin recibo y el tren se pausa con `salida-sin-recibo`.
 
 `"prelanzar": true` adelanta todos los modos configurados de Jale al tick que
 publica C y pide su CI. La clave es booleana, vale `false` por omisión y se
@@ -1347,13 +1351,15 @@ mayor, cada efecto `repetir` adelanta reproducciones de la tanda hasta
 completar N vivas: cuentan la pendiente y las adelantadas de la tanda cuyo
 coordinador sigue vivo. Una adelantada que ya terminó no ocupa lugar ni se
 vuelve a lanzar. Si uno de los dos intentos simultáneos de una reproducción
-sale con un rechazo del lanzador, el efecto recoge antes el otro intento. Si
-ese intento deja un recibo válido con código distinto de 75, queda en la
-caché y el intento que abre `absolver` o `reanudar` no lo vuelve a lanzar.
-El efecto espera a que ese otro intento termine antes de devolver el
-rechazo, como la suite espera a todos sus modos: la pausa se declara cuando
-ya no queda ninguna corrida de la reproducción en vuelo.
-Las corridas filtradas conservan el host que decide `host_de`.
+no deja un resultado utilizable (un rechazo del lanzador, un 75 o un recibo
+inválido), el efecto recoge antes el otro intento. Si ese intento deja un
+recibo válido con código distinto de 75, queda en la caché y el intento
+siguiente no lo vuelve a lanzar. El efecto devuelve el resultado del primer
+intento que impide la repetición, en orden de intento. Espera a que termine
+el coordinador local del otro intento antes de devolverlo, como la suite
+espera a los coordinadores de todos sus modos. Esa espera no garantiza que
+el host quede sin tareas de la reproducción: un lanzador que sale por un
+envío sin confirmar puede dejar la suya en la cola.
 
 ### Checkout del operador
 
