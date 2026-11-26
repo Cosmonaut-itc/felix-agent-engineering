@@ -82,7 +82,9 @@ if trabajo['conexiones'] <= f.get('transportes', 0):
         if not conocido:
             print('PUEUE_ID=' + str(trabajo['id']), flush=True)
         print('Wsl/Service/WSAETIMEDOUT', file=sys.stderr, flush=True)
-    if host != 'boat':
+    if host == 'boat' and f.get('fallback'):
+        log.write_text(f'HOST=desktop fallback=sin-lugar run_id={run_id}\n')
+    elif host != 'boat':
         log.write_text('')
     sys.exit(codigo)
 if 'pendiente' in f and (f.get('pendiente_fijo') or
@@ -1062,37 +1064,85 @@ class JaleTests(Aislado):
         primera, segunda = self.invocaciones()
         self.assertNotEqual(primera['boat']['SEN_RUN_ID'], segunda['boat']['SEN_RUN_ID'])
 
-    def test_boat_terminal_sin_recibo_reanuda_con_otro_registro_e_identidad(self):
-        from test_hasito import GitFalso, verificar_rechazo
-        self.git = GitFalso(self.raiz)
+    def verificar_boat_terminal_sin_recibo(self, plan):
         self.adaptador = self.Jale(self.lanzador, host='boat')
+        self.plan({'e2e': [plan, {}]})
+        inicial = estado()
+        tren = Tren('lote', (inicial.entradas[0].entrega.recibo,), EsperandoCI(CANDIDATO))
+        inicial = replace(inicial, trenes=(tren,))
+        obs = observacion(ci_candidato='verde')
+        git = object()
+        efecto = Efecto(clave('suite', tren.id), 'iniciar-suite', (tren.id,))
+        llegada = ejecutar(efecto, inicial, obs, git, self.adaptador)
+        self.assertTrue(llegada.completo)
+        pausado, _ = paso(inicial, llegada.observacion)
+        primera = next(i for i in self.invocaciones() if i['modo'] == 'e2e')
+        log = Path(primera['log'])
+        pausa = Pausa('infraestructura', detalle='salida-sin-recibo',
+                      archivos=(str(log.with_name('coordinador.log')),))
+        self.assertEqual(pausado.pausa, pausa)
 
-        def configurar(_):
-            self.plan({'e2e': [{'codigo': 1, 'sin_linea': True, 'terminal': True}, {}]})
+        decision = Decision('reenganchar', inicial.repo, tren.id, 'reanudar', None,
+                            'consultar la corrida', obs.ahora, 'pausa-1', pausa)
+        reanudado, (_, reanudar) = paso(pausado, replace(obs, decision=decision, pausa_id='pausa-1'))
+        self.assertEqual(intento_suite(reanudado.trenes[0].fase), 0)
+        llegada = ejecutar(reanudar, reanudado, obs, git, self.adaptador)
+        self.assertTrue(llegada.completo)
+        pausado, _ = paso(reanudado, llegada.observacion)
+        self.assertEqual(pausado.pausa, pausa)
+        segunda, = self.invocaciones()[2:]
+        self.assertEqual((segunda['log'], segunda['clave']), (primera['log'], primera['clave']))
+        self.assertEqual(json.loads(log.with_name('codigo-reenganche-1.json').read_text()),
+                         plan['codigo'])
+        self.assertCountEqual([a[2] for a in self.lanzamientos()], ['contract', 'e2e'])
 
-        verificar_rechazo(self, 'iniciar-suite', configurar, codigo=1, detalle='boat-sin-recibo')
-        self.assertCountEqual([i['modo'] for i in self.invocaciones()], ['contract', 'e2e', 'e2e'])
-        primera, segunda = [i for i in self.invocaciones() if i['modo'] == 'e2e']
-        self.assertEqual([Path(i['log']).parent.name for i in (primera, segunda)], ['0', '1'])
-        self.assertNotEqual(primera['boat']['SEN_RUN_ID'], segunda['boat']['SEN_RUN_ID'])
+        decision = Decision('nuevo-intento', inicial.repo, tren.id, 'absolver', None,
+                            'la corrida terminó', obs.ahora, 'pausa-2', pausa)
+        absuelto, (_, reintentar) = paso(pausado, replace(obs, decision=decision, pausa_id='pausa-2'))
+        self.assertIsNone(absuelto.pausa)
+        fase = absuelto.trenes[0].fase
+        self.assertEqual(intento_suite(fase), 1)
+        self.assertEqual((fase.reenganches, fase.reanudaciones), (0, 0))
+        self.assertEqual(reintentar.tipo, 'reanudar-suite')
+        llegada = ejecutar(reintentar, absuelto, obs, git, self.adaptador)
+        final, _ = paso(absuelto, llegada.observacion)
+        self.assertIsInstance(final.trenes[0].fase, Certificado)
+        tercera, = self.invocaciones()[3:]
+        self.assertEqual(tercera['modo'], 'e2e')
+        self.assertEqual([log.parent.name, Path(tercera['log']).parent.name], ['0', '1'])
+        self.assertNotEqual(primera['clave'], tercera['clave'])
         self.assertCountEqual([a[2] for a in self.lanzamientos()], ['contract', 'e2e', 'e2e'])
+        return log
 
-    def test_boat_fallback_cortado_por_pueue_reanuda_con_otro_registro_e_identidad(self):
+    def test_boat_terminal_sin_recibo_reengancha_y_absolver_abre_otro_intento(self):
+        self.verificar_boat_terminal_sin_recibo({'codigo': 1, 'sin_linea': True, 'terminal': True})
+
+    def test_boat_fallback_cortado_por_pueue_reengancha_y_absolver_abre_otro_intento(self):
+        log = self.verificar_boat_terminal_sin_recibo({
+            'codigo': 124, 'codigo_suite': 143, 'sin_linea': True,
+            'terminal': True, 'fallback': True, 'aviso': True})
+        self.assertIn('RESULT mode=e2e exit=143\nEXIT=143\nPUEUE_EXIT=124\n',
+                      log.read_text())
+
+    def test_boat_fallback_con_tarea_viva_reengancha_sin_duplicar(self):
         from test_hasito import GitFalso, verificar_rechazo
         self.git = GitFalso(self.raiz)
         self.adaptador = self.Jale(self.lanzador, host='boat')
 
-        def configurar(_):
-            self.plan({'e2e': [{'codigo': 124, 'codigo_suite': 143, 'sin_linea': True,
-                               'terminal': True, 'fallback': True, 'aviso': True}, {}]})
+        def configurar(respuesta):
+            if respuesta == '127':
+                self.plan({'e2e': [{'transportes': 3, 'codigo_transporte': 127, 'fallback': True}]})
+            else:
+                e2e = [i for i in self.invocaciones() if i['modo'] == 'e2e']
+                self.assertEqual(len(e2e), 3)
+                self.assertIn('HOST=desktop fallback=sin-lugar run_id=',
+                              Path(e2e[0]['log']).read_text())
 
-        verificar_rechazo(self, 'iniciar-suite', configurar, codigo=124, detalle='boat-sin-recibo')
-        self.assertCountEqual([i['modo'] for i in self.invocaciones()], ['contract', 'e2e', 'e2e'])
-        primera, segunda = [i for i in self.invocaciones() if i['modo'] == 'e2e']
-        self.assertEqual([Path(i['log']).parent.name for i in (primera, segunda)], ['0', '1'])
-        self.assertNotEqual(primera['boat']['SEN_RUN_ID'], segunda['boat']['SEN_RUN_ID'])
-        self.assertIn('RESULT mode=e2e exit=143\nEXIT=143\nPUEUE_EXIT=124\n',
-                      Path(primera['log']).read_text())
+        verificar_rechazo(self, 'iniciar-suite', configurar, codigo=127)
+        e2e = [i for i in self.invocaciones() if i['modo'] == 'e2e']
+        self.assertEqual(len(e2e), 4)
+        self.assertEqual(len({(i['log'], i['clave']) for i in e2e}), 1)
+        self.assertCountEqual([a[2] for a in self.lanzamientos()], ['contract', 'e2e'])
 
     def test_boat_salida_2_sin_publicacion_reengancha_la_misma_identidad(self):
         self.adaptador = self.Jale(self.lanzador, host='boat', modos=('e2e',))
@@ -1112,36 +1162,34 @@ class JaleTests(Aislado):
                          (primera['log'], primera['boat']['SEN_RUN_ID']))
         self.assertEqual(len(self.lanzamientos()), 1)
 
-    def test_desktop_y_auto_con_result_y_exit_sin_recibo_conservan_el_reenganche(self):
-        self.plan([{'codigo': 1, 'sin_linea': True, 'terminal': True}])
-        for host in ('desktop', 'auto'):
-            with self.subTest(host=host):
-                self.adaptador = self.Jale(self.lanzador, host=host, modos=('e2e',))
-                _, rechazo = self.suite(tren=host)
-                log = Path(self.invocaciones()[-1]['log'])
-                self.assertEqual(log.read_text(), 'RESULT mode=e2e exit=1\nEXIT=1\n')
-                self.assertEqual(rechazo, RechazoLanzador(str(log.with_name('coordinador.log')),
-                                                        'salida-sin-recibo'))
+    def test_desktop_sin_recibo_absolver_abre_otro_registro_y_clave(self):
+        from test_hasito import GitFalso, verificar_rechazo
+        self.git = GitFalso(self.raiz)
+        self.adaptador = self.Jale(self.lanzador, host='desktop')
 
-    def test_boat_publicado_sin_recibo_admite_bytes_no_utf8_en_el_log(self):
-        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('e2e',))
-        self.plan([{'codigo': 1, 'sin_linea': True, 'log_no_utf8': True}])
-        _, resultado = self.suite()
-        invocacion, = self.invocaciones()
-        self.assertIn(b'\xff', Path(invocacion['log']).read_bytes())
-        self.assertEqual(resultado, RechazoLanzador(invocacion['log'], 'boat-sin-recibo'))
+        def configurar(_):
+            self.plan({'e2e': [{'codigo': 1, 'sin_linea': True, 'terminal': True}, {}]})
+
+        verificar_rechazo(self, 'iniciar-suite', configurar, codigo=1, decision='absolver')
+        primera, segunda = [i for i in self.invocaciones() if i['modo'] == 'e2e']
+        self.assertEqual([Path(i['log']).parent.name for i in (primera, segunda)], ['0', '1'])
+        self.assertNotEqual(primera['clave'], segunda['clave'])
+        self.assertEqual(Path(primera['log']).read_text(), 'RESULT mode=e2e exit=1\nEXIT=1\n')
+        self.assertCountEqual([i['modo'] for i in self.invocaciones()], ['contract', 'e2e', 'e2e'])
 
     def test_boat_rechaza_un_recibo_con_bytes_no_utf8(self):
         self.adaptador = self.Jale(self.lanzador, host='boat')
         self.invalido({'recibo_no_utf8': True}, 'recibo-malformado')
 
-    def test_boat_fallback_terminal_sin_recibo_usa_host_guardado(self):
+    def test_boat_fallback_sin_recibo_admite_bytes_no_utf8_segun_host_guardado(self):
         self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',))
-        self.plan([{'codigo': 1, 'sin_linea': True, 'terminal': True, 'fallback': True}])
+        self.plan([{'codigo': 1, 'sin_linea': True, 'fallback': True, 'log_no_utf8': True}])
         raiz, resultado = self.suite()
         primera, = self.invocaciones()
-        self.assertIn('HOST=desktop fallback=sin-lugar', Path(primera['log']).read_text())
-        self.assertEqual(resultado, RechazoLanzador(primera['log'], 'boat-sin-recibo'))
+        log = Path(primera['log'])
+        self.assertIn(b'\xff', log.read_bytes())
+        self.assertEqual(resultado, RechazoLanzador(str(log.with_name('coordinador.log')),
+                                                  'salida-sin-recibo'))
 
         self.adaptador = self.Jale(self.lanzador, host='desktop', modos=('contract',))
         self.assertEqual(self.suite(), (raiz, resultado))
@@ -1199,7 +1247,7 @@ class JaleTests(Aislado):
             self.plan({'contract': [{'malformado': True}],
                        'e2e': [{'codigo': 1, 'sin_linea': True}]})
 
-        verificar_rechazo(self, 'iniciar-suite', configurar, codigo=1, detalle='boat-sin-recibo',
+        verificar_rechazo(self, 'iniciar-suite', configurar, codigo=1, detalle='salida-sin-recibo',
                           decision='abortar')
 
     def test_boat_coordinador_interrumpido_prevalece_y_recupera_el_mismo_intento(self):

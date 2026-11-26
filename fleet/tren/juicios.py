@@ -24,10 +24,8 @@ POLITICA = {
         {"reanudar": "lanzador-nuevo", "abortar": "abortar"},
     ("infraestructura", "cobertura-parcial-boat"):
         {"reanudar": "lanzador-nuevo", "abortar": "abortar"},
-    ("infraestructura", "boat-sin-recibo"):
-        {"reanudar": "lanzador-nuevo", "abortar": "abortar"},
     ("infraestructura", "salida-sin-recibo"):
-        {"reanudar": "reenganchar", "abortar": "abortar"},
+        {"reanudar": "reenganchar", "absolver": "lanzador-nuevo", "abortar": "abortar"},
     ("infraestructura", "checkout-operador:"):
         {"reanudar": "continuar", "abortar": "abortar"},
     ("infraestructura", "ci-sin-resultado"):

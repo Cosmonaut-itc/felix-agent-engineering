@@ -100,10 +100,6 @@ def leer_recibo(log, codigo, commit, modo, filtros, *, host):
         coordinador = str(Path(log).with_name('coordinador.log'))
         if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas:
             return RechazoLanzador(coordinador, 'corrida-interrumpida')
-        # Boat sólo deja este encabezado al publicar, también si cae al desk.
-        if host == 'boat' and any(re.fullmatch(
-                r'HOST=(?:boat|desktop) fallback=.+ run_id=\S+', linea) for linea in lineas):
-            return RechazoLanzador(str(log), 'boat-sin-recibo')
         return RechazoLanzador(coordinador, 'salida-sin-recibo')
     exigir(len(recibos) == 1, 'salida-sin-recibo')
     exigir(0 <= codigo <= 255, 'salida-no-utilizable')
@@ -383,7 +379,7 @@ class Jale:
                               for _, registro, proceso in lanzadas):
             return None
         if rechazos:
-            # Un salida-sin-recibo se reengancha a su envío; los demás rechazos abren otro intento.
+            # Prioriza el envío incierto: con reanudar conserva su identidad.
             return str(raiz), next((r for r in rechazos if r.detalle == 'salida-sin-recibo'),
                                   rechazos[0])
         if any(r is False for r in recibos):
