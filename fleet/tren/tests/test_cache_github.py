@@ -1,6 +1,7 @@
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -118,9 +119,16 @@ class CacheTests(unittest.TestCase):
              "secondary", AHORA + 60),
             (respuesta(403, X_Ratelimit_Remaining="0", X_Ratelimit_Reset=str(AHORA),
                        X_Ratelimit_Resource="graphql"), "graphql", AHORA),
+            (respuesta(403, X_Ratelimit_Remaining="0", X_Ratelimit_Reset=str(AHORA + 300),
+                       Retry_After="30"), "core", AHORA + 30),
+            (respuesta(403, '{"message":"You have exceeded a secondary rate limit."}',
+                       X_Ratelimit_Remaining="4000", X_Ratelimit_Reset=str(AHORA + 3000)),
+             "secondary", AHORA + 60),
+            (respuesta(429), "secondary", AHORA + 60),
         )
         for fake, recurso, reinicio in casos:
-            with self.subTest(recurso=recurso, reinicio=reinicio),                     patch("observador.time.time", return_value=AHORA):
+            with self.subTest(recurso=recurso, reinicio=reinicio), \
+                    patch("observador.time.time", return_value=AHORA):
                 self.respuestas.append(fake)
                 with self.assertRaises(LimiteGitHub) as error:
                     self.lector.api(EP)
@@ -137,9 +145,48 @@ class CacheTests(unittest.TestCase):
                 self.assertIn(f"HTTP/2.0 {codigo}", error.exception.output)
                 self.assertEqual(error.exception.stderr, "dato privado")
 
+    def test_archivo_solo_para_el_usuario(self):
+        for previos in (("",), ("", "-wal", "-shm"), ()):
+            with tempfile.TemporaryDirectory() as temporal:
+                for sufijo in previos:
+                    ruta = Path(temporal) / f"github-cache.sqlite3{sufijo}"
+                    ruta.touch()
+                    os.chmod(ruta, 0o644)
+                with CacheGitHub(temporal) as cache:
+                    cache.guardar(EP, '"uno"', "[]", None)
+                    archivos = sorted(Path(temporal).iterdir())
+                    self.assertEqual(len(archivos), 3)
+                    for ruta in archivos:
+                        with self.subTest(previos=previos, archivo=ruta.name):
+                            self.assertEqual(ruta.stat().st_mode & 0o777, 0o600)
+
+    def test_sin_cache_clasifica_por_estado_http(self):
+        casos = (
+            ("gh: You have exceeded a secondary rate limit. (HTTP 403)", ("secondary", AHORA + 60)),
+            ("gh: API rate limit exceeded (HTTP 429)", ("core", AHORA)),
+            ("gh: rate limit backend unavailable (HTTP 503)", None),
+        )
+        for stderr, esperado in casos:
+            with self.subTest(stderr=stderr), patch("observador.time.time", return_value=AHORA):
+                ejecutar = Mock(side_effect=[
+                    subprocess.CalledProcessError(1, ["gh"], stderr=stderr),
+                    subprocess.CompletedProcess(["gh"], 0, json.dumps(
+                        {"resources": {"core": {"reset": AHORA}}}), ""),
+                ])
+                lector = GitHubGit({}, ejecutar=ejecutar)
+                if esperado is None:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        lector.api(EP)
+                    continue
+                with self.assertRaises(LimiteGitHub) as error:
+                    lector.api(EP)
+                self.assertEqual((error.exception.recurso, error.exception.reinicio), esperado)
+                self.assertEqual(ejecutar.call_count, 1 if esperado[0] == "secondary" else 2)
+
     def test_sin_cache_lee_reinicio_de_rate_limit(self):
         ejecutar = Mock(side_effect=[
-            subprocess.CalledProcessError(1, ["gh"], stderr="API RATE LIMIT exceeded"),
+            subprocess.CalledProcessError(
+                1, ["gh"], stderr="gh: API RATE LIMIT exceeded for user ID 1. (HTTP 403)"),
             subprocess.CompletedProcess(["gh"], 0, json.dumps(
                 {"resources": {"core": {"reset": AHORA}}}), ""),
         ])
@@ -169,6 +216,10 @@ class TickLimiteTests(unittest.TestCase):
         ruta.write_text(json.dumps({"repos": {activo.REPO: self.contexto.config}}))
         return ["pao-tren", "tick", "--repo", activo.REPO, "--config", str(ruta)]
 
+    def eventos(self):
+        with self.ledger() as ledger:
+            return ledger.db.execute("SELECT count(*) FROM events").fetchone()[0]
+
     def limite_en(self, objetivo):
         def ejecutar(argv, **opciones):
             if argv[0] == "gh" and objetivo in argv[4]:
@@ -176,6 +227,17 @@ class TickLimiteTests(unittest.TestCase):
                                  X_Ratelimit_Reset=str(AHORA))(argv)
             return self.contexto.gh(argv, **opciones)
         return ejecutar
+
+    def test_seco_sale_75_con_limite_en_main(self):
+        cli = activo.cli
+        args = cli.parser().parse_args(self.configurar()[1:] + ["--seco"])
+        crear = lambda config, **kwargs: GitHubGit(
+            config, ejecutar=self.limite_en("/git/ref/heads/main"), **kwargs)
+        antes = self.eventos()
+        with patch.object(cli, "GitHubGit", side_effect=crear):
+            self.assertEqual(list(cli.ticks(args)), [(75, {
+                "error": "limite-github", "recurso": "core", "reinicio": REINICIO})])
+        self.assertEqual(self.eventos(), antes)
 
     def test_tick_y_cadena_preservan_estado_y_eventos_ante_un_limite(self):
         antes = self.hasta_fase(EsperandoCI)
@@ -195,7 +257,9 @@ class TickLimiteTests(unittest.TestCase):
                 def tick(args, **kwargs):
                     return ejecutar(args, ahora=fase.desde + PLAZO_CI + 1, git=self.contexto.git,
                         adaptador=self.contexto.hasito, escritor=self.contexto.escritor, **kwargs)
-                with patch.object(cli, "ejecutar", side_effect=tick) as un_tick,                         patch.object(cli, "GitHubGit", side_effect=crear),                         patch.object(cli, "cuota") as cuota:
+                with patch.object(cli, "ejecutar", side_effect=tick) as un_tick, \
+                        patch.object(cli, "GitHubGit", side_effect=crear), \
+                        patch.object(cli, "cuota") as cuota:
                     self.assertEqual(list(cli.ticks(args)), [(75, {
                         "error": "limite-github", "recurso": "core", "reinicio": REINICIO})])
                     un_tick.assert_called_once()
@@ -232,7 +296,13 @@ class TickLimiteTests(unittest.TestCase):
         def dormir(segundos):
             reloj[0] += segundos
 
-        with patch.object(sys, "argv", self.configurar()),                 patch.object(cli, "intento", side_effect=tick),                 patch.object(cli, "huella", return_value=("igual",)),                 patch.object(cli, "cuota", return_value=True),                 patch.object(cli, "ARRANQUE", 0),                 patch.object(cli, "time", SimpleNamespace(monotonic=lambda: reloj[0], sleep=dormir)),                 patch.object(subprocess, "run", ejecutar), redirect_stdout(salida):
+        with patch.object(sys, "argv", self.configurar()), \
+                patch.object(cli, "intento", side_effect=tick), \
+                patch.object(cli, "huella", return_value=("igual",)), \
+                patch.object(cli, "cuota", return_value=True), \
+                patch.object(cli, "ARRANQUE", 0), \
+                patch.object(cli, "time", SimpleNamespace(monotonic=lambda: reloj[0], sleep=dormir)), \
+                patch.object(subprocess, "run", ejecutar), redirect_stdout(salida):
             self.assertEqual(cli.main(), 75)
         self.assertEqual(reloj[0], 20)
         self.assertEqual(pasos, [self.operativos()])

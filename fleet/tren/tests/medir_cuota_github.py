@@ -1,4 +1,4 @@
-"""Mide dos observaciones en sombra sobre PR abiertos, con GET únicamente."""
+"""Mide observaciones en sombra sobre PR abiertos, con GET únicamente."""
 import argparse
 from collections import Counter
 import json
@@ -74,7 +74,11 @@ def medir(args, temporal):
     config = {"git": str(git), "sensibles": {}}
     print(json.dumps({"pr_abiertos": len(prs), "pr_base_main": sum(
         pr["base"]["ref"] == "main" for pr in prs), "cache": args.cache}), flush=True)
-    for tick in (1, 2):
+    posteriores = []
+    for tick in range(1, args.ticks + 1):
+        if tick > 1:
+            # El régimen real deja pasar el intervalo de launchd entre ticks.
+            time.sleep(args.intervalo)
         conteo.clear()
         if args.cache:
             from cache_github import CacheGitHub
@@ -91,6 +95,12 @@ def medir(args, temporal):
                           "vistas_completas": sum(v.completa for v in vista.prs)}), flush=True)
         if not pagadas + gratuitas or pagadas + gratuitas != sum(conteo.values()):
             raise SystemExit("La medición contiene estados inesperados")
+        if tick > 1:
+            posteriores.append(pagadas)
+    if posteriores:
+        print(json.dumps({"intervalo_s": args.intervalo, "ticks_posteriores": len(posteriores),
+                          "200_min": min(posteriores), "200_max": max(posteriores),
+                          "200_media": round(sum(posteriores) / len(posteriores), 1)}), flush=True)
 
 
 if __name__ == "__main__":
@@ -99,5 +109,7 @@ if __name__ == "__main__":
     parser.add_argument("--tren", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--git", type=Path)
     parser.add_argument("--cache", action="store_true")
+    parser.add_argument("--ticks", type=int, default=2)
+    parser.add_argument("--intervalo", type=float, default=0, help="segundos entre ticks")
     with tempfile.TemporaryDirectory() as ruta:
         medir(parser.parse_args(), Path(ruta))
