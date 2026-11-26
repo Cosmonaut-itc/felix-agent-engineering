@@ -1,11 +1,11 @@
 #!/bin/bash
 # Dice si un APTO sigue vigente cuando el head cambió por incorporar el destino.
-# Imprime `APTO vigente` si el head nuevo es la mezcla sin conflictos del head
-# revisado con el destino, con excepciones para catálogos y migraciones Drizzle.
-# Imprime `Ronda delta` y los archivos que revisar si el destino cambió archivos
-# del parche, o si la mezcla tuvo conflictos, con el diff de su resolución.
-# En los demás casos imprime `Ronda` y el motivo. Sale con 2 cuando no puede
-# decidir; eso tampoco conserva el APTO. Necesita git 2.38+ y python3 para JSON.
+# `APTO vigente` confirma una mezcla limpia sin archivos compartidos o una
+# excepción de catálogos o Drizzle. `Ronda delta` lista archivos compartidos
+# o en conflicto y, con conflictos, el diff de resolución. `Ronda` pide una
+# ronda completa si la mezcla fue limpia y el head difiere sin excepción.
+# Una excepción de Drizzle rechazada añade el motivo. Sale con 2 si no puede
+# decidir. Necesita git 2.38+ y python3 para JSON.
 set -uo pipefail
 fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
 
@@ -183,6 +183,8 @@ def journal(files):
                 and type(entry['idx']) is int and type(entry['when']) is int
                 and isinstance(entry['version'], str) and type(entry['breakpoints']) is bool,
                 'entrada del journal inválida')
+        require(0 <= entry['when'] <= 2**53 - 1,
+                f"{entry['tag']}: when fuera del rango de enteros seguros")
     require(len({entry['tag'][:4] for entry in entries}) == len(entries),
             'prefijos de migración repetidos')
     return data, entries
@@ -285,6 +287,11 @@ def migration_pairs(trees):
         originals = {}
         for old_tag, tag in pairs:
             path = snapshot_path(old_tag)
+            new_path = snapshot_path(tag)
+            require((path in reviewed) == (new_path in new),
+                    f'{path} → {new_path}: cambió la presencia del snapshot')
+            if path not in reviewed:
+                continue
             require(path not in original_base, f'{path}: el alta pisa un snapshot original de la base')
             identifier, parent, schema = snapshot(reviewed, path)
             require(identifier not in originals and identifier != ORIGIN, f'{path}: id original repetido')
@@ -323,8 +330,7 @@ def migration_pairs(trees):
                 allowed.update((tag + '.sql', snapshot_path(tag)))
             require(delta <= allowed, 'hay otros archivos modificados en el directorio de migraciones')
         return pairs
-    except (ValueError, KeyError, TypeError, AttributeError, RecursionError, OSError,
-            subprocess.CalledProcessError) as error:
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
         raise ValueError(f'punto {point}: {error}') from error
 
 
@@ -349,20 +355,31 @@ try:
                 migration_paths.add(path)
     catalogs = overlap - migration_paths
     if not dirs and conflicts:
-        sys.exit(1)
+        sys.exit(3)
     if dirs:
         ancestor = subprocess.run(['git', 'merge-base', '--is-ancestor', sys.argv[1], sys.argv[3]],
                                   capture_output=True)
+        if ancestor.returncode != 1:
+            ancestor.check_returncode()
         require(ancestor.returncode == 0, 'punto 1: la base nueva no incorpora la base revisada')
         require(not (conflicts & catalogs), 'punto 1: hay conflictos fuera de las migraciones')
-        auto = inventory(sys.argv[5])
+        # Un renombre puede sugerir una ruta dentro de Drizzle para un archivo externo.
+        merge = subprocess.run(['git', '-c', 'merge.directoryRenames=false', 'merge-tree',
+                                '--write-tree', '--name-only', '--no-messages', sys.argv[3], sys.argv[2]],
+                               capture_output=True)
+        if merge.returncode != 1:
+            merge.check_returncode()
+        unmoved_tree, _, unmoved_conflicts = merge.stdout.decode('utf-8', 'surrogateescape').partition('\n')
+        require(paths(unmoved_conflicts) <= migration_paths,
+                'punto 1: hay conflictos fuera de las migraciones')
+        auto = inventory(unmoved_tree)
         require(all(any(path.startswith(prefix) for prefix in dirs) for path in changes(auto, trees[-1])),
                 'punto 1: el árbol fuera de las migraciones difiere de la mezcla')
     elif sys.argv[5] != sys.argv[4]:
-        sys.exit(1)
+        sys.exit(3)
     try:
         valid_catalogs = catalogs_disjoint(catalogs, trees)
-    except (ValueError, OSError, subprocess.CalledProcessError, RecursionError):
+    except (ValueError, RecursionError):
         valid_catalogs = False
     require(valid_catalogs, 'punto 1: hay archivos compartidos sin excepción de catálogos')
 
@@ -376,18 +393,23 @@ try:
     if catalogs:
         print('El catálogo se juntó por claves disjuntas:')
         print(*sorted(catalogs), sep='\n')
-except (ValueError, OSError, subprocess.CalledProcessError, RecursionError) as error:
+except (ValueError, RecursionError) as error:
     if dirs:
         print(f'Excepción de migraciones: {error}')
-    sys.exit(1)
+    sys.exit(3)
 PY_EXCEPTIONS
 }
 
 exception=''
-exception_status=1
+# El código interno 3 indica un rechazo. Cualquier otro fallo impide decidir.
+exception_status=3
 if [ -n "$shared$conflicted" ]; then
     exception=$(sync_exceptions)
     exception_status=$?
+    case $exception_status in
+        0|3) ;;
+        *) fail 'falló el validador de excepciones' ;;
+    esac
 fi
 if [ "$exception_status" = 0 ] ||
    { [ "$merge_status" = 0 ] && [ "$auto" = "$tree" ] && [ -z "$shared" ]; }; then
@@ -396,13 +418,9 @@ if [ "$exception_status" = 0 ] ||
 elif [ "$merge_status" = 1 ]; then
     printf 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos\nResolución: git diff --no-relative %s %s\n' "$auto" "$new"
     printf '%s\n%s' "$conflicted" "$shared" | sed '/^$/d' | LC_ALL=C sort -u
-elif [ "$auto" != "$tree" ] && [ -z "$exception" ]; then
+elif [ "$auto" != "$tree" ]; then
     printf 'Ronda: el head nuevo no es la mezcla del head revisado con el destino\n'
 else
-    printf 'Ronda delta: el destino cambió archivos del parche\n'
-    if [ "$auto" != "$tree" ]; then
-        printf 'Resolución: git diff --no-relative %s %s\n' "$auto" "$new"
-    fi
-    printf '%s' "$shared"
+    printf 'Ronda delta: el destino cambió archivos del parche\n%s' "$shared"
 fi
 if [ -n "$exception" ]; then printf '%s\n' "$exception"; fi

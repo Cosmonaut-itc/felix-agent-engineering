@@ -317,8 +317,8 @@ que demuestra:
   ves. Las rondas de sincronización no cuentan, y tras su NO APTO corriges
   y sigues. Son las que pide el paso 3 del
   [procedimiento de merge](references/merge.md) cuando `apto-vigente`
-  imprime `Ronda delta`; ese procedimiento define también la excepción de
-  altas disjuntas en catálogos de traducción. En el registro, todas las
+  imprime `Ronda delta`; ese procedimiento define las excepciones de altas
+  disjuntas en catálogos y de renumeración de migraciones Drizzle. Todas las
   rondas se numeran en orden, también las de sincronización y las del
   enfoque nuevo.
 - **Ronda delta.** La hace un solo revisor gpt-6.2-sol en `high` con

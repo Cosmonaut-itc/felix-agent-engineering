@@ -258,12 +258,14 @@ restantes y la separación entre propietario, verificador y stacker.
      revisadas en orden, su SQL no cambió, y los snapshots nuevos encadenan
      con los de la base y reproducen el esquema por mezcla de tres vías.
      Fuera de ese directorio, el árbol es la mezcla limpia. La segunda línea
-     lista cada `viejo → nuevo`.
+     lista cada `viejo → nuevo`. Si el delta incluye catálogos y migraciones,
+     cada parte debe cumplir su excepción.
    - `Ronda delta`: la rama destino cambió los archivos del parche que
      lista, o la mezcla tuvo conflictos. La lista incluye los archivos en
      conflicto. Si aparece `Resolución`, revisa también ese diff contra la
      mezcla automática. Corre una ronda delta sobre esos cambios. Es una
-     ronda de sincronización.
+     ronda de sincronización. Si la mezcla fue limpia y el head difiere sin
+     cumplir la excepción, la salida es `Ronda`.
    - `Ronda`, o un error del script: corre la ronda que fija **Rondas**.
 
    Una ronda de sincronización no cuenta para el límite de **Rondas**. Las

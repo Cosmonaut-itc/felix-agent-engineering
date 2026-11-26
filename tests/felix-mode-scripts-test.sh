@@ -2651,6 +2651,7 @@ apto_vigente_migrations() {
     python3 - "$SCRIPTS/apto-vigente" "$TEST_TMP" "$BASH" <<'PY_MIGRATIONS'
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -2682,8 +2683,9 @@ def write(path, data):
 def write_migration(root, item, sql, identifier, parent, tables):
     tag = item['tag']
     (root / f'{tag}.sql').write_bytes(sql)
-    write(root / f'meta/{tag[:4]}_snapshot.json',
-          dict(id=identifier, prevId=parent, version='7', dialect='postgresql', tables=tables))
+    if identifier is not None:
+        write(root / f'meta/{tag[:4]}_snapshot.json',
+              dict(id=identifier, prevId=parent, version='7', dialect='postgresql', tables=tables))
 
 
 def write_journal(root, entries):
@@ -2692,7 +2694,7 @@ def write_journal(root, entries):
 
 cases = {
     'una': None, 'dos': None, 'apilada': None, 'mixta': None, 'sin-conflicto': None,
-    'directorio-unicode': None,
+    'directorio-unicode': None, 'solo-sql': None, 'sin-snapshot': None, 'when-maximo': None,
     'sql': (3, 'cambió el SQL'), 'when': (2, 'when debe crecer'), 'idx': (2, 'idx o tag'),
     'prevId': (4, 'prevId'), 'id-base': (4, 'id repetido'), 'id-alta': (4, 'id repetido'),
     'perdio-tabla': (4, 'esquema difiere'), 'perdio-columna': (4, 'esquema difiere'),
@@ -2705,6 +2707,9 @@ cases = {
     'version': (2, 'versión'), 'breakpoints': (2, 'breakpoints'),
     'retroceso': (1, 'la base nueva no incorpora la base revisada'),
     'sin-conflicto-fuera': (1, 'árbol fuera'), 'id-base-nombrado': (4, 'id repetido'),
+    'snapshot-agregado': (4, 'presencia del snapshot'), 'snapshot-borrado': (4, 'presencia del snapshot'),
+    'renombre': (1, 'árbol fuera'), 'when-no-seguro': (2, 'rango de enteros seguros'),
+    'when-negativo': (2, 'rango de enteros seguros'), 'error-python': None,
 }
 for case, failure in cases.items():
     repo = Path(temporary) / ('migracion-' + case)
@@ -2723,7 +2728,9 @@ for case, failure in cases.items():
     first = entry(2 if clean or retreat else 1, 250 if retreat else 150, 'primera')
     second, third = entry(2, 175, 'segunda'), entry(3, 180, 'tercera')
     stacked = case == 'apilada'
-    two = stacked or case in ('dos', 'id-alta', 'when-entre-altas')
+    gap = case == 'sin-snapshot'
+    three = stacked or gap
+    two = three or case in ('dos', 'id-alta', 'when-entre-altas', 'when-no-seguro')
     mixed = case in ('mixta', 'mixta-invalida')
     catalog = repo / 'messages/es.json'
 
@@ -2759,6 +2766,9 @@ for case, failure in cases.items():
         write(catalog, catalog_base)
     if case == 'compartido-fuera':
         (repo / 'compartido.txt').write_text('base\n' + '\n' * 12 + 'base\n')
+    if case == 'renombre':
+        (repo / 'legacy').mkdir()
+        (repo / 'legacy/marcador.txt').write_text('marcador\n')
     commit(repo, 'base')
     old_base = git(repo, 'rev-parse', 'HEAD').stdout.strip()
     original_entries = [base]
@@ -2772,11 +2782,16 @@ for case, failure in cases.items():
         branch_tables['destino'] = incoming_tables['destino']
 
     git(repo, 'checkout', '-qb', 'revisado')
-    write_migration(root, first, branch_sql, 'primera', original_parent, branch_tables)
+    if case == 'solo-sql':
+        branch_sql = b'UPDATE original SET id = 1 WHERE id IS NULL;\n'
+    original_id = None if case in ('solo-sql', 'snapshot-agregado') else 'primera'
+    write_migration(root, first, branch_sql, original_id, original_parent, branch_tables)
     write_journal(root, [*original_entries, first])
     if clean:
         padded(first)
     (repo / 'parche.txt').write_text('cambio revisado\n')
+    if case == 'renombre':
+        (repo / 'legacy/ajuste.sql').write_bytes(b'UPDATE original SET id = 1 WHERE id IS NULL;\n')
     if mixed:
         mine = deepcopy(catalog_base)
         mine['inicio']['rama'] = 'Rama'
@@ -2789,9 +2804,9 @@ for case, failure in cases.items():
         commit(repo, 'padre-apilado')
         git(repo, 'branch', 'padre')
     if two:
-        write_migration(root, second, second_sql, 'segunda', 'primera', branch_last)
+        write_migration(root, second, second_sql, None if gap else 'segunda', 'primera', branch_last)
         write_journal(root, [base, first, second])
-    if stacked:
+    if three:
         # La tercera alta se generó sobre la primera, aunque la segunda ya
         # está en el journal. Su replay debe conservar la columna de la segunda.
         third_tables = deepcopy(branch_tables)
@@ -2813,6 +2828,8 @@ for case, failure in cases.items():
         (repo / 'compartido.txt').write_text('base\n' + '\n' * 12 + 'destino\n')
     if case == 'conflicto-fuera':
         (repo / 'parche.txt').write_text('cambio incompatible\n')
+    if case == 'renombre':
+        git(repo, 'mv', 'legacy/marcador.txt', f'{directory}/marcador.txt')
     if not retreat:
         commit(repo, 'destino')
     candidate_base = old_base if retreat else 'destino'
@@ -2822,6 +2839,12 @@ for case, failure in cases.items():
     git(repo, 'checkout', '-qb', 'nuevo', candidate_base)
     new_first, new_second, new_third = (entry(2, 201, 'primera'), entry(3, 202, 'segunda'),
                                        entry(4, 203, 'tercera'))
+    if case == 'when-no-seguro':
+        new_first['when'], new_second['when'] = 2**53, 2**53 + 1
+    if case == 'when-negativo':
+        new_first['when'] = -1
+    if case == 'when-maximo':
+        new_first['when'] = 2**53 - 1
     if case == 'when':
         new_first['when'] = 200
     if case == 'when-entre-altas':
@@ -2841,19 +2864,23 @@ for case, failure in cases.items():
     if case == 'perdio-columna':
         del integrated['original']['columns']['first']
     first_id = {'id-base': 'destino', 'id-base-nombrado': 'archivado'}.get(case, 'integrada-primera')
+    if case in ('solo-sql', 'snapshot-borrado'):
+        first_id = None
     if case in ('sql', 'sin-conflicto-sql'):
         branch_sql += b' '
     write_migration(root, new_first, branch_sql,
                     first_id, 'base' if case == 'prevId' or retreat else 'destino', integrated)
     if two:
-        integrated['original']['columns']['second'] = 'text'
-        write_migration(root, new_second, second_sql,
-                        first_id if case == 'id-alta' else 'integrada-segunda', first_id, integrated)
-    if stacked:
+        second_id = None if gap else first_id if case == 'id-alta' else 'integrada-segunda'
+        if not gap:
+            integrated['original']['columns']['second'] = 'text'
+        write_migration(root, new_second, second_sql, second_id, first_id, integrated)
+    if three:
         integrated['original']['columns']['third'] = 'text'
-        write_migration(root, new_third, b'SELECT 3;\n', 'integrada-tercera', 'integrada-segunda', integrated)
+        write_migration(root, new_third, b'SELECT 3;\n', 'integrada-tercera',
+                        first_id if gap else second_id, integrated)
     write_journal(root, [base] + ([] if retreat else [incoming]) + [new_first]
-                  + ([new_second] if two else []) + ([new_third] if stacked else []))
+                  + ([new_second] if two else []) + ([new_third] if three else []))
     outside_edit = case in ('fuera', 'sin-conflicto-fuera')
     (repo / 'parche.txt').write_text('cambio distinto\n' if outside_edit else 'cambio revisado\n')
     if case == 'snapshot-base':
@@ -2872,26 +2899,43 @@ for case, failure in cases.items():
         write(catalog, theirs)
     commit(repo, 'renumerado')
 
-    result = subprocess.run([bash, script, 'destino', 'revisado', 'nuevo'], cwd=repo,
-                            capture_output=True, encoding='utf-8')
+    command = [bash, script, 'destino', 'revisado', 'nuevo']
+    if case == 'error-python':
+        shim = repo / 'shim'
+        shim.mkdir()
+        python = shim / 'python3'
+        env = dict(os.environ, PATH=str(shim) + os.pathsep + os.environ['PATH'])
+        for exit_code in (2, 1):
+            python.write_text(f'#!/bin/sh\nexit {exit_code}\n')
+            python.chmod(0o755)
+            result = subprocess.run(command, cwd=repo, env=env, capture_output=True, encoding='utf-8')
+            assert result.returncode == 2 and not result.stdout, (case, result)
+            assert 'falló el validador' in result.stderr, (case, result)
+            print(f'migración {case} → Python sale con {exit_code}, apto-vigente con 2')
+        continue
+    result = subprocess.run(command, cwd=repo, capture_output=True, encoding='utf-8')
     assert result.returncode == 0, (case, result)
     lines = result.stdout.splitlines()
     if failure:
         point, reason = failure
-        assert lines[0].startswith('Ronda delta:'), (case, result)
-        assert f'{directory}/{journal}' in lines, (case, result)
+        if clean or retreat:
+            assert lines[0].startswith('Ronda:'), (case, result)
+        else:
+            assert lines[0].startswith('Ronda delta:'), (case, result)
+            assert f'{directory}/{journal}' in lines, (case, result)
         assert f'punto {point}:' in lines[-1] and reason in lines[-1], (case, result)
-        if outside_edit:
+        if case in ('fuera', 'renombre'):
             resolution = lines[1].split()
             assert resolution[:4] == ['Resolución:', 'git', 'diff', '--no-relative'], (case, result)
-            assert 'parche.txt' in git(repo, 'diff', '--name-only', *resolution[4:]).stdout
+            changed_path = 'parche.txt' if case == 'fuera' else f'{directory}/ajuste.sql'
+            assert changed_path in git(repo, 'diff', '--name-only', *resolution[4:]).stdout
     else:
         assert lines[0].startswith('APTO vigente'), (case, result)
         assert 'Renumeración de Drizzle' in lines[1], (case, result)
         assert f'{directory}/{first["tag"]} → {directory}/{new_first["tag"]}' in lines[1], (case, result)
         if two:
             assert f'{directory}/{second["tag"]} → {directory}/{new_second["tag"]}' in lines[1], (case, result)
-        if stacked:
+        if three:
             assert f'{directory}/{third["tag"]} → {directory}/{new_third["tag"]}' in lines[1], (case, result)
         if mixed:
             assert 'El catálogo se juntó por claves disjuntas:' in lines, (case, result)
