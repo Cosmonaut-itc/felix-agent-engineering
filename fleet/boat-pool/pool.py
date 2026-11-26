@@ -345,7 +345,7 @@ class VM:
                                  if item['evento'] in ('arranque', 'encendida', 'apagada')
                                  and item.get('id') == self.id), None)
                 except (OSError, KeyError, TypeError, ValueError, OverflowError):
-                    kind = UNREADABLE_POWER_EVENT
+                    raise JournalError(self.name) from None
                 self._power_event = (version, kind)
             _, kind = self._power_event
             if kind is UNREADABLE_POWER_EVENT:
@@ -572,7 +572,7 @@ class Pool:
         if vm.id in vm.recorded_ids:
             return
         if not any(item['evento'] == 'registro' and item.get('id') == vm.id
-                   for item in events(vm.journal)):
+                   for item in vm.read_events()):
             event = vm.event('registro', vm.prepared)
             try:
                 event['creada_en'], _ = self.fetch_creation(vm.name, vm.id, vm.prepared)
