@@ -528,6 +528,8 @@ class Jale:
             intentos.append(Intento(n, 'omitida' if u['resultado'] == 'no-corrida' else
                 u['resultado'], u['firma'], u['duracion_s'], str(ultimo.parent),
                 json.dumps(r['huella_entorno'], sort_keys=True)))
+        if rechazo is not None:
+            return rechazo
         if fallo_al_lanzar is not None:
             raise fallo_al_lanzar
         return Repeticion(commit, candidato.C, candidato.B,
