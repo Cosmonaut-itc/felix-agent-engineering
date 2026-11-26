@@ -1084,5 +1084,8 @@ def desde_datos(valor):
         kwargs = {k: desde_datos(v) for k, v in valor.items() if k != "_tipo"}
         if tipo in (Retenido, Rechazado):
             kwargs["motivo"] = Motivo(kwargs["motivo"])
+        if tipo is Entrada:
+            # Vuelta atrás desde SEN-7614: la marca sólo conservaba la FIFO hasta el lote siguiente.
+            kwargs.pop("rearmada", None)
         return tipo(**kwargs)
     return valor
