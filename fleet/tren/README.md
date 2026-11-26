@@ -1400,7 +1400,8 @@ operador. Antes de cada lanzamiento de Jale, el tren transfiere de la misma
 forma el commit que se prueba, como el C recién armado en su clon. El export
 de Boat lee ese commit del repositorio del snapshot y, sin él, cae al desk con
 `export-ValueError`. Si la transferencia falla, el tren pausa en
-`checkout-operador:sha-no-disponible` sin lanzar.
+`checkout-operador:sha-no-disponible` sin lanzar. Al prelanzar, sólo registra
+el aviso, como cualquier fallo del snapshot, y la pausa llega con la suite.
 Jale conserva la comprobación de `origin/main` de su lanzador. Si
 entra un cambio del lanzador tras fijar el SHA, el 64 pausa la vía en
 `lanzador-rechazo` y el nuevo intento toma otra lectura de `main`.
