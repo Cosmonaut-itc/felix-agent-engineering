@@ -20,4 +20,5 @@ def seleccionar(config, git):
     from adaptadores.jale import ESPERA_BOAT_S, Jale, MODOS
     return Jale(lanzador, git, host=config.get('host', 'auto'), modos=config.get('modos', MODOS),
                 resolver_lanzador=resolver, prelanzar=config.get('prelanzar', False),
-                boat_esperar_s=config.get('boat_esperar_s', ESPERA_BOAT_S))
+                boat_esperar_s=config.get('boat_esperar_s', ESPERA_BOAT_S),
+                repeticiones_paralelas=config.get('repeticiones_paralelas', 1))
