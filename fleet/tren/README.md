@@ -1319,7 +1319,8 @@ inscribe ni activa repositorios.
 
 `"host": "boat"` envía ambos modos al pool de Boat. Para elegir por modo, usa
 `"host": {"contract": "auto", "e2e": "boat"}`. Los valores aceptados son
-`auto`, `mini`, `desktop` y `boat`. Un modo ausente del mapa usa `auto`.
+`auto`, `mini`, `desktop` y `boat`. El mapa debe incluir todos los modos
+configurados y sólo puede tener claves `contract` y `e2e`.
 `"boat_esperar_s": 180` fija cuánto espera Boat un lugar con prioridad
 `tren` antes de enviar al desk en la misma invocación. Acepta enteros entre
 0 y 7200 y vale 180 por omisión. Las repeticiones filtradas de un modo
@@ -1444,12 +1445,15 @@ reengancha el mismo registro con la misma clave y conserva la salida
 anterior. Si hay un checkout del operador, usa su lanzador vigente.
 `abortar` libera las entregas sin rojo.
 Cuando Boat devuelve 75 pendiente, el siguiente intento usa la misma
-identidad con un log nuevo. Esto también recupera un envío del fallback cuyo
-desk devolvió 75 sin resultado. Una causa de interrupción o de resultado
-desconocido en Boat abre otro intento con una identidad nueva.
-Un marcador `PARTIAL: boat omitted=N` con N mayor que cero deja el efecto
-pendiente por cobertura insuficiente. El marcador `types-omitted` por sí
-solo permite usar el recibo.
+identidad con un log nuevo si el modo sigue configurado en Boat. Esto también
+recupera un envío del fallback cuyo desk devolvió 75 sin resultado. Si cambia
+el host del modo a `auto` o `desktop`, el intento nuevo usa ese host y su clave
+del desk. Una causa de interrupción, resultado desconocido, cancelación o
+despacho sin VM en Boat abre otro intento con una identidad nueva.
+Un marcador `PARTIAL: boat omitted=N` con N mayor que cero pausa el tren por
+infraestructura con detalle `cobertura-parcial-boat` y `corrida.log` como
+evidencia. Con `reanudar`, el modo afectado usa otro registro y una identidad
+nueva. El marcador `types-omitted` por sí solo permite usar el recibo.
 Hasito aplica la pausa del 64 y conserva su log y recibo. Estas pausas
 no consumen reanudaciones de 75 ni presupuesto de diagnóstico. Tampoco
 generan feedback de producto. Los recibos duplicados, malformados o

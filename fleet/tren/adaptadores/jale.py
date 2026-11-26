@@ -57,13 +57,13 @@ def identidad_boat_pendiente(registro):
     pendiente = leer_pendiente_boat(log)
     if pendiente is not None:
         # Boat conserva indefinidamente estas salidas sin un resultado recuperable.
-        if re.search(r'\b(?:interrupted|interrumpid[ao]s?|resultado desconocido)\b',
+        if re.search(r'\b(?:interrupted|interrumpid[ao]s?|resultado desconocido|sin VM)\b|\bcancelaci',
                      pendiente['cause'], re.IGNORECASE):
             return None
         return identidad
     # El fallback puede devolver un 75 del desk sin generar un sidecar.
     if log.exists():
-        lineas = log.read_text(encoding='utf-8').splitlines()
+        lineas = log.read_text(encoding='utf-8', errors='replace').splitlines()
         if (any(linea.startswith('HOST=desktop fallback=') for linea in lineas) and
                 not any(linea.startswith(('RECIBO ', 'RESULT ')) for linea in lineas)):
             return identidad
@@ -84,13 +84,15 @@ def leer_recibo(log, codigo, commit, modo, filtros):
     if codigo == 64:
         return RechazoLanzador(str(Path(log).with_name('coordinador.log')))
     try:
-        lineas = Path(log).read_text(encoding='utf-8').splitlines()
+        # Un 75 del desk puede dejar salida de pruebas sin texto UTF-8.
+        lineas = Path(log).read_text(
+            encoding='utf-8', errors='replace' if codigo == 75 else 'strict').splitlines()
     except OSError:
         lineas = []
     except UnicodeError:
         raise ResultadoInvalido('recibo-malformado') from None
-    exigir(not any(re.fullmatch(r'PARTIAL: boat omitted=0*[1-9][0-9]*', linea)
-                   for linea in lineas), 'cobertura-parcial-boat')
+    if any(re.fullmatch(r'PARTIAL: boat omitted=0*[1-9][0-9]*', linea) for linea in lineas):
+        return RechazoLanzador(str(log), 'cobertura-parcial-boat')
     recibos = [linea for linea in lineas if linea.startswith('RECIBO')]
     if not recibos:
         if codigo == 75:
@@ -167,12 +169,13 @@ class Jale:
 
     def __init__(self, lanzador, git=None, host='auto', modos=MODOS, estado=None, *,
                  resolver_lanzador=True, prelanzar=False, boat_esperar_s=ESPERA_BOAT_S):
-        if not (host in HOSTS or isinstance(host, dict) and host and
-                all(modo in MODOS and valor in HOSTS for modo, valor in host.items())):
-            raise ValueError('host-invalido')
         if not (isinstance(modos, (tuple, list)) and modos and
                 all(m in MODOS for m in modos) and len(set(modos)) == len(modos)):
             raise ValueError('modos-invalidos')
+        if not ((isinstance(host, str) and host in HOSTS) or
+                (isinstance(host, dict) and set(modos) <= set(host) <= set(MODOS) and
+                 all(isinstance(valor, str) and valor in HOSTS for valor in host.values()))):
+            raise ValueError('host-invalido')
         if type(prelanzar) is not bool:
             raise ValueError('prelanzar-invalido')
         if type(boat_esperar_s) is not int or not 0 <= boat_esperar_s <= 7200:
@@ -189,6 +192,10 @@ class Jale:
 
     def esperar(self, proceso):
         proceso.wait()
+
+    def host_de(self, modo, filtros):
+        host = self.host[modo] if isinstance(self.host, dict) else self.host
+        return 'auto' if filtros and host == 'boat' else host
 
     def prelanzar(self, candidato, tren_id):
         if not self.prelanzar_habilitado:
@@ -233,9 +240,7 @@ class Jale:
         registro.mkdir(parents=True, exist_ok=True, mode=0o700)
         log = registro / 'corrida.log'
         codigo = registro / 'codigo.json'
-        host = self.host.get(modo, 'auto') if isinstance(self.host, dict) else self.host
-        if filtros and host == 'boat':
-            host = 'auto'
+        host = self.host_de(modo, filtros)
         argv = ['bash', self.lanzador, host, str(log), modo, commit, *filtros]
         solicitud = registro / 'solicitud.json'
         candado_corrida = registro / 'candado'
@@ -252,13 +257,11 @@ class Jale:
         else:
             if self.operador is not None and self.operador.checkout is not None:
                 argv[1] = self.operador.lanzador(self.lanzador_configurado, tren_id, codigo)
-            identidad = None
-            if not filtros and registro.name != '0':
-                previo = registro.with_name(str(int(registro.name) - 1))
-                identidad = identidad_boat_pendiente(previo)
             variables = {}
-            if host == 'boat' or identidad is not None:
-                argv[2] = 'boat'
+            if host == 'boat':
+                intento = int(registro.name)
+                identidad = (identidad_boat_pendiente(registro.with_name(str(intento - 1)))
+                             if intento else None)
                 variables = {
                     'REMOTE_RUN_CLAVE': None,
                     'SEN_E2E_FRAGMENTO': None,

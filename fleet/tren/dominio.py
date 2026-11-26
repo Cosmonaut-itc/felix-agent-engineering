@@ -614,12 +614,10 @@ def efecto_corrida(tipo, datos, intento, fase):
 
 
 def pausar_lanzador(estado, resultado):
-    archivos = (resultado.evidencia,)
-    pausa = (Pausa("infraestructura", detalle="salida-sin-recibo", archivos=archivos)
-             if resultado.detalle == "salida-sin-recibo" else
-             Pausa("infraestructura", detalle="corrida-interrumpida", archivos=archivos)
-             if resultado.detalle == "corrida-interrumpida" else
-             Pausa("infraestructura", detalle="lanzador-rechazo", archivos=archivos))
+    detalle = resultado.detalle
+    if detalle not in ("salida-sin-recibo", "corrida-interrumpida", "cobertura-parcial-boat"):
+        detalle = "lanzador-rechazo"
+    pausa = Pausa("infraestructura", detalle=detalle, archivos=(resultado.evidencia,))
     return replace(estado, pausa=pausa), ()
 
 
