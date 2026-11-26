@@ -572,7 +572,7 @@ class Pool:
         if vm.id in vm.recorded_ids:
             return
         if not any(item['evento'] == 'registro' and item.get('id') == vm.id
-                   for item in vm.read_events()):
+                   for item in events(vm.journal)):
             event = vm.event('registro', vm.prepared)
             try:
                 event['creada_en'], _ = self.fetch_creation(vm.name, vm.id, vm.prepared)
@@ -617,6 +617,8 @@ class Pool:
         stop = info.get('stop')
         if state in READY and isinstance(stop, dict) and stop.get('status') in ('pending', 'failing'):
             return 'archiving'
+        if state in READY and vm.last_power_event() == 'apagada':
+            append_event(vm.journal, vm.event('encendida', self.now()))
         return state
 
     def stop_pending(self, operation):
