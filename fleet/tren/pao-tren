@@ -4,6 +4,7 @@ import argparse
 from contextlib import ExitStack
 import importlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -19,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion,
                      admision_entrada, datos, paso)
 from inscripcion import activacion, modo
-from ledger import Ledger, candado_programa, directorio_estado, filas_medicion, lectura_medicion
+from ledger import (CandadoOcupado, Ledger, candado_programa, directorio_estado, filas_medicion,
+                    lectura_medicion)
 from medicion import decision_json, instante_iso, medir
 from observador import ERRORES_LECTURA, GitHubGit, configuracion, sha
 from sombra import paso_sombra
@@ -131,12 +133,16 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
             codigo = subprocess.run(args.orden).returncode
             time.sleep(GRACIA_INSTALACION_S)
         return codigo, {"candado": "tomado", "codigo": codigo}
+    plazo = plazo_candado() if args.comando in ("juicio", "pausa") else None
+    if args.comando in ("juicio", "pausa") and plazo is None:
+        return 2, {"error": "PAO_TREN_PLAZO_CANDADO_S inválido: segundos, número no negativo"}
     ledger = Ledger()
     ahora = time.time() if ahora is None else ahora
     try:
         if args.comando in ("juicio", "pausa"):
             from juicios import error_decision
-            with ledger.candado(args.repo):
+            with ledger.candado(args.repo, plazo, lambda: print(
+                    f"{TICK_EN_CURSO}: espero el candado hasta {plazo:g} s", file=sys.stderr, flush=True)):
                 if activacion(args.repo) != "activo":
                     return 2, {"error": "comando activo requiere inscripción activa"}
                 estado = ledger.estado(args.repo, operativo=True)
@@ -202,7 +208,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                     from juicios import expediente
                     resultado["juicio"] = expediente(ledger, args.repo)
                 return 0, resultado
-        with ledger.candado(args.repo):
+        # El tick en seco no espera: durante la suite la admisión se lee con `estado`.
+        with ledger.candado(args.repo, 0 if args.seco else None):
             if not args.seco:
                 # Releer tras esperar el flock: pudieron retirar la inscripción.
                 if activacion(args.repo) != "activo":
@@ -241,8 +248,31 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
             efectos = tuple(e for e in efectos if e.tipo not in STATUS_SOLO)
             plan = ledger.sombra(nuevo, efectos, ahora, doble_camino=doble_camino)
             return 0, {"modo": "sombra", "plan": plan}
+    except CandadoOcupado:
+        detalle = (f"lee la admisión con `pao-tren estado --repo {args.repo}`" if args.comando == "tick"
+                   else f"el candado siguió tomado {plazo:g} s")
+        # Línea fija para quien reintenta sobre 75: nada quedó registrado.
+        print(f"{TICK_EN_CURSO}; no se registró nada ({detalle})", file=sys.stderr, flush=True)
+        return 75, {"candado": "ocupado", "registrado": False}
     finally:
         ledger.close()
+
+
+TICK_EN_CURSO = "pao-tren: tick en curso"
+# Un tick sin suite tarda de 20 a 60 s; la suite retiene el candado de 25 a 90 min.
+PLAZO_CANDADO_S = 90
+
+
+def plazo_candado():
+    """Plazo de juicio y pausa: PAO_TREN_PLAZO_CANDADO_S o el de defecto; None si es inválido."""
+    valor = os.environ.get("PAO_TREN_PLAZO_CANDADO_S")
+    if valor is None:
+        return PLAZO_CANDADO_S
+    try:
+        plazo = float(valor)
+    except ValueError:
+        return None
+    return plazo if 0 <= plazo < float("inf") else None
 
 
 ENCADENADOS = 8
