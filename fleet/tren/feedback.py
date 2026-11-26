@@ -9,7 +9,7 @@ import re
 import shlex
 import subprocess
 
-from adaptadores.jale import MODOS
+from adaptadores.jale import HOSTS, MODOS
 from dominio import LANZADOR_JALE, Rechazado
 from observador import sha
 
@@ -33,7 +33,7 @@ def comando_publico(fallo):
     args = argv[2:]
     carril = args[:2] if args[:2] == ["--carril", "rapido"] else []
     posicionales = args[len(carril):]
-    if posicionales[0:1] in (["auto"], ["mini"], ["desktop"]):
+    if posicionales[:1] and posicionales[0] in HOSTS:
         if len(posicionales) != 5:
             raise ValueError("Comando de reproducción de Jale inválido")
         host, _, modo, commit, unidad = posicionales
