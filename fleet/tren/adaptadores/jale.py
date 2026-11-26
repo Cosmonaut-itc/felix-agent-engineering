@@ -200,9 +200,8 @@ class Jale:
     def esperar(self, proceso):
         proceso.wait()
 
-    def host_de(self, modo, filtros):
-        host = self.host[modo] if isinstance(self.host, dict) else self.host
-        return 'auto' if filtros and host == 'boat' else host
+    def host_de(self, modo):
+        return self.host[modo] if isinstance(self.host, dict) else self.host
 
     def prelanzar(self, candidato, tren_id):
         if not self.prelanzar_habilitado:
@@ -252,7 +251,7 @@ class Jale:
         registro.mkdir(parents=True, exist_ok=True, mode=0o700)
         log = registro / 'corrida.log'
         codigo = registro / 'codigo.json'
-        host = self.host_de(modo, filtros)
+        host = self.host_de(modo)
         argv = ['bash', self.lanzador, host, str(log), modo, commit, *filtros]
         solicitud = registro / 'solicitud.json'
         candado_corrida = registro / 'candado'
