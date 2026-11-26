@@ -209,7 +209,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                     resultado["juicio"] = expediente(ledger, args.repo)
                 return 0, resultado
         # El tick en seco no espera: durante la suite la admisión se lee con `estado`.
-        with ledger.candado(args.repo, 0 if args.seco else None):
+        candado = ledger.candado(args.repo, 0) if args.seco else ledger.candado(args.repo)
+        with candado:
             if not args.seco:
                 # Releer tras esperar el flock: pudieron retirar la inscripción.
                 if activacion(args.repo) != "activo":
