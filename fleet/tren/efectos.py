@@ -16,6 +16,7 @@ from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
 from atribucion import planificar
 from git_ops import FalloGit, Publicado
 from adaptadores.hasito import ResultadoInvalido
+from adaptadores.jale import EN_CURSO
 from operador import FalloSnapshot
 
 
@@ -30,6 +31,21 @@ class Ejecucion:
     observacion: Observacion
     completo: bool
     aviso: Optional[dict] = None
+    en_curso: bool = False
+
+
+def lote_admitido(estado, tren, observacion):
+    vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+    entradas = {e.entrega.recibo: e for e in estado.entradas}
+    return all(isinstance(admision_entrada(entradas[r], vistas, observacion), Admitido)
+               for r in tren.recibos)
+
+
+def suite_autorizada(estado, tren, observacion):
+    """iniciar-suite sólo lanza con el lote admitido y el verde de la solicitud vigente."""
+    return (lote_admitido(estado, tren, observacion) and observacion.ci_candidato == "verde" and
+            (not tren.fase.solicitud or (observacion.tren_id == tren.id and
+                                         observacion.ci_recibo == recibo_ci(tren))))
 
 
 def aviso_prelanzamiento(tren, exc):
@@ -91,10 +107,7 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                      resultado_suite=None, repeticion=None, reproduccion_id="",
                      suite=None, suite_intento=0)
     if efecto.tipo in ("iniciar-suite", "reanudar-suite", "repetir", "armar-subconjunto"):
-        vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
-        entradas = {e.entrega.recibo: e for e in estado.entradas}
-        admitidos = all(isinstance(admision_entrada(entradas[r], vistas, observacion), Admitido)
-                        for r in tren.recibos)
+        admitidos = lote_admitido(estado, tren, observacion)
         if efecto.tipo == "armar-subconjunto" and isinstance(fase, Diagnosticando):
             if fase.pendiente is None or efecto != efecto_diagnostico(tren, fase):
                 raise ValueError("subconjunto obsoleto")
@@ -121,9 +134,9 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                 if efecto != Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)):
                     raise ValueError("suite obsoleta")
                 recibo = adaptador.suite(fase.candidato, tren.id,
-                    permitir_lanzar=admitidos and (not fase.solicitud or
-                    (observacion.tren_id == tren.id and observacion.ci_recibo == recibo_ci(tren))) and
-                    observacion.ci_candidato == "verde")
+                    permitir_lanzar=suite_autorizada(estado, tren, observacion))
+                if recibo is EN_CURSO:
+                    return Ejecucion(limpia, False, en_curso=True)
                 if recibo is None:
                     return Ejecucion(limpia, False)
                 ruta, resultado = recibo
@@ -139,6 +152,8 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                     raise ValueError("reanudación obsoleta")
                 recibo = adaptador.suite(fase.candidato, tren.id,
                     intento_suite(fase), fase.reanudar, **opciones)
+                if recibo is EN_CURSO:
+                    return Ejecucion(limpia, False, en_curso=True)
                 if recibo is None:
                     return Ejecucion(limpia, False)
                 ruta, resultado = recibo
@@ -164,6 +179,8 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                 resultado = adaptador.repetir(fase.candidato, fase.suite, s, commit,
                                           tren.id, intento_suite(fase), fase.reanudar,
                                           **opciones)
+                if resultado is EN_CURSO:
+                    return Ejecucion(limpia, False, aviso, en_curso=True)
                 if resultado is None:
                     return Ejecucion(limpia, False, aviso)
                 return Ejecucion(replace(limpia, repeticion=resultado, reproduccion_id=s.id,

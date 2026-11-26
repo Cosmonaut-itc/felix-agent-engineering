@@ -29,6 +29,10 @@ def identidad(fallo):
     return (fallo.parte, fallo.check, fallo.unidad)
 
 
+def id_reproduccion(fallo, objetivo, miembros):
+    return clave("reproduccion", identidad(fallo), objetivo, miembros)
+
+
 def unidad(resultado, fallo):
     encontradas = [u for u in resultado.unidades
                    if (u.parte, u.check, u.unidad) == identidad(fallo)]
@@ -87,7 +91,7 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
 
         def pedir(objetivos):
             tanda = tuple(Reproduccion(
-                clave("reproduccion", identidad(fallo), objetivo, miembros),
+                id_reproduccion(fallo, objetivo, miembros),
                 fallo, objetivo, miembros, costo) for objetivo, miembros in objetivos)
             if costo_atribucion(evidencias, en_paralelo, siguiente=tanda[0]) > presupuesto_s:
                 return Plan(incierto="presupuesto-agotado:" + fallo.unidad)

@@ -346,10 +346,9 @@ Cuándo sale 75:
   arranque. Si cierra el lote, espera sus candados hasta el segundo 110
   como máximo. Reintenta cada pocos segundos hasta caer en el hueco:
   `until pao-tren candado -- <comando>; [ $? -ne 75 ]; do sleep 2; done`.
-- El tick que espera una suite retiene el candado todo ese tiempo, que en
-  Jale ronda los 90 minutos. `candado` no espera ni interrumpe ese tick. Si
-  la cola del host de pruebas está en pausa o retenida, la suite no termina
-  sola y la instalación pide antes resolver esa cola.
+- Un tick activo puede impedir que `pao-tren candado` tome el candado de
+  instalación. Los coordinadores de Jale siguen entre ticks. Si la cola
+  del host de pruebas está en pausa o retenida, la suite no termina sola.
 
 Límites conocidos:
 
@@ -1399,11 +1398,10 @@ no deja un resultado utilizable (un rechazo del lanzador, un 75 o un recibo
 inválido), el efecto recoge antes el otro intento. Si ese intento deja un
 recibo válido con código distinto de 75, queda en la caché y el intento
 siguiente no lo vuelve a lanzar. El efecto devuelve el resultado del primer
-intento que impide la repetición, en orden de intento. Espera a que termine
-el coordinador local del otro intento antes de devolverlo, como la suite
-espera a los coordinadores de todos sus modos. Esa espera no garantiza que
-el host quede sin tareas de la reproducción: un lanzador que sale por un
-envío sin confirmar puede dejar la suya en la cola.
+intento que impide la repetición, en orden de intento. Mientras algún
+coordinador sigue vivo, el efecto queda en ejecución y el siguiente tick
+vuelve a consultar sus registros. Un lanzador que sale por un envío sin
+confirmar puede dejar su tarea en la cola del host.
 
 ### Checkout del operador
 
@@ -1485,10 +1483,10 @@ contract, una `falla` exige un código distinto de 0.
 Con `prelanzar` habilitado, los modos empiezan al pedir el CI. Cuando
 `iniciar-suite` observa CI verde y miembros admitidos, confirma los registros
 especulativos y recoge las corridas. La confirmación es durable y permite
-recuperar los resultados tras una caída del tick. Una salida 75 que se
-produzca antes del verde ocupa la primera reanudación cuando `iniciar-suite`
-la consume. Cada modo con recibo válido y código distinto de 75 se conserva
-en caché para la reanudación.
+recuperar los resultados tras una caída del tick. Una salida 75 de una
+corrida sin marca de cancelación que se produzca antes del verde ocupa la
+primera reanudación cuando `iniciar-suite` la consume. Cada modo con recibo
+válido y código distinto de 75 se conserva en caché para la reanudación.
 
 Si `solicitar-ci` se reintenta tras la muerte de un tick, vuelve a prelanzar
 sobre el mismo registro, salvo que ese tick ya lea en rojo el CI de esa
@@ -1528,6 +1526,33 @@ lanzador de `mini` usa transporte SSH directo y carece de cancelación en
 el host. Los coordinadores de la versión anterior no leen `cancelar.json`.
 Antes de instalar, espera a que salgan las prelanzadas vivas o cancélalas
 a mano.
+
+La suite de Jale libera el candado del carril al final del tick que lanza
+o consulta los coordinadores. Mientras siga vivo algún modo o intento,
+la fila de la outbox queda en `ejecutando`. Cuando hay resultado, el
+siguiente tick lo recoge del registro durable. Esto puede tardar hasta un
+intervalo de launchd (120 segundos con la configuración habitual). En
+serie, el tick que recoge el primer intento de una repetición lanza el
+segundo.
+
+El plazo de CI deja de aplicar cuando la suite empieza con la solicitud
+vigente. El primer evento `efecto-iniciado` fecha el arranque de la suite.
+El tick inicia una fila `iniciar-suite` pendiente sólo con el lote
+admitido y el verde de la solicitud vigente, aunque la fila venga de otra
+solicitud o de un tick que murió. Con la solicitud N mayor que 0, la suite
+es de N si su primer `efecto-iniciado` sigue al primer `efecto-iniciado`
+del `solicitar-ci` de N. Reiniciar una
+fila `fallido` no cambia la solicitud con la que empezó. Si `juicio
+reanudar` emite otra solicitud, su plazo cuenta desde que se reinicia
+`desde`. El tren retiene el resultado de una suite que empezó con una
+solicitud anterior hasta leer el verde de la vigente. Si el CI sigue
+pendiente al vencer ese plazo, vuelve a pausar con `ci-sin-resultado`.
+
+Si el tren pasa a `Terminal` con una corrida confirmada viva o con salida
+pendiente de leer, el mismo paso emite `suite-sin-leer` con `tren`, `modo`,
+`clave` y `terminada`. La corrida confirmada puede terminar en el host y su
+resultado queda sin consumir. La clave identifica la corrida para una
+intervención manual.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
