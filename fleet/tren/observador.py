@@ -66,7 +66,7 @@ def limite_http(codigo, cabeceras, mensaje):
     espera = segundos(cabeceras.get("retry-after"))
     if espera is not None:
         reinicio = min(int(time.time()) + espera, 253402300799)
-    elif recurso == "secondary" or reinicio is None:
+    elif reinicio is None or (recurso == "secondary" and not agotado):
         # GitHub indica esperar al menos un minuto si el límite secundario no da plazo.
         reinicio = int(time.time()) + 60
     return LimiteGitHub(recurso, reinicio)
@@ -168,7 +168,8 @@ class GitHubGit:
             return json.loads(self.comando(args))
         except subprocess.CalledProcessError as exc:
             mensaje = (exc.stderr or "").lower()
-            if "rate limit" not in mensaje or not re.search(r"\bhttp 4(03|29)\b", mensaje):
+            estado = re.search(r"\bhttp (403|429)\b", mensaje)
+            if estado is None or (estado[1] == "403" and "rate limit" not in mensaje):
                 raise
             if "secondary rate limit" in mensaje:
                 raise LimiteGitHub("secondary", int(time.time()) + 60) from None

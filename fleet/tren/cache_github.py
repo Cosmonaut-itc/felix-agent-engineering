@@ -13,10 +13,11 @@ class CacheGitHub:
         try:
             ruta = Path(directorio) / "github-cache.sqlite3"
             # Guarda cuerpos de repos privados: sólo el usuario del tren la lee.
-            os.close(os.open(ruta, os.O_CREAT | os.O_RDWR, 0o600))
+            # Antes de abrir: un modo previo de sólo lectura haría fallar O_RDWR.
             for archivo in (ruta, Path(f"{ruta}-wal"), Path(f"{ruta}-shm")):
                 if archivo.exists():
                     os.chmod(archivo, 0o600)
+            os.close(os.open(ruta, os.O_CREAT | os.O_RDWR, 0o600))
             self.db = sqlite3.connect(ruta, isolation_level=None, check_same_thread=False)
             self.db.execute("PRAGMA busy_timeout=1000")
             self.db.execute("PRAGMA journal_mode=WAL")

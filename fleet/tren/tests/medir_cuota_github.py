@@ -75,10 +75,12 @@ def medir(args, temporal):
     print(json.dumps({"pr_abiertos": len(prs), "pr_base_main": sum(
         pr["base"]["ref"] == "main" for pr in prs), "cache": args.cache}), flush=True)
     posteriores = []
+    inicio = None
     for tick in range(1, args.ticks + 1):
-        if tick > 1:
-            # El régimen real deja pasar el intervalo de launchd entre ticks.
-            time.sleep(args.intervalo)
+        if inicio is not None:
+            # launchd (StartInterval) cuenta el intervalo entre inicios, no entre fin e inicio.
+            time.sleep(max(0, inicio + args.intervalo - time.monotonic()))
+        inicio = time.monotonic()
         conteo.clear()
         if args.cache:
             from cache_github import CacheGitHub
@@ -90,7 +92,8 @@ def medir(args, temporal):
                    for tipo in sorted({t for t, _ in conteo})}
         pagadas = sum(n for (_, codigo), n in conteo.items() if codigo == "200")
         gratuitas = sum(n for (_, codigo), n in conteo.items() if codigo == "304")
-        print(json.dumps({"tick": tick, "endpoints": resumen, "200": pagadas, "304": gratuitas,
+        print(json.dumps({"tick": tick, "duracion_s": round(time.monotonic() - inicio, 1),
+                          "endpoints": resumen, "200": pagadas, "304": gratuitas,
                           "core_hora_120s": pagadas * 30, "core_hora_600s": pagadas * 6,
                           "vistas_completas": sum(v.completa for v in vista.prs)}), flush=True)
         if not pagadas + gratuitas or pagadas + gratuitas != sum(conteo.values()):
@@ -110,6 +113,6 @@ if __name__ == "__main__":
     parser.add_argument("--git", type=Path)
     parser.add_argument("--cache", action="store_true")
     parser.add_argument("--ticks", type=int, default=2)
-    parser.add_argument("--intervalo", type=float, default=0, help="segundos entre ticks")
+    parser.add_argument("--intervalo", type=float, default=0, help="segundos entre inicios de tick")
     with tempfile.TemporaryDirectory() as ruta:
         medir(parser.parse_args(), Path(ruta))
