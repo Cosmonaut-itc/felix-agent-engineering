@@ -1,4 +1,5 @@
 """Caché descartable de respuestas condicionales de GitHub."""
+import os
 from pathlib import Path
 import sqlite3
 from threading import Lock
@@ -10,8 +11,13 @@ class CacheGitHub:
         self.db = None
         self.candado = Lock()
         try:
-            self.db = sqlite3.connect(Path(directorio) / "github-cache.sqlite3",
-                                      isolation_level=None, check_same_thread=False)
+            ruta = Path(directorio) / "github-cache.sqlite3"
+            # Guarda cuerpos de repos privados: sólo el usuario del tren la lee.
+            os.close(os.open(ruta, os.O_CREAT | os.O_RDWR, 0o600))
+            for archivo in (ruta, Path(f"{ruta}-wal"), Path(f"{ruta}-shm")):
+                if archivo.exists():
+                    os.chmod(archivo, 0o600)
+            self.db = sqlite3.connect(ruta, isolation_level=None, check_same_thread=False)
             self.db.execute("PRAGMA busy_timeout=1000")
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("""CREATE TABLE IF NOT EXISTS respuestas(
