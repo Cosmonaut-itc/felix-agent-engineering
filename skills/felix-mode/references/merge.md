@@ -252,10 +252,17 @@ restantes y la separación entre propietario, verificador y stacker.
      esa excepción. Valores cambiados, claves borradas o duplicadas, JSON
      inválido y conflictos exigen revisión. El APTO sigue vigente sin ronda
      nueva; guarda la salida con la prueba del paso 2.
+     Lo mismo vale si los archivos compartidos o en conflicto son de un
+     directorio de Drizzle y la sincronización sólo renumeró sus
+     migraciones: el journal de la base sigue intacto y le siguen las altas
+     revisadas en orden, su SQL no cambió, y los snapshots nuevos encadenan
+     con los de la base y reproducen el esquema por mezcla de tres vías.
+     Fuera de ese directorio, el árbol es la mezcla limpia. La segunda línea
+     lista cada `viejo → nuevo`.
    - `Ronda delta`: la rama destino cambió los archivos del parche que
-     lista, o la mezcla tuvo conflictos. Con conflictos, la segunda línea
-     es el diff de su resolución y la lista incluye los archivos en
-     conflicto. Corre una ronda delta sobre esos archivos y ese diff. Es una
+     lista, o la mezcla tuvo conflictos. La lista incluye los archivos en
+     conflicto. Si aparece `Resolución`, revisa también ese diff contra la
+     mezcla automática. Corre una ronda delta sobre esos cambios. Es una
      ronda de sincronización.
    - `Ronda`, o un error del script: corre la ronda que fija **Rondas**.
 

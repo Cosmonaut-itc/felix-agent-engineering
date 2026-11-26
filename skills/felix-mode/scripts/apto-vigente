@@ -1,7 +1,7 @@
 #!/bin/bash
 # Dice si un APTO sigue vigente cuando el head cambió por incorporar el destino.
 # Imprime `APTO vigente` si el head nuevo es la mezcla sin conflictos del head
-# revisado con el destino, sin interacción o con altas disjuntas de traducción.
+# revisado con el destino, con excepciones para catálogos y migraciones Drizzle.
 # Imprime `Ronda delta` y los archivos que revisar si el destino cambió archivos
 # del parche, o si la mezcla tuvo conflictos, con el diff de su resolución.
 # En los demás casos imprime `Ronda` y el motivo. Sale con 2 cuando no puede
@@ -56,11 +56,6 @@ auto=${merged%%$'\n'*}
 conflicted=''
 [ "$merge_status" = 0 ] || conflicted=${merged#"$auto"}
 tree=$(git rev-parse --verify --quiet "$new^{tree}") || fail "no puedo leer el árbol de $new"
-if [ "$merge_status" = 0 ] && [ "$auto" != "$tree" ]; then
-    printf 'Ronda: el head nuevo no es la mezcla del head revisado con el destino\n'
-    exit 0
-fi
-
 # Rutas cuya entrada difiere entre dos árboles. Salen de `git ls-tree`, que
 # lista entradas y no tiene opciones de diff que escondan una.
 changed() (
@@ -74,15 +69,10 @@ while IFS= read -r file; do
     [ -n "$file" ] || continue
     case $'\n'"$incoming"$'\n' in *$'\n'"$file"$'\n'*) shared+=$file$'\n' ;; esac
 done <<< "$patch"
-if [ "$merge_status" = 1 ]; then
-    printf 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos\nResolución: git diff --no-relative %s %s\n' "$auto" "$new"
-    printf '%s\n%s' "$conflicted" "$shared" | sed '/^$/d' | LC_ALL=C sort -u
-    exit 0
-fi
-# Sólo se exceptúan catálogos de cadenas con altas disjuntas y unión exacta.
-# Se leen los objetos del mismo repositorio aislado; nunca el checkout.
-catalogs_disjoint() {
-    python3 -I - "$reviewed_base" "$reviewed" "$new_base" "$new" "$shared" <<'PY_CATALOGS'
+# Las excepciones leen los objetos del mismo repositorio aislado.
+sync_exceptions() {
+    python3 -I - "$reviewed_base" "$reviewed" "$new_base" "$tree" "$auto" "$shared" "$conflicted" <<'PY_EXCEPTIONS'
+import ast
 import json
 import re
 import subprocess
@@ -106,18 +96,46 @@ def validate(node):
         raise ValueError('la traducción no es una cadena')
 
 
-def load(revision, path):
-    entry = subprocess.run(['git', 'ls-tree', revision, '--', path],
-                           check=True, capture_output=True).stdout
+def git(*args):
+    return subprocess.run(['git', *args], check=True, capture_output=True).stdout
+
+
+def inventory(revision):
+    files = {}
+    for record in git('ls-tree', '-rtz', '--full-tree', revision).split(b'\0'):
+        if record:
+            entry, path = record.split(b'\t', 1)
+            path = path.decode('utf-8', 'surrogateescape')
+            # Las entradas de directorio se conservan sólo si están vacías.
+            files.pop(path.rpartition('/')[0], None)
+            files[path] = entry
+    return files
+
+
+def load(files, path):
+    entry = files.get(path, b'')
     if not entry.startswith(b'100644 blob '):
-        raise ValueError('el catálogo no es un archivo regular sin cambio de modo')
-    content = subprocess.run(['git', 'show', revision + ':' + path],
-                             check=True, capture_output=True).stdout
-    node = json.loads(content.decode('utf-8'), object_pairs_hook=unique)
-    if not isinstance(node, dict):
-        raise ValueError('el catálogo no es un objeto')
-    validate(node)
-    return node
+        raise ValueError(f'{path}: se esperaba un archivo regular sin bit ejecutable')
+    return json.loads(git('cat-file', 'blob', entry.split()[-1].decode('ascii')).decode('utf-8'),
+                      object_pairs_hook=unique, parse_constant=invalid_constant)
+
+
+def invalid_constant(value):
+    raise ValueError(f'valor JSON inválido: {value}')
+
+
+def catalogs_disjoint(paths, trees):
+    for path in paths:
+        if not re.fullmatch(r'(?:.*/)?(?:messages|translations)/[^/]+\.json', path):
+            return False
+        base, mine, theirs, merged = (load(files, path) for files in trees)
+        for node in (base, mine, theirs, merged):
+            if not isinstance(node, dict):
+                return False
+            validate(node)
+        if mine == base or theirs == base or union(base, mine, theirs) != merged:
+            return False
+    return True
 
 
 def union(base, mine, theirs):
@@ -139,23 +157,252 @@ def union(base, mine, theirs):
     return result
 
 
+MIGRATION = re.compile(r'(?:(.*/))?(?:[^/]+\.sql|meta/(?:_journal|[^/]+_snapshot)\.json)')
+SNAPSHOT = re.compile(r'meta/[^/]+_snapshot\.json')
+NUMBERED_SNAPSHOT = re.compile(r'meta/[0-9]{4}_snapshot\.json')
+TAG = re.compile(r'[0-9]{4}_[^/\x00]+')
+ORIGIN = '00000000-0000-0000-0000-000000000000'
+MISSING = object()
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def changes(before, after):
+    return {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
+
+
+def journal(files):
+    data = load(files, 'meta/_journal.json')
+    entries = data.pop('entries')
+    require(isinstance(entries, list), 'entries no es una lista')
+    for entry in entries:
+        require(isinstance(entry['tag'], str) and TAG.fullmatch(entry['tag'])
+                and type(entry['idx']) is int and type(entry['when']) is int
+                and isinstance(entry['version'], str) and type(entry['breakpoints']) is bool,
+                'entrada del journal inválida')
+    require(len({entry['tag'][:4] for entry in entries}) == len(entries),
+            'prefijos de migración repetidos')
+    return data, entries
+
+
+def snapshot(files, path):
+    data = load(files, path)
+    identifier, parent = data.pop('id'), data.pop('prevId')
+    require(isinstance(identifier, str) and identifier and isinstance(parent, str),
+            f'{path}: id o prevId inválido')
+    return identifier, parent, data
+
+
+def equal(left, right):
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(equal(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def merge_schema(original_parent, integrated_parent, original, path):
+    if equal(original_parent, original):
+        return integrated_parent
+    if equal(original_parent, integrated_parent) or equal(integrated_parent, original):
+        return original
+    if all(isinstance(node, dict) for node in (original_parent, integrated_parent, original)):
+        result = {}
+        for key in original_parent.keys() | integrated_parent.keys() | original.keys():
+            value = merge_schema(original_parent.get(key, MISSING), integrated_parent.get(key, MISSING),
+                                 original.get(key, MISSING), f'{path}.{key}')
+            if value is not MISSING:
+                result[key] = value
+        return result
+    raise ValueError(f'cambios incompatibles en {path}')
+
+
+def snapshot_path(tag):
+    return f'meta/{tag[:4]}_snapshot.json'
+
+
+def migration_pairs(trees):
+    original_base, reviewed, new_base, new = trees
+    point = 2
+    try:
+        old_header, old_entries = journal(original_base)
+        reviewed_header, reviewed_entries = journal(reviewed)
+        base_header, base_entries = journal(new_base)
+        new_header, new_entries = journal(new)
+        require(equal(old_header, reviewed_header)
+                and equal(old_entries, reviewed_entries[:len(old_entries)]),
+                'el journal revisado modifica su base')
+        require(equal(base_header, new_header) and equal(base_entries, new_entries[:len(base_entries)]),
+                'el journal nuevo modifica su base')
+        old_additions = reviewed_entries[len(old_entries):]
+        new_additions = new_entries[len(base_entries):]
+        require(old_additions and len(old_additions) == len(new_additions),
+                'las altas del journal difieren')
+        pairs = []
+        idx = base_entries[-1]['idx'] + 1 if base_entries else 0
+        when = base_entries[-1]['when'] if base_entries else float('-inf')
+        for old, added in zip(old_additions, new_additions):
+            old_tag, tag = old['tag'], added['tag']
+            require(added['idx'] == idx and tag == f'{idx:04d}{old_tag[4:]}',
+                    f'{tag}: idx o tag incorrecto, se esperaba idx {idx} y el sufijo de {old_tag}')
+            require(added['when'] > when, f'{tag}: when debe crecer')
+            require(equal(old, dict(added, idx=old['idx'], tag=old_tag, when=old['when'])),
+                    f'{tag}: versión, breakpoints u otros metadatos cambiaron')
+            pairs.append((old_tag, tag))
+            idx += 1
+            when = added['when']
+
+        point = 3
+        before_delta = changes(original_base, reviewed)
+        after_delta = changes(new_base, new)
+        for old_tag, tag in pairs:
+            source, dest = old_tag + '.sql', tag + '.sql'
+            entry = reviewed.get(source, b'')
+            require(source not in original_base and dest not in new_base
+                    and entry.startswith(b'100644 blob ') and new.get(dest) == entry,
+                    f'{source} → {dest}: cambió el SQL o pisa un archivo de la base')
+            require(source == dest or source not in new, f'{source}: aún existe el nombre anterior')
+        require({path for path in before_delta if re.fullmatch(r'[^/]+\.sql', path)}
+                == {old + '.sql' for old, _ in pairs}
+                and {path for path in after_delta if re.fullmatch(r'[^/]+\.sql', path)}
+                == {tag + '.sql' for _, tag in pairs}, 'hay otros cambios de SQL')
+
+        point = 4
+        ids = {ORIGIN}
+        previous_id, integrated_schema = ORIGIN, {}
+        for path in sorted(path for path in new_base if SNAPSHOT.fullmatch(path)):
+            require(new.get(path) == new_base[path], f'{path}: snapshot de la base editado')
+            identifier, _, schema = snapshot(new_base, path)
+            require(identifier not in ids, f'{path}: id repetido en la base nueva')
+            ids.add(identifier)
+            if NUMBERED_SNAPSHOT.fullmatch(path):
+                previous_id, integrated_schema = identifier, schema
+        originals = {}
+        for old_tag, tag in pairs:
+            path = snapshot_path(old_tag)
+            require(path not in original_base, f'{path}: el alta pisa un snapshot original de la base')
+            identifier, parent, schema = snapshot(reviewed, path)
+            require(identifier not in originals and identifier != ORIGIN, f'{path}: id original repetido')
+            originals[identifier] = (tag, parent, schema)
+
+        parents = {ORIGIN: {}}
+        historical_parents = {parent for _, parent, _ in originals.values()} - originals.keys() - parents.keys()
+        for path in original_base:
+            if not SNAPSHOT.fullmatch(path):
+                continue
+            require(reviewed.get(path) == original_base[path], f'{path}: snapshot de la base revisada editado')
+            identifier, _, schema = snapshot(reviewed, path)
+            require(identifier not in originals, f'{path}: una alta reutiliza el id de la base revisada')
+            if identifier in historical_parents:
+                require(identifier not in parents, f'{path}: id del padre original repetido')
+                parents[identifier] = schema
+        require(historical_parents <= parents.keys(), 'falta el snapshot padre original')
+        for original_id, (tag, parent, original_schema) in originals.items():
+            path = snapshot_path(tag)
+            identifier, prev_id, schema = snapshot(new, path)
+            require(path not in new_base, f'{path}: el alta pisa un snapshot de la base nueva')
+            require(prev_id == previous_id, f'{path}: prevId no apunta al snapshot integrado anterior')
+            require(identifier not in ids, f'{path}: id repetido')
+            require(parent in parents, f'{path}: el padre original debe preceder al alta')
+            expected = merge_schema(parents[parent], integrated_schema, original_schema, path)
+            require(equal(schema, expected), f'{path}: el esquema difiere de la mezcla de tres vías')
+            parents[original_id] = original_schema
+            ids.add(identifier)
+            previous_id, integrated_schema = identifier, schema
+
+        point = 5
+        for delta, tags in ((before_delta, (old for old, _ in pairs)),
+                            (after_delta, (tag for _, tag in pairs))):
+            allowed = {'meta/_journal.json'}
+            for tag in tags:
+                allowed.update((tag + '.sql', snapshot_path(tag)))
+            require(delta <= allowed, 'hay otros archivos modificados en el directorio de migraciones')
+        return pairs
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError, OSError,
+            subprocess.CalledProcessError) as error:
+        raise ValueError(f'punto {point}: {error}') from error
+
+
+def paths(lines):
+    return {ast.literal_eval('b' + path).decode('utf-8', 'surrogateescape')
+            if path.startswith('"') else path
+            for path in lines.split('\n') if path}
+
+
+dirs = set()
 try:
-    for path in sys.argv[5].splitlines():
-        if not re.fullmatch(r'(?:.*/)?(?:messages|translations)/[^/]+\.json', path):
-            raise ValueError('archivo compartido fuera de los catálogos')
-        base, mine, theirs, merged = (load(revision, path) for revision in sys.argv[1:5])
-        if mine == base or theirs == base or union(base, mine, theirs) != merged:
-            raise ValueError('el catálogo no es la unión de las altas')
-except (ValueError, OSError, subprocess.CalledProcessError, RecursionError):
+    shared, conflicts = (paths(lines) for lines in sys.argv[6:8])
+    overlap = shared | conflicts
+    trees = [inventory(revision) for revision in sys.argv[1:5]]
+    migration_paths = set()
+    for path in overlap:
+        match = MIGRATION.fullmatch(path)
+        if match:
+            prefix = match[1] or ''
+            if any(prefix + 'meta/_journal.json' in files for files in trees):
+                dirs.add(prefix)
+                migration_paths.add(path)
+    catalogs = overlap - migration_paths
+    if not dirs and conflicts:
+        sys.exit(1)
+    if dirs:
+        ancestor = subprocess.run(['git', 'merge-base', '--is-ancestor', sys.argv[1], sys.argv[3]],
+                                  capture_output=True)
+        require(ancestor.returncode == 0, 'punto 1: la base nueva no incorpora la base revisada')
+        require(not (conflicts & catalogs), 'punto 1: hay conflictos fuera de las migraciones')
+        auto = inventory(sys.argv[5])
+        require(all(any(path.startswith(prefix) for prefix in dirs) for path in changes(auto, trees[-1])),
+                'punto 1: el árbol fuera de las migraciones difiere de la mezcla')
+    elif sys.argv[5] != sys.argv[4]:
+        sys.exit(1)
+    try:
+        valid_catalogs = catalogs_disjoint(catalogs, trees)
+    except (ValueError, OSError, subprocess.CalledProcessError, RecursionError):
+        valid_catalogs = False
+    require(valid_catalogs, 'punto 1: hay archivos compartidos sin excepción de catálogos')
+
+    movements = []
+    for prefix in sorted(dirs):
+        local = [{path[len(prefix):]: entry for path, entry in files.items() if path.startswith(prefix)}
+                 for files in trees]
+        movements.extend(f'{prefix}{old} → {prefix}{tag}' for old, tag in migration_pairs(local))
+    if movements:
+        print('Renumeración de Drizzle verificada: ' + ', '.join(movements))
+    if catalogs:
+        print('El catálogo se juntó por claves disjuntas:')
+        print(*sorted(catalogs), sep='\n')
+except (ValueError, OSError, subprocess.CalledProcessError, RecursionError) as error:
+    if dirs:
+        print(f'Excepción de migraciones: {error}')
     sys.exit(1)
-PY_CATALOGS
+PY_EXCEPTIONS
 }
-if [ -n "$shared" ] && ! catalogs_disjoint; then
-    printf 'Ronda delta: el destino cambió archivos del parche\n%s' "$shared"
-    exit 0
+
+exception=''
+exception_status=1
+if [ -n "$shared$conflicted" ]; then
+    exception=$(sync_exceptions)
+    exception_status=$?
 fi
-printf 'APTO vigente: %s es %s más %s, árbol %s\n' \
-    "$(git rev-parse --short "$new")" "$(git rev-parse --short "$reviewed")" "$(git rev-parse --short "$new_base")" "$tree"
-if [ -n "$shared" ]; then
-    printf 'El catálogo se juntó por claves disjuntas:\n%s' "$shared"
+if [ "$exception_status" = 0 ] ||
+   { [ "$merge_status" = 0 ] && [ "$auto" = "$tree" ] && [ -z "$shared" ]; }; then
+    printf 'APTO vigente: %s es %s más %s, árbol %s\n' \
+        "$(git rev-parse --short "$new")" "$(git rev-parse --short "$reviewed")" "$(git rev-parse --short "$new_base")" "$tree"
+elif [ "$merge_status" = 1 ]; then
+    printf 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos\nResolución: git diff --no-relative %s %s\n' "$auto" "$new"
+    printf '%s\n%s' "$conflicted" "$shared" | sed '/^$/d' | LC_ALL=C sort -u
+elif [ "$auto" != "$tree" ] && [ -z "$exception" ]; then
+    printf 'Ronda: el head nuevo no es la mezcla del head revisado con el destino\n'
+else
+    printf 'Ronda delta: el destino cambió archivos del parche\n'
+    if [ "$auto" != "$tree" ]; then
+        printf 'Resolución: git diff --no-relative %s %s\n' "$auto" "$new"
+    fi
+    printf '%s' "$shared"
 fi
+if [ -n "$exception" ]; then printf '%s\n' "$exception"; fi

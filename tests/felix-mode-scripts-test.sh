@@ -2647,6 +2647,258 @@ for case in cases:
 PY_CATALOGS
 }
 
+apto_vigente_migrations() {
+    python3 - "$SCRIPTS/apto-vigente" "$TEST_TMP" "$BASH" <<'PY_MIGRATIONS'
+from copy import deepcopy
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+script, temporary, bash = sys.argv[1:]
+origin = '00000000-0000-0000-0000-000000000000'
+journal = 'meta/_journal.json'
+
+
+def git(repo, *args, check=True):
+    return subprocess.run(['git', '-C', str(repo), *args], check=check,
+                          capture_output=True, text=True)
+
+
+def commit(repo, name):
+    git(repo, 'add', '.')
+    git(repo, 'commit', '-qm', name)
+
+
+def entry(idx, when, name):
+    return dict(idx=idx, when=when, tag=f'{idx:04d}_{name}', version='7', breakpoints=True)
+
+
+def write(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+
+
+def write_migration(root, item, sql, identifier, parent, tables):
+    tag = item['tag']
+    (root / f'{tag}.sql').write_bytes(sql)
+    write(root / f'meta/{tag[:4]}_snapshot.json',
+          dict(id=identifier, prevId=parent, version='7', dialect='postgresql', tables=tables))
+
+
+def write_journal(root, entries):
+    write(root / journal, dict(version='7', dialect='postgresql', entries=entries))
+
+
+cases = {
+    'una': None, 'dos': None, 'apilada': None, 'mixta': None, 'sin-conflicto': None,
+    'directorio-unicode': None,
+    'sql': (3, 'cambió el SQL'), 'when': (2, 'when debe crecer'), 'idx': (2, 'idx o tag'),
+    'prevId': (4, 'prevId'), 'id-base': (4, 'id repetido'), 'id-alta': (4, 'id repetido'),
+    'perdio-tabla': (4, 'esquema difiere'), 'perdio-columna': (4, 'esquema difiere'),
+    'fuera': (1, 'árbol fuera'), 'snapshot-base': (4, 'snapshot de la base editado'),
+    'misma-clave': (4, 'cambios incompatibles'), 'extra': (5, 'otros archivos'),
+    'compartido-fuera': (1, 'archivos compartidos'), 'mixta-invalida': (1, 'catálogos'),
+    'sin-conflicto-sql': (3, 'cambió el SQL'), 'sql-base': (3, 'otros cambios de SQL'),
+    'sql-viejo': (3, 'aún existe el nombre anterior'),
+    'conflicto-fuera': (1, 'conflictos fuera'), 'when-entre-altas': (2, 'when debe crecer'),
+    'version': (2, 'versión'), 'breakpoints': (2, 'breakpoints'),
+    'retroceso': (1, 'la base nueva no incorpora la base revisada'),
+    'sin-conflicto-fuera': (1, 'árbol fuera'), 'id-base-nombrado': (4, 'id repetido'),
+}
+for case, failure in cases.items():
+    repo = Path(temporary) / ('migracion-' + case)
+    repo.mkdir()
+    git(repo, 'init', '-q', '-b', 'destino')
+    git(repo, 'config', 'user.email', 'test@example.com')
+    git(repo, 'config', 'user.name', 'test')
+    directory = 'packages/db/histórico' if case == 'directorio-unicode' else 'packages/db/schema-history'
+    root = repo / directory
+    root.mkdir(parents=True)
+    branch_sql, second_sql = b'ALTER TABLE original ADD COLUMN first TEXT;\n', b'SELECT 2;\n'
+    base = entry(0, 100, 'base')
+    incoming = entry(1, 200, 'destino')
+    clean = case.startswith('sin-conflicto')
+    retreat = case == 'retroceso'
+    first = entry(2 if clean or retreat else 1, 250 if retreat else 150, 'primera')
+    second, third = entry(2, 175, 'segunda'), entry(3, 180, 'tercera')
+    stacked = case == 'apilada'
+    two = stacked or case in ('dos', 'id-alta', 'when-entre-altas')
+    mixed = case in ('mixta', 'mixta-invalida')
+    catalog = repo / 'messages/es.json'
+
+    base_tables = {'original': {'columns': {'id': 'integer'}}}
+    branch_tables = deepcopy(base_tables)
+    branch_tables['original']['columns']['first'] = 'text'
+    branch_last = deepcopy(branch_tables)
+    branch_last['original']['columns']['second'] = 'text'
+    incoming_tables = deepcopy(base_tables)
+    incoming_tables['destino'] = {'columns': {'id': 'integer'}}
+    if case == 'misma-clave':
+        branch_tables['original']['columns']['id'] = 'bigint'
+        incoming_tables['original']['columns']['id'] = 'text'
+
+    write_migration(root, base, b'SELECT 0;\n', 'base', origin, base_tables)
+    write_journal(root, [base])
+    if case == 'id-base-nombrado':
+        write(root / 'meta/archivado_snapshot.json', dict(id='archivado', prevId=origin, tables={}))
+    if clean:
+        # Cada lado inserta al final del mismo array pero en lados opuestos
+        # de las líneas en blanco. Git mezcla el texto sin conflicto.
+        def padded(item=None, after=False):
+            extra = ', ' + json.dumps(item) if item is not None else ''
+            (root / journal).write_text(
+                '{"version":"7","dialect":"postgresql","entries":[\n'
+                + json.dumps(base) + '\n' + (extra + '\n' if not after else '')
+                + '\n' * 12 + (extra + '\n' if after else '') + ']}\n')
+        padded()
+    if mixed:
+        # Un objeto anidado de cadenas admite inserciones en lugares separados.
+        catalog_base = {'inicio': {'base': 'Inicio'}, 'medio': {'uno': 'Uno', 'dos': 'Dos',
+                                                               'tres': 'Tres'}, 'fin': {'base': 'Fin'}}
+        write(catalog, catalog_base)
+    if case == 'compartido-fuera':
+        (repo / 'compartido.txt').write_text('base\n' + '\n' * 12 + 'base\n')
+    commit(repo, 'base')
+    old_base = git(repo, 'rev-parse', 'HEAD').stdout.strip()
+    original_entries = [base]
+    original_parent = 'base'
+    if retreat:
+        write_migration(root, incoming, b'SELECT 1;\n', 'destino', 'base', incoming_tables)
+        original_entries.append(incoming)
+        original_parent = 'destino'
+        write_journal(root, original_entries)
+        commit(repo, 'destino')
+        branch_tables['destino'] = incoming_tables['destino']
+
+    git(repo, 'checkout', '-qb', 'revisado')
+    write_migration(root, first, branch_sql, 'primera', original_parent, branch_tables)
+    write_journal(root, [*original_entries, first])
+    if clean:
+        padded(first)
+    (repo / 'parche.txt').write_text('cambio revisado\n')
+    if mixed:
+        mine = deepcopy(catalog_base)
+        mine['inicio']['rama'] = 'Rama'
+        if failure:
+            mine['inicio']['base'] = 'Editado'
+        write(catalog, mine)
+    if case == 'compartido-fuera':
+        (repo / 'compartido.txt').write_text('parche\n' + '\n' * 12 + 'base\n')
+    if stacked:
+        commit(repo, 'padre-apilado')
+        git(repo, 'branch', 'padre')
+    if two:
+        write_migration(root, second, second_sql, 'segunda', 'primera', branch_last)
+        write_journal(root, [base, first, second])
+    if stacked:
+        # La tercera alta se generó sobre la primera, aunque la segunda ya
+        # está en el journal. Su replay debe conservar la columna de la segunda.
+        third_tables = deepcopy(branch_tables)
+        third_tables['original']['columns']['third'] = 'text'
+        write_migration(root, third, b'SELECT 3;\n', 'tercera', 'primera', third_tables)
+        write_journal(root, [base, first, second, third])
+    commit(repo, 'revisado')
+
+    git(repo, 'checkout', '-q', 'destino')
+    write_migration(root, incoming, b'SELECT 1;\n', 'destino', 'base', incoming_tables)
+    write_journal(root, [base, incoming])
+    if clean:
+        padded(incoming, after=True)
+    if mixed:
+        theirs = deepcopy(catalog_base)
+        theirs['fin']['destino'] = 'Destino'
+        write(catalog, theirs)
+    if case == 'compartido-fuera':
+        (repo / 'compartido.txt').write_text('base\n' + '\n' * 12 + 'destino\n')
+    if case == 'conflicto-fuera':
+        (repo / 'parche.txt').write_text('cambio incompatible\n')
+    if not retreat:
+        commit(repo, 'destino')
+    candidate_base = old_base if retreat else 'destino'
+    auto = git(repo, 'merge-tree', '--write-tree', candidate_base, 'revisado', check=False)
+    assert auto.returncode == (0 if clean or retreat else 1), (case, auto)
+
+    git(repo, 'checkout', '-qb', 'nuevo', candidate_base)
+    new_first, new_second, new_third = (entry(2, 201, 'primera'), entry(3, 202, 'segunda'),
+                                       entry(4, 203, 'tercera'))
+    if case == 'when':
+        new_first['when'] = 200
+    if case == 'when-entre-altas':
+        new_second['when'] = new_first['when']
+    if case == 'idx':
+        new_first['idx'] = 3
+    if case == 'version':
+        new_first['version'] = '6'
+    if case == 'breakpoints':
+        new_first['breakpoints'] = False
+    if retreat:
+        new_first = entry(1, 250, 'primera')
+    integrated = deepcopy(base_tables if retreat else incoming_tables)
+    integrated['original']['columns']['first'] = 'text'
+    if case == 'perdio-tabla':
+        del integrated['destino']
+    if case == 'perdio-columna':
+        del integrated['original']['columns']['first']
+    first_id = {'id-base': 'destino', 'id-base-nombrado': 'archivado'}.get(case, 'integrada-primera')
+    if case in ('sql', 'sin-conflicto-sql'):
+        branch_sql += b' '
+    write_migration(root, new_first, branch_sql,
+                    first_id, 'base' if case == 'prevId' or retreat else 'destino', integrated)
+    if two:
+        integrated['original']['columns']['second'] = 'text'
+        write_migration(root, new_second, second_sql,
+                        first_id if case == 'id-alta' else 'integrada-segunda', first_id, integrated)
+    if stacked:
+        integrated['original']['columns']['third'] = 'text'
+        write_migration(root, new_third, b'SELECT 3;\n', 'integrada-tercera', 'integrada-segunda', integrated)
+    write_journal(root, [base] + ([] if retreat else [incoming]) + [new_first]
+                  + ([new_second] if two else []) + ([new_third] if stacked else []))
+    outside_edit = case in ('fuera', 'sin-conflicto-fuera')
+    (repo / 'parche.txt').write_text('cambio distinto\n' if outside_edit else 'cambio revisado\n')
+    if case == 'snapshot-base':
+        with (root / 'meta/0001_snapshot.json').open('a') as file:
+            file.write('\n')
+    if case == 'sql-base':
+        (root / '0000_base.sql').write_bytes(b'SELECT 9;\n')
+    if case == 'sql-viejo':
+        (root / f'{first["tag"]}.sql').write_bytes(branch_sql)
+    if case == 'extra':
+        (root / 'extra.txt').write_text('cambio adicional\n')
+    if case == 'compartido-fuera':
+        (repo / 'compartido.txt').write_text('parche\n' + '\n' * 12 + 'destino\n')
+    if mixed:
+        theirs['inicio'] = mine['inicio']
+        write(catalog, theirs)
+    commit(repo, 'renumerado')
+
+    result = subprocess.run([bash, script, 'destino', 'revisado', 'nuevo'], cwd=repo,
+                            capture_output=True, encoding='utf-8')
+    assert result.returncode == 0, (case, result)
+    lines = result.stdout.splitlines()
+    if failure:
+        point, reason = failure
+        assert lines[0].startswith('Ronda delta:'), (case, result)
+        assert f'{directory}/{journal}' in lines, (case, result)
+        assert f'punto {point}:' in lines[-1] and reason in lines[-1], (case, result)
+        if outside_edit:
+            resolution = lines[1].split()
+            assert resolution[:4] == ['Resolución:', 'git', 'diff', '--no-relative'], (case, result)
+            assert 'parche.txt' in git(repo, 'diff', '--name-only', *resolution[4:]).stdout
+    else:
+        assert lines[0].startswith('APTO vigente'), (case, result)
+        assert 'Renumeración de Drizzle' in lines[1], (case, result)
+        assert f'{directory}/{first["tag"]} → {directory}/{new_first["tag"]}' in lines[1], (case, result)
+        if two:
+            assert f'{directory}/{second["tag"]} → {directory}/{new_second["tag"]}' in lines[1], (case, result)
+        if stacked:
+            assert f'{directory}/{third["tag"]} → {directory}/{new_third["tag"]}' in lines[1], (case, result)
+        if mixed:
+            assert 'El catálogo se juntó por claves disjuntas:' in lines, (case, result)
+    print(f'migración {case} → {lines[-1] if failure else lines[0]}')
+PY_MIGRATIONS
+}
+
 apto_vigente_conflict() {
     local repo output resolution kind
     for kind in rebase merge; do
@@ -2848,7 +3100,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent launcher_guard merge_train_regressions) ;;
 esac
-TEST_CASES+=(rerun_guard merge_train merge_unenrolled apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_catalogs apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(rerun_guard merge_train merge_unenrolled apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_catalogs apto_vigente_migrations apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"
@@ -2859,7 +3111,9 @@ for test_case in "${TEST_CASES[@]}"; do
     result=$?
     if [ "$result" = 0 ]; then
         printf 'PASS %s\n' "$test_case"
-        if [ "$test_case" = merge_differential ]; then cat "$TEST_TMP/$test_case.log"; fi
+        case "$test_case" in
+            merge_differential|apto_vigente_migrations) cat "$TEST_TMP/$test_case.log" ;;
+        esac
     else printf 'FAIL %s\n' "$test_case"; cat "$TEST_TMP/$test_case.log"; FAILURES=$((FAILURES + 1)); fi
 done
 printf '%s casos, %s fallos\n' "$CASE" "$FAILURES"
