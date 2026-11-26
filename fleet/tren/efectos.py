@@ -13,7 +13,8 @@ from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
                      Observacion, Promoviendo, RamaOcupada, admision_entrada,
                      clave, efecto_diagnostico, efecto_promover, efecto_reanudar_suite,
                      intento_suite, rama_ci, recibo_ci)
-from git_ops import Publicado
+from atribucion import planificar
+from git_ops import FalloGit, Publicado
 from adaptadores.hasito import ResultadoInvalido
 from operador import FalloSnapshot
 
@@ -29,6 +30,37 @@ class Ejecucion:
     observacion: Observacion
     completo: bool
     aviso: Optional[dict] = None
+
+
+def aviso_prelanzamiento(tren, exc):
+    clase = type(exc).__name__
+    motivo = (exc.resultado.codigo if isinstance(exc, ResultadoInvalido) else
+              str(exc) if isinstance(exc, FalloSnapshot) else clase)
+    return {"tren": tren, "motivo": motivo, "clase": clase}
+
+
+def pedidos_adelantados(fase, git, adaptador, tren):
+    c = fase.candidato
+    prs = tuple(pr for pr, _, _ in c.eslabones)
+    plan = planificar(fase.fallos, prs, fase.evidencias,
+                      fase.presupuesto_s - fase.costo_infra_s, en_paralelo=True)
+    demas = [(s, adaptador.adelanto(c, tren, s)) for s in plan.tanda
+             if s.id != fase.pendiente.id]
+    cupo = adaptador.repeticiones_paralelas - 1 - sum(a == "vivo" for _, a in demas)
+    for solicitud, adelanto in demas:
+        if cupo <= 0:
+            return
+        if adelanto:
+            continue
+        commit = c.C if solicitud.objetivo == "C" else c.B
+        if solicitud.objetivo == "subconjunto":
+            miembros = tuple((pr, head) for pr, head, _ in c.eslabones if pr in solicitud.prs)
+            subconjunto = git.armar(c.B, miembros)
+            if not isinstance(subconjunto, Candidato):
+                continue
+            commit = subconjunto.C
+        cupo -= 1
+        yield solicitud, commit
 
 
 def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
@@ -106,13 +138,23 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                 s = fase.pendiente
                 commit = (fase.candidato.C if s.objetivo == "C" else fase.candidato.B
                           if s.objetivo == "B" else fase.subconjunto.C)
+                aviso = None
+                adelantar = getattr(adaptador, "adelantar_repeticiones", None)
+                if (admitidos and not estado.pausa and adelantar is not None and
+                        getattr(adaptador, "repeticiones_paralelas", 1) > 1):
+                    try:
+                        pedidos = tuple(pedidos_adelantados(fase, git, adaptador, tren.id))
+                        adelantar(fase.candidato, fase.suite, pedidos, tren.id)
+                    except (ResultadoInvalido, FalloSnapshot, FalloGit, OSError,
+                            subprocess.SubprocessError) as exc:
+                        aviso = aviso_prelanzamiento(tren.id, exc)
                 resultado = adaptador.repetir(fase.candidato, fase.suite, s, commit,
                                           tren.id, intento_suite(fase), fase.reanudar,
                                           **opciones)
                 if resultado is None:
-                    return Ejecucion(limpia, False)
+                    return Ejecucion(limpia, False, aviso)
                 return Ejecucion(replace(limpia, repeticion=resultado, reproduccion_id=s.id,
-                                         suite_intento=intento_suite(fase)), True)
+                                         suite_intento=intento_suite(fase)), True, aviso)
         except ResultadoInvalido as exc:
             raise EfectoFallido(exc.resultado) from None
         raise ValueError("efecto de suite incompatible con fase")
@@ -143,10 +185,7 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
             try:
                 prelanzar(fase.candidato, tren.id)
             except (ResultadoInvalido, FalloSnapshot, OSError, subprocess.SubprocessError) as exc:
-                clase = type(exc).__name__
-                motivo = (exc.resultado.codigo if isinstance(exc, ResultadoInvalido) else
-                          str(exc) if isinstance(exc, FalloSnapshot) else clase)
-                aviso = {"tren": tren.id, "motivo": motivo, "clase": clase}
+                aviso = aviso_prelanzamiento(tren.id, exc)
         return Ejecucion(replace(limpia, ci_candidato="pendiente", suite=None), True, aviso)
     if efecto.tipo == "promover" and isinstance(fase, Promoviendo):
         if efecto != efecto_promover(tren.id, fase.intentos):

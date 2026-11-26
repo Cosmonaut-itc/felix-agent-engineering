@@ -411,6 +411,24 @@ antes de readmitir PR, pues GitHub puede haberlos cerrado tras aterrizar.
 Si vuelve a una B ya usada con los mismos recibos, el id incorpora la primera
 generación libre (1, 2, …); cada generación tiene sus propias claves estables
 y conserva el orden FIFO de sus miembros.
+
+El reductor no espera a la promoción para ver un main que avanzó por fuera.
+Si `Observacion.base` deja de ser la B de un tren en `Congelado`, `Armado` o
+`EsperandoCI`, el tren termina `REARMAR` en ese paso, antes de pedir CI o de
+lanzar la suite, porque su C ya no puede aterrizar. Esto ocurre, por ejemplo,
+al levantar una pausa larga durante la que se mergeó por fuera. Los miembros
+vuelven a la fila igual que en la promoción, pero sin pausa: en el tick
+siguiente el lote se congela sobre main. Como en `EsperandoCI`, conservan su
+fecha FIFO aunque un check vuelva a pendiente, hasta entrar al lote siguiente. En `EsperandoCI` sólo se rearma
+mientras el efecto `iniciar-suite` del tren siga `pendiente` en la outbox.
+Desde que deja de estarlo, puede haber coordinadores vivos aunque la fase
+no haya cambiado, y el tren sigue por la suite y la promoción, que pausa
+`escritor-externo`. Un tren en `Corriendo` o `Diagnosticando` tampoco se
+rearma por este camino. La misma regla rige al ejecutar la outbox: al
+recuperar tras una muerte, al levantar una pausa o al resolver un juicio,
+`solicitar-ci` e `iniciar-suite` de un tren con la B atrás de main esperan
+sin publicar ni lanzar, y el paso siguiente rearma el tren.
+
 Los campos añadidos tienen defaults; el encoding etiquetado y esquema 1
 del ledger siguen vigentes. Sólo el tick activo importa este ejecutor.
 
@@ -446,7 +464,7 @@ se usa como fallo: espera 5, 15 y 60 minutos según `Observacion.ahora`, y
 pausa `infraestructura` al agotarse las tres reanudaciones. La misma regla
 se aplica a las repeticiones; su costo también consume el presupuesto.
 
-`atribucion.planificar` es puro y emite un ensayo por vez. Confirma cada
+`atribucion.planificar` es puro y elige la siguiente reproducción. Confirma cada
 unidad con dos intentos sobre C y dos sobre B. Exige la misma firma estable
 en C y pases positivos en B para atribuir; la misma firma estable en B es
 preexistente. Una firma vacía del origen requiere firmas nuevas estables y
@@ -459,14 +477,23 @@ pueden ordenar los ensayos de atribución. Se guardan todos los mínimos observa
 Sin culpables, certifica sólo si la suite no dejó `restantes`; si el
 fail-fast cortó checks, pausa `necesita-juicio` con `suite-incompleta`.
 
-Presupuesto: `min(3600 s-máquina, 0.5 * costo_suite_sana_s)`. La medida sana
+Una tanda reúne las confirmaciones pendientes y los subconjuntos del tamaño
+en curso que pueden probarse con la evidencia disponible. Con
+`repeticiones_paralelas` mayor que 1, Jale corre a la vez los dos intentos de
+cada reproducción y adelanta las demás de la tanda hasta el límite configurado.
+El reductor conserva un solo pendiente y consume las reproducciones una por una.
+
+Presupuesto: `min(3600 s, 0.5 * costo_suite_sana_s)`. La medida sana
 viene de `Observacion.costo_suite_sana_s` o de la última suite verde limpia
 guardada en `Estado`; si falta, pausa para juicio. No se estima una suite
 sana desde una suite roja cortada. Cada ensayo reserva dos veces el máximo
 entre segundos del check original y duraciones por intento ya observadas;
-el consumo es el máximo entre reserva y costo observado. Es conservador al
-no existir tiempos por unidad en el recibo original. Sin duración o sin
-saldo, no despacha la reproducción. Cada reanudación reserva otro ensayo.
+el consumo es el máximo entre reserva y costo observado. Sin duración o sin
+saldo, no despacha la reproducción. En serie se suman los costos. Con
+`repeticiones_paralelas` mayor que 1 se suma el mayor costo de cada tanda
+presupuestaria (todas las confirmaciones juntas y un grupo por tamaño de
+subconjunto), aunque el host haya puesto las corridas en fila. El costo de
+infraestructura de cada reanudación se suma aparte.
 
 Los culpables reciben `Entrada.terminal=Terminal("DEVUELTO")`; `devolver`
 es sólo un dato idempotente por PR, con lote, B, C, fallos, firmas, conjuntos
@@ -785,8 +812,10 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 |---|---|---|
 | `etapa-1` | vacío | `reanudar`: levantar la pausa del repo; siguen vigentes los permisos operativos externos para cada suite. |
 | `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
-| `escritor-externo` | vacío | `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
-| `infraestructura` | `lanzador-rechazo` / `corrida-interrumpida` / `salida-sin-recibo` | El lanzador salió 64, Jale confirmó la interrupción con 125 y `PUEUE_INTERRUPTED=1` sin recibo, o Jale guardó otra salida entera distinta de 75 sin recibo. La pausa conserva la ruta del log y cierra el efecto. Con `lanzador-rechazo` o `corrida-interrumpida`, `reanudar` lanza otro intento con registro y clave nuevos. Con `salida-sin-recibo`, `reanudar` reengancha el mismo registro con la misma clave y conserva la salida anterior. Estas pausas no gastan reanudaciones por 75 ni presupuesto de diagnóstico. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
+| `escritor-externo` | vacío | Main avanzó por fuera y el tren lo vio en la promoción. Antes de CI y suite rearma sin esta pausa. `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
+| `infraestructura` | `lanzador-rechazo` / `corrida-interrumpida` | El lanzador salió 64 o Jale confirmó la interrupción con 125 y `PUEUE_INTERRUPTED=1` sin recibo. La pausa conserva la ruta del log y cierra el efecto. `reanudar` lanza otro intento con registro y clave nuevos. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
+| `infraestructura` | `salida-sin-recibo` | Jale guardó una salida entera distinta de 75 y 64 sin recibo, en cualquier host. La pausa conserva la ruta del log y cierra el efecto. `reanudar` reengancha el mismo registro con la misma clave y conserva la salida anterior. `absolver` abandona el reenganche y lanza otro intento con registro y clave nuevos para cada modo sin recibo válido, no sólo el de la pausa. Úsalo cuando el log de cada uno de esos modos muestra que la corrida terminó, porque reenganchar repetiría la misma salida. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
+| `infraestructura` | `cobertura-parcial-boat` | `corrida.log` acredita omisiones de cobertura. `reanudar` lanza otro intento con registro e identidad nuevos para el modo afectado. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
 | `infraestructura` | `checkout-operador:<estado>` | El tick no pudo obtener el SHA o verificar su snapshot. `reanudar` permite reintentar y `abortar` termina el tren. El tick conserva cualquier pausa vigente. |
 | `infraestructura` | `tres-reanudaciones-agotadas` | `reanudar`: un intento adicional del comando guardado, con contador/clave nuevos y sin certificado; otro 75 vuelve a pausar. `absolver`: abandonar el diagnóstico o reenganche anterior y exigir CI y suite completa nuevos sobre el mismo C, incluso si el diagnóstico agotó D5. `abortar`: liberar entregas sin rojo. |
 | `infraestructura` | `ci-sin-resultado` | `reanudar`: solicitar CI sobre el mismo C con ref/clave nuevas y reiniciar los 60 minutos; `abortar`: liberar entregas sin rojo. No admite `absolver`. |
@@ -1317,9 +1346,38 @@ La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
 actual de Hasito con `lanzador_hasito` sigue siendo válida. Esta selección no
 inscribe ni activa repositorios.
 
-`"prelanzar": true` adelanta sólo el primer modo configurado de Jale al tick
-que publica C y pide su CI. La clave es booleana, vale `false` por omisión y
-se lee en cada tick. Apagarla surte efecto en el tick siguiente sin instalar.
+`"host": "boat"` envía ambos modos al pool de Boat. Para elegir por modo, usa
+`"host": {"contract": "auto", "e2e": "boat"}`. Los valores aceptados son
+`auto`, `mini`, `desktop` y `boat`. El mapa debe incluir todos los modos
+configurados y sólo puede tener claves `contract` y `e2e`.
+`"boat_esperar_s": 180` fija cuánto espera Boat un lugar con prioridad
+`tren` antes de enviar al desk en la misma invocación. Acepta enteros entre
+0 y 7200 y vale 180 por omisión. Las repeticiones filtradas usan el host de
+su modo. En Boat piden el lugar con la misma prioridad y la misma espera que
+la suite, y sin lugar corren en el desk en la misma invocación. Esto exige un
+lanzador de Jale que emita en Boat el recibo parcial de una corrida filtrada
+(SEN-7601) y VMs preparadas con esa revisión: sin él, la repetición termina
+sin recibo y el tren se pausa con `salida-sin-recibo`.
+
+`"prelanzar": true` adelanta todos los modos configurados de Jale al tick que
+publica C y pide su CI. La clave es booleana, vale `false` por omisión y se
+lee en cada tick. Apagarla surte efecto en el tick siguiente sin instalar.
+
+`"repeticiones_paralelas"` acepta enteros de 1 a 8 y se lee en cada tick.
+Con 1, el valor por omisión, los intentos corren en serie. Con un valor N
+mayor, cada efecto `repetir` adelanta reproducciones de la tanda hasta
+completar N vivas: cuentan la pendiente y las adelantadas de la tanda cuyo
+coordinador sigue vivo. Una adelantada que ya terminó no ocupa lugar ni se
+vuelve a lanzar. Si uno de los dos intentos simultáneos de una reproducción
+no deja un resultado utilizable (un rechazo del lanzador, un 75 o un recibo
+inválido), el efecto recoge antes el otro intento. Si ese intento deja un
+recibo válido con código distinto de 75, queda en la caché y el intento
+siguiente no lo vuelve a lanzar. El efecto devuelve el resultado del primer
+intento que impide la repetición, en orden de intento. Espera a que termine
+el coordinador local del otro intento antes de devolverlo, como la suite
+espera a los coordinadores de todos sus modos. Esa espera no garantiza que
+el host quede sin tareas de la reproducción: un lanzador que sale por un
+envío sin confirmar puede dejar la suya en la cola.
 
 ### Checkout del operador
 
@@ -1375,8 +1433,9 @@ sin push ni rojo. El tick sigue limpiando el diario, drenando feedback y
 consumiendo decisiones: retirar el bloque cancela la operación pendiente con
 el comando guardado, como en U18, y detiene el carril antes del push.
 
-Jale corre ambos modos sobre C sin filtros y valida `jale-recibo@1`: SHA,
-modo, selección, firmas, orden, unicidad, cobertura y código de salida.
+Jale corre los modos configurados en paralelo sobre C sin filtros. Valida el
+SHA, modo, selección, firmas, orden, unicidad, cobertura y código de salida
+de `jale-recibo@1`.
 Cada fallo conserva su firma sin declararlo preexistente; la atribución
 requiere dos observaciones sobre C y dos sobre B. Las repeticiones usan la
 ruta exacta como único filtro, guardan duración y versiones del entorno en
@@ -1390,52 +1449,78 @@ traer unidades `falla` cuando el juicio contra la base de main las dio por
 compartidas; el adaptador las trata como fallos que la atribución repite. En
 contract, una `falla` exige un código distinto de 0.
 
-Con `prelanzar` habilitado, el primer modo empieza al pedir el CI. Cuando
-`iniciar-suite` observa CI verde y miembros admitidos, confirma el registro
-especulativo, recoge esa corrida y sigue con los demás modos. La confirmación
-es durable y permite recuperar el resultado tras una caída del tick.
-Una salida 75 que se produzca antes del verde ocupa la primera reanudación
-cuando `iniciar-suite` la consume.
+Con `prelanzar` habilitado, los modos empiezan al pedir el CI. Cuando
+`iniciar-suite` observa CI verde y miembros admitidos, confirma los registros
+especulativos y recoge las corridas. La confirmación es durable y permite
+recuperar los resultados tras una caída del tick. Una salida 75 que se
+produzca antes del verde ocupa la primera reanudación cuando `iniciar-suite`
+la consume. Cada modo con recibo válido y código distinto de 75 se conserva
+en caché para la reanudación.
 
 Si `solicitar-ci` se reintenta tras la muerte de un tick, vuelve a prelanzar
 sobre el mismo registro, salvo que ese tick ya lea en rojo el CI de esa
 misma solicitud. El rojo de una solicitud anterior no lo impide: al reanudar
-una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza.
+una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza, salvo
+que main haya dejado atrás la B del lote, que entonces se rearma.
 
 Si falla el prelanzamiento, `prelanzamiento-fallido` registra el tren y
-el error, y la solicitud de CI se completa. Si el CI sale rojo o un juicio
-aborta el tren antes de confirmar la corrida, `suite-prelanzada-sin-leer`
-registra la clave de la corrida (si llegó a escribirse) y si ya terminó.
-La corrida sigue en el host hasta terminar y su resultado queda sin consumir.
+el error, y la solicitud de CI se completa. Si el CI sale rojo, un juicio
+aborta el tren o main deja atrás su B antes de confirmar la corrida, `suite-prelanzada-sin-leer`
+registra el modo, la clave de la corrida (si llegó a escribirse) y si ya
+terminó. Cada corrida sigue en el host hasta terminar y su resultado queda
+sin consumir.
 SEN-7331 añadirá la cancelación.
+
+Las reproducciones adelantadas también quedan en el host hasta terminar
+si el tren se pausa o termina. El reductor sólo consume su salida si llega
+a pedirlas y el efecto las confirma con los miembros admitidos.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
-el resultado tras una caída del tick. Cada registro deriva una clave estable
-de su ruta y la guarda en `iniciado.json` antes de lanzar el hijo con
+el resultado tras una caída del tick. Cada registro guarda su clave en
+`iniciado.json` antes de lanzar el hijo. Boat recibe la clave como
+`SEN_RUN_ID` desde `entorno.json`. Los demás hosts la reciben como
 `REMOTE_RUN_CLAVE`. Si muere también el coordinador sin salida durable, el
 siguiente tick relanza el mismo argv con la clave guardada y recupera el
-trabajo aceptado por el lanzador, sin otro envío. Cada intento, modo y tren
-tiene su propio registro y clave. Los registros antiguos con `iniciado.json`
-sin clave conservan el lanzamiento incierto y detienen su recuperación.
+trabajo aceptado por el lanzador, sin otro envío. Los registros antiguos con
+`iniciado.json` sin clave conservan el lanzamiento incierto y detienen su
+recuperación.
 El coordinador permite como máximo tres invocaciones ante una salida 255
 o 127. Usa la misma clave y guarda la última salida. Guarda el 125 sin
 reintentar. Un 75 sigue la política de reanudación del tren. Un 64 cierra
 el efecto y pausa `infraestructura` con detalle `lanzador-rechazo`. Si Jale
 guarda un 125 con `PUEUE_INTERRUPTED=1` en `corrida.log` y sin recibo, la
 pausa indica `corrida-interrumpida`. Las demás salidas enteras sin recibo
-pausan con detalle `salida-sin-recibo`. Estas pausas conservan la ruta de
-`coordinador.log` y también se aplican al recuperar un efecto ya fallido.
-Con `lanzador-rechazo` o `corrida-interrumpida`, `reanudar` lanza otro
-intento con registro y clave nuevos. Con `salida-sin-recibo`, `reanudar`
-reengancha el mismo registro con la misma clave y conserva la salida
-anterior. Si hay un checkout del operador, usa su lanzador vigente.
+pausan con detalle `salida-sin-recibo`, también en Boat y en su caída al desk.
+`lanzador-rechazo`, `corrida-interrumpida` y `salida-sin-recibo` conservan la ruta de
+`coordinador.log`. Estas pausas también se aplican al recuperar un efecto ya
+fallido. Con `lanzador-rechazo` o `corrida-interrumpida`,
+`reanudar` lanza otro intento con registro y clave nuevos. Con
+`salida-sin-recibo`, `reanudar` reengancha el mismo registro con la misma
+clave y conserva la salida anterior. Si hay un checkout del operador, usa su
+lanzador vigente. Consulta `coordinador.log` y, si existe, el `corrida.log`
+del mismo registro. Cuando el log muestra que la corrida terminó y
+reenganchar repetiría la misma salida, `absolver` abre un registro con una
+clave nueva. El modo con recibo válido se recupera de la caché.
 `abortar` libera las entregas sin rojo.
+Cuando Boat devuelve 75 pendiente, el siguiente intento usa la misma
+identidad con un log nuevo si el modo sigue configurado en Boat. Esto también
+recupera un envío del fallback cuyo desk devolvió 75 sin resultado. Si cambia
+el host del modo a `auto` o `desktop`, el intento nuevo usa ese host y su clave
+del desk. Una causa de interrupción, resultado desconocido, cancelación o
+despacho sin VM en Boat abre otro intento con una identidad nueva.
+Un marcador `PARTIAL: boat omitted=N` con N mayor que cero pausa el tren por
+infraestructura con detalle `cobertura-parcial-boat` y `corrida.log` como
+evidencia. Con `reanudar`, el modo afectado usa otro registro y una identidad
+nueva. Un rechazo del lanzador prevalece sobre un recibo inválido del otro
+modo. Si se interrumpió el coordinador sin guardar su salida, el efecto
+queda pendiente para recuperar la corrida con la misma identidad. El
+marcador `types-omitted` por sí solo permite usar el recibo.
 Hasito aplica la pausa del 64 y conserva su log y recibo. Estas pausas
 no consumen reanudaciones de 75 ni presupuesto de diagnóstico. Tampoco
-generan feedback de producto. Los recibos duplicados, malformados o
-incoherentes dejan el efecto pendiente como error de infraestructura.
-No hay cambio automático de host.
+generan feedback de producto. Si ningún rechazo del otro modo prevalece,
+los recibos duplicados, malformados o incoherentes dejan el efecto pendiente
+como error de infraestructura.
 
 La regresión U9 y toda la suite del tren, dividida exhaustivamente entre dos
 procesos aislados para el carril rápido, se verifican en el host de pruebas con

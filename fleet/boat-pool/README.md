@@ -25,14 +25,20 @@ El estado y los avisos quedan en `~/.local/state/boat-pool`. Para los comandos
 interactivos también se admiten `XDG_STATE_HOME` y `XDG_CONFIG_HOME`.
 El LaunchAgent usa los valores del entorno de launchd.
 
+Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}`. Cada peso es un entero entre 1 y `lugares` y las clases sin peso declarado ocupan un lugar por arriendo.
+
 ## Operación
 
 - `pedir --repo R --corrida ID --clase C [--prioridad P] [--esperar S] [--ttl S]`
   devuelve un JSON con el arriendo, nombre de VM, ID en Boat y vencimiento.
   Entre las VMs con cupo, `pedir` pospone las que tienen un apagado pendiente
   o cuyo último evento de energía para el ID vigente es un apagado. Elige por
-  menor proporción de arriendos vivos por lugar y desempata en el orden de
-  `pool.json`. Un diario ilegible deja la VM al final.
+  menor proporción de lugares ocupados y desempata en el orden de
+  `pool.json`. Un diario ilegible deja la VM al final. Si la lectura del
+  diario falla al validar la candidata, `pedir` prueba con las demás.
+  Cuando el pool confirma que una VM está lista después de un evento
+  `apagada` del mismo ID y sin un apagado pendiente, registra `encendida`.
+  La VM vuelve al orden por carga.
   Los valores predeterminados son prioridad `otra`, espera de cero segundos
   para un lugar y arriendo de 900 segundos. La espera admite de 0 a 7200 s
   y el arriendo de 300 a 3600 s. Una reanudación tiene su propio plazo.

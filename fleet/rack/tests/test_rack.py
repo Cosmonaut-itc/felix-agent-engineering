@@ -205,10 +205,10 @@ class UsageTests(unittest.TestCase):
         docker.start()
         self.addCleanup(docker.stop)
 
-    def proc_row(self, pid, ppid, ticks, name='bash', start=1, pages=2, argv='', cwd=None):
+    def proc_row(self, pid, ppid, ticks, name='bash', start=1, pages=2, argv='', cwd=None, cticks=0):
         path = self.root / str(pid)
         path.mkdir(exist_ok=True)
-        fields = ['S', str(ppid)] + ['0'] * 9 + [str(ticks), '0'] + ['0'] * 6 + [str(start), '0', str(pages)]
+        fields = ['S', str(ppid)] + ['0'] * 9 + [str(ticks), '0', str(cticks), '0'] + ['0'] * 4 + [str(start), '0', str(pages)]
         (path / 'stat').write_text(str(pid) + ' (' + name + ') ' + ' '.join(fields))
         (path / 'cmdline').write_bytes(argv.encode().replace(b' ', b'\0'))
         if cwd:
@@ -261,6 +261,65 @@ class UsageTests(unittest.TestCase):
         (self.root / '98/stat').write_text('roto')
         (self.root / 'not-pid').mkdir()
         self.assertEqual(len(snapshot.linux_processes(self.root)[1]), 6)
+
+    def test_linux_reaped_children_count_for_their_task(self):
+        """La CPU de un hijo que nace y muere entre lecturas es de la corrida, no «fuera»."""
+        (self.root / 'stat').write_text('cpu 0 0 0 0 0 0 0 0\nbtime 1000\n')
+        self.proc_row(10, 1, 0, name='pueued')
+        self.proc_row(20, 10, 100, argv='bash /private/job-12345678/task.sh', cticks=7000)
+        self.proc_row(22, 20, 5000, cticks=40)  # Hijo largo que muere durante la muestra.
+        self.proc_row(23, 22, 900)  # Nieto que muere con él; ya estaba en el contador de 22 al cosecharlo.
+        self.proc_row(50, 1, 0, name='init')
+        def advance(seconds):
+            (self.root / 'stat').write_text('cpu 1200 0 0 0 0 0 0 0\nbtime 1000\n')
+            for pid in (22, 23):
+                for name in ('stat', 'cmdline'):
+                    (self.root / str(pid) / name).unlink()
+                (self.root / str(pid)).rmdir()
+            # 20 gana 10 propios, 200 de hijos efímeros y 22 entero (5000 + 40 + 900 + 30 nuevos).
+            self.proc_row(20, 10, 110, argv='bash /private/job-12345678/task.sh', cticks=7000 + 200 + 5970)
+            self.proc_row(50, 1, 0, name='init')
+        out = self.output()
+        with patch.object(snapshot.time, 'sleep', side_effect=advance):
+            usage = snapshot.collect_usage(out, {1: 'job-12345678'}, 'linux', self.root)
+        self.assertAlmostEqual(usage['busy'], 12)
+        self.assertAlmostEqual(out['tasks'][0]['usage']['cpu'], (10 + 200 + 30) * 12 / 1200)
+        self.assertAlmostEqual(usage['outside']['cpu'], 12 - 2.4)
+
+    def test_linux_reap_mid_scan_never_adds_child_history(self):
+        """Un padre que cosecha a un hijo en cualquier momento de la muestra no suma la historia del hijo."""
+        read_text = Path.read_text
+        for moment in range(0, 20):  # 0: durante la pausa; luego antes de cada lectura de un stat.
+            with self.subTest(moment=moment):
+                (self.root / 'stat').write_text('cpu 0 0 0 0 0 0 0 0\nbtime 1000\n')
+                self.proc_row(10, 1, 0, name='pueued')
+                self.proc_row(20, 10, 100, argv='bash /private/job-12345678/task.sh', start=5)
+                self.proc_row(22, 20, 5000, start=7)
+                reads, phase = [], [1]
+                def reap():
+                    if (self.root / '22').exists():
+                        shutil.rmtree(self.root / '22')
+                        self.proc_row(20, 10, 100 if phase[0] == 1 else 110, argv='bash /private/job-12345678/task.sh', start=5, cticks=5000)
+                def reading(path, *args, **kwargs):
+                    if path.name == 'stat' and path.parent.name.isdigit():
+                        reads.append(path)
+                        if len(reads) == moment:
+                            reap()
+                    return read_text(path, *args, **kwargs)
+                def advance(seconds):
+                    if moment == 0:
+                        reap()
+                    phase[0] = 2
+                    (self.root / 'stat').write_text('cpu 1200 0 0 0 0 0 0 0\nbtime 1000\n')
+                    cticks = 5000 if not (self.root / '22').exists() else 0
+                    self.proc_row(20, 10, 110, argv='bash /private/job-12345678/task.sh', start=5, cticks=cticks)
+                out = self.output()
+                with patch.object(Path, 'read_text', autospec=True, side_effect=reading), \
+                        patch.object(snapshot.time, 'sleep', side_effect=advance):
+                    snapshot.collect_usage(out, {1: 'job-12345678'}, 'linux', self.root)
+                # Los 10 ticks propios del padre son la única CPU del intervalo.
+                self.assertAlmostEqual(out['tasks'][0]['usage']['cpu'], 10 * 12 / 1200)
+                shutil.rmtree(self.root / '22', ignore_errors=True)
 
     def test_macos_collect_single_ps_and_pid_container_without_cwd(self):
         raw = dict(groups={'suites': dict(status='Running', parallel_tasks=3)}, tasks={

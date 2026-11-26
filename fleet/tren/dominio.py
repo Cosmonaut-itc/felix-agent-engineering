@@ -71,6 +71,9 @@ class Entrada:
     caducada: Optional[float] = None
     # Ligada al recibo: conserva el aislamiento hasta resolver la entrega.
     partida: bool = False
+    # Liberada por un rearmado antes de la suite: conserva su FIFO, como si
+    # siguiera en EsperandoCI, hasta entrar al lote siguiente.
+    rearmada: bool = False
 
 
 @dataclass(frozen=True)
@@ -253,6 +256,21 @@ class Evidencia:
     resultado: Repeticion
 
 
+def costo_atribucion(evidencias, en_paralelo=False, *, siguiente=None):
+    costos = [(e.solicitud, max(e.solicitud.costo_s,
+        sum(i.duracion_s for u in e.resultado.unidades for i in u.intentos)))
+        for e in evidencias]
+    if siguiente is not None:
+        costos.append((siguiente, siguiente.costo_s))
+    if not en_paralelo:
+        return sum(costo for _, costo in costos)
+    tandas = {}
+    for solicitud, costo in costos:
+        grupo = len(solicitud.prs) if solicitud.objetivo == "subconjunto" else 0
+        tandas[grupo] = max(tandas.get(grupo, 0), costo)
+    return sum(tandas.values())
+
+
 @dataclass(frozen=True)
 class Causa:
     fallo: Fallo
@@ -427,6 +445,9 @@ class Observacion:
     absoluciones_recientes: Tuple[Tuple[str, int], ...] = ()
     archivos_lote: Optional[Tuple[str, ...]] = None
     firma_distingue_fallo: bool = False
+    repeticiones_en_paralelo: bool = False
+    # El efecto iniciar-suite del tren activo ya empezó su IO en algún tick.
+    suite_iniciada: bool = False
 
 
 @dataclass(frozen=True)
@@ -522,15 +543,41 @@ def aterrizaje(estado, tren, observacion):
         elif isinstance(lectura, EnBase):
             fase = replace(fase, reintento_pendiente=True)
         elif isinstance(lectura, EscritorExterno):
-            fase = Terminal("REARMAR")
-            estado = replace(estado,
-                pausa=Pausa("escritor-externo", main=lectura.main),
-                entradas=tuple(replace(e, tren=None) if e.entrega.recibo in tren.recibos
-                               else e for e in estado.entradas))
+            return replace(rearmar(estado, tren),
+                           pausa=Pausa("escritor-externo", main=lectura.main)), ()
         else:
             return estado, ()
     return replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
                                        else t for t in estado.trenes)), efectos
+
+
+def rearmar(estado, tren, temprano=False):
+    """C ya no aterriza sobre main: cierra el tren y devuelve sus miembros a la fila.
+
+    Las fechas FIFO no cambian; el reductor congela el lote siguiente sobre main.
+    """
+    return replace(estado,
+        trenes=tuple(replace(t, fase=Terminal("REARMAR")) if t.id == tren.id else t
+                     for t in estado.trenes),
+        entradas=tuple(replace(e, tren=None, rearmada=temprano)
+                       if e.entrega.recibo in tren.recibos
+                       else e for e in estado.entradas))
+
+
+def base_vieja(fase, observacion):
+    """main ya no es la B de un tren cuya suite aún no empezó.
+
+    Una suite iniciada puede tener coordinadores vivos aunque la fase siga en
+    EsperandoCI; cerrar el tren los dejaría sin dueño.
+    """
+    if isinstance(fase, Congelado):
+        base = fase.B
+    elif isinstance(fase, Armado) or (isinstance(fase, EsperandoCI) and
+                                      not observacion.suite_iniciada):
+        base = fase.candidato.B
+    else:
+        return False
+    return bool(observacion.base) and observacion.base != base
 
 
 ESPERAS_SUITE = (300, 900, 3600)
@@ -615,11 +662,14 @@ def efecto_corrida(tipo, datos, intento, fase):
 
 def pausar_lanzador(estado, resultado):
     archivos = (resultado.evidencia,)
-    pausa = (Pausa("infraestructura", detalle="salida-sin-recibo", archivos=archivos)
-             if resultado.detalle == "salida-sin-recibo" else
-             Pausa("infraestructura", detalle="corrida-interrumpida", archivos=archivos)
-             if resultado.detalle == "corrida-interrumpida" else
-             Pausa("infraestructura", detalle="lanzador-rechazo", archivos=archivos))
+    if resultado.detalle == "salida-sin-recibo":
+        pausa = Pausa("infraestructura", detalle="salida-sin-recibo", archivos=archivos)
+    elif resultado.detalle == "corrida-interrumpida":
+        pausa = Pausa("infraestructura", detalle="corrida-interrumpida", archivos=archivos)
+    elif resultado.detalle == "cobertura-parcial-boat":
+        pausa = Pausa("infraestructura", detalle="cobertura-parcial-boat", archivos=archivos)
+    else:
+        pausa = Pausa("infraestructura", detalle="lanzador-rechazo", archivos=archivos)
     return replace(estado, pausa=pausa), ()
 
 
@@ -728,6 +778,7 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
     from atribucion import planificar
     fase = tren.fase
     ligada = observacion.tren_id == tren.id
+    en_paralelo = observacion.repeticiones_en_paralelo
     if isinstance(fase, Corriendo):
         resultado = observacion.resultado_suite if (ligada and
             observacion.suite_intento == intento_suite(fase) and
@@ -797,10 +848,8 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
         elif fase.esperar_hasta is not None:
             if observacion.ahora < fase.esperar_hasta or not despachar:
                 return cambiar_fase(estado, tren, fase), ()
-            gastado = sum(max(e.solicitud.costo_s,
-                sum(i.duracion_s for u in e.resultado.unidades for i in u.intentos))
-                for e in fase.evidencias)
-            if gastado + fase.costo_infra_s + 2 * s.costo_s > fase.presupuesto_s:
+            costo = costo_atribucion(fase.evidencias, en_paralelo, siguiente=s)
+            if costo + fase.costo_infra_s + s.costo_s > fase.presupuesto_s:
                 return replace(cambiar_fase(estado, tren, fase), pausa=Pausa(
                     "necesita-juicio", detalle="presupuesto-agotado-en-reanudacion")), ()
             fase = replace(fase, esperar_hasta=None, reanudaciones=fase.reanudaciones + 1,
@@ -809,12 +858,13 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
     if fase.pendiente is None:
         prs = tuple(pr for pr, _, _ in fase.candidato.eslabones)
         presupuesto = fase.presupuesto_s - fase.costo_infra_s
-        plan = planificar(fase.fallos, prs, fase.evidencias, presupuesto)
+        plan = planificar(fase.fallos, prs, fase.evidencias, presupuesto, en_paralelo=en_paralelo)
         if (plan.incierto.startswith(("confirmacion-candidato:", "confirmacion-base:")) and
                 not fase.restantes and len(fase.fallos) <= 2 and
                 archivos_acreditados(fase, observacion)):
             automatico = planificar(fase.fallos, prs, fase.evidencias, presupuesto, absolver=True,
-                                    firma_distingue_fallo=observacion.firma_distingue_fallo)
+                                    firma_distingue_fallo=observacion.firma_distingue_fallo,
+                                    en_paralelo=en_paralelo)
             if automatico is not None and not automatico.incierto:
                 recientes = dict(observacion.absoluciones_recientes)
                 for absolucion in automatico.absoluciones:
@@ -917,7 +967,7 @@ def paso(estado, observacion):
                 admitida = (entrada.admitida if entrada.admitida is not None
                             else observacion.ahora)
             elif (decision == Retenido(Motivo.INCIERTO) or entrada.partida or
-                  entrada.tren in esperando_ci):
+                  entrada.rearmada or entrada.tren in esperando_ci):
                 # No perder FIFO al retener antes o después de una partición.
                 admitida = entrada.admitida
             else:
@@ -936,6 +986,9 @@ def paso(estado, observacion):
         fase = tren.fase
         if observacion.tren_id and observacion.tren_id != tren.id:
             return estado, tuple(efectos)
+        # Un merge por fuera deja a C sin poder aterrizar: no gastar CI ni suite.
+        if base_vieja(fase, observacion):
+            return rearmar(estado, tren, temprano=True), tuple(efectos)
         ocupada = observacion.rama_ocupada
         if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
                 observacion.tren_id == tren.id and
@@ -1025,7 +1078,7 @@ def paso(estado, observacion):
         generacion += 1
         tren_id = clave("tren", estado.repo, observacion.base, recibos, generacion)
     tren = Tren(tren_id, recibos, Congelado(observacion.base))
-    estado = replace(estado, entradas=tuple(replace(e, tren=tren_id)
+    estado = replace(estado, entradas=tuple(replace(e, tren=tren_id, rearmada=False)
                      if e.entrega.recibo in recibos else e for e in entradas),
                      trenes=estado.trenes + (tren,))
     efectos.append(Efecto(clave("armar", tren_id), "armar-candidato", (tren_id,)))
@@ -1048,8 +1101,8 @@ def datos(valor):
         return dict({"_tipo": type(valor).__name__},
                     **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)
                        # Conservar payloads históricos de sombra/custodia.
-                       if not (isinstance(valor, Entrada) and f.name == "partida"
-                               and not valor.partida)
+                       if not (isinstance(valor, Entrada) and f.name in ("partida", "rearmada")
+                               and not getattr(valor, f.name))
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
                                 and valor.ventana is None)})
     if isinstance(valor, tuple):

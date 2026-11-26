@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import time
 
 from dominio import Entrada, clave, datos, desde_datos, inicial
 
@@ -45,6 +46,29 @@ def candado_programa(exclusivo):
             yield True
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+class CandadoOcupado(Exception):
+    """Un tick conservó el candado del repositorio hasta vencer el plazo; nada se tomó."""
+
+
+INTERVALO_CANDADO_S = 0.5
+
+
+def tomar_con_plazo(handle, plazo, al_esperar):
+    limite = time.monotonic() + plazo
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            restante = limite - time.monotonic()
+            if restante <= 0:
+                raise CandadoOcupado() from None
+            if al_esperar is not None:
+                al_esperar()
+                al_esperar = None
+            time.sleep(min(INTERVALO_CANDADO_S, restante))
 
 
 class Ledger:
@@ -112,10 +136,17 @@ class Ledger:
             raise
 
     @contextmanager
-    def candado(self, repo):
+    def candado(self, repo, plazo=None, al_esperar=None):
+        """Sin plazo espera lo que haga falta; con plazo lanza CandadoOcupado al vencerlo.
+
+        al_esperar corre una vez, sólo si el candado está tomado al llegar.
+        """
         # Append/open preserves the inode; never retire lock files.
         with (self.directorio / (clave("repo", repo) + ".lock")).open("a") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+            if plazo is None:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            else:
+                tomar_con_plazo(handle, plazo, al_esperar)
             self.fd_candado = handle.fileno()
             try:
                 yield
@@ -244,6 +275,12 @@ class Ledger:
             return set()
         estado = desde_datos(json.loads(fila[0])["estado"])
         return {tren.id for tren in estado.trenes if isinstance(tren.fase, Terminal)}
+
+    def efecto_iniciado(self, repo, clave):
+        """El efecto pasó por iniciar_efecto en algún tick: su IO pudo ocurrir."""
+        return self.db.execute(
+            "SELECT 1 FROM effects e JOIN outbox o ON o.clave=e.clave "
+            "WHERE e.repo=? AND e.clave=? AND o.estado!='pendiente'", (repo, clave)).fetchone() is not None
 
     def outbox(self, repo):
         return [dict(r) for r in self.db.execute(

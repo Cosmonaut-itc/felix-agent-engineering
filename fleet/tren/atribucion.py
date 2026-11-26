@@ -4,7 +4,7 @@ from itertools import combinations
 import re
 from typing import Optional, Tuple
 
-from dominio import LIMITE_LOTE, Causa, Fallo, Reproduccion, clave
+from dominio import LIMITE_LOTE, Causa, Fallo, Reproduccion, clave, costo_atribucion
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,7 @@ class Plan:
     terminado: bool = False
     incierto: str = ""
     absoluciones: Tuple[Absolucion, ...] = ()
+    tanda: Tuple[Reproduccion, ...] = ()
 
 
 def identidad(fallo):
@@ -59,7 +60,7 @@ def absolucion(fallo, caso, uc, ub):
 
 
 def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=False,
-               firma_distingue_fallo=False):
+               firma_distingue_fallo=False, en_paralelo=False):
     """Una repetición = dos intentos de una unidad; N <= LIMITE_LOTE.
 
     Costo: 2 * máximo(segundos del check de origen, duraciones observadas).
@@ -71,15 +72,11 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
     prs = tuple(prs)
     if not 1 <= len(prs) <= LIMITE_LOTE or len(set(prs)) != len(prs):
         return Plan(incierto="tamano-de-lote-no-soportado")
-    gastado = sum(max(e.solicitud.costo_s,
-        sum(i.duracion_s for u in e.resultado.unidades for i in u.intentos))
-        for e in evidencias)
     if presupuesto_s <= 0:
         return Plan(incierto="sin-costo-de-suite-sana")
     por_archivo = dict(archivos)
-    causas = []
-    absoluciones = []
-    for fallo in sorted(fallos, key=identidad):
+
+    def examinar(fallo):
         historial = [e for e in evidencias if identidad(e.solicitud.fallo) == identidad(fallo)]
         por_objetivo = {(e.solicitud.objetivo, e.solicitud.prs): e for e in historial}
         duraciones = [fallo.duracion_s] + [i.duracion_s for e in historial
@@ -88,16 +85,18 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
         if costo <= 0:
             return Plan(incierto="sin-duracion:" + fallo.unidad)
 
-        def pedir(objetivo, miembros=()):
-            if gastado + costo > presupuesto_s:
-                return Plan(incierto="presupuesto-agotado:" + fallo.unidad)
-            return Plan(siguiente=Reproduccion(
+        def pedir(objetivos):
+            tanda = tuple(Reproduccion(
                 clave("reproduccion", identidad(fallo), objetivo, miembros),
-                fallo, objetivo, miembros, costo))
+                fallo, objetivo, miembros, costo) for objetivo, miembros in objetivos)
+            if costo_atribucion(evidencias, en_paralelo, siguiente=tanda[0]) > presupuesto_s:
+                return Plan(incierto="presupuesto-agotado:" + fallo.unidad)
+            return Plan(siguiente=tanda[0], tanda=() if absolver else tanda)
 
-        for objetivo in ("C", "B"):
-            if (objetivo, ()) not in por_objetivo:
-                return pedir(objetivo)
+        confirmaciones = [(objetivo, ()) for objetivo in ("C", "B")
+                          if (objetivo, ()) not in por_objetivo]
+        if confirmaciones:
+            return pedir(confirmaciones)
         uc = unidad(por_objetivo[("C", ())].resultado, fallo)
         ub = unidad(por_objetivo[("B", ())].resultado, fallo)
         candidato = estable(uc, fallo.firma or None)
@@ -110,8 +109,7 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
                     and all(i.caso_ejecutado is True for i in uc.intentos)
                     and estable(ub) == "pasa"
                     and ub.definicion == uc.definicion):
-                absoluciones.append(absolucion(fallo, 1, uc, ub))
-                continue
+                return Plan(absoluciones=(absolucion(fallo, 1, uc, ub),))
             return Plan(incierto="confirmacion-candidato:" + fallo.unidad)
         # La firma puede estar vacía en el origen anterior a U3: las dos
         # observaciones nuevas deben tener una firma estable y no vacía.
@@ -119,12 +117,11 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
         if ub is None or ub.definicion != uc.definicion:
             return Plan(incierto="definicion-distinta:" + fallo.unidad)
         if estable(ub, firma) == "falla":
-            continue
+            return Plan()
         if estable(ub) != "pasa":
             if (puede_absolver and firma_distingue_fallo and intentos_observados(ub)
                     and any(i.veredicto == "falla" and i.firma == firma for i in ub.intentos)):
-                absoluciones.append(absolucion(replace(fallo, firma=firma), 2, uc, ub))
-                continue
+                return Plan(absoluciones=(absolucion(replace(fallo, firma=firma), 2, uc, ub),))
             return Plan(incierto="confirmacion-base:" + fallo.unidad)
         if absolver:
             return None
@@ -132,13 +129,17 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
             not any(ruta in fallo.unidad for ruta in por_archivo.get(pr, ())), prs.index(pr)))
         minimos = []
         for tamano in range(1, len(prs)):
+            faltantes = []
             for grupo in combinations(orden, tamano):
                 grupo = tuple(pr for pr in prs if pr in grupo)
                 if any(set(m).issubset(grupo) for m in minimos):
                     continue
                 e = por_objetivo.get(("subconjunto", grupo))
                 if e is None:
-                    return pedir("subconjunto", grupo)
+                    faltantes.append(("subconjunto", grupo))
+                    continue
+                if faltantes:
+                    continue
                 u = unidad(e.resultado, fallo)
                 if u is None or u.definicion != uc.definicion:
                     return Plan(incierto="definicion-distinta:" + fallo.unidad)
@@ -147,10 +148,31 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
                     return Plan(incierto="reproduccion-incierta:" + fallo.unidad)
                 if valor == "falla":
                     minimos.append(grupo)
+            if faltantes:
+                return pedir(faltantes)
             # D5 sólo pide combinaciones cuando ningún ticket solo reproduce.
             if tamano == 1 and minimos:
                 break
         if not minimos:
             minimos = [prs]  # C confirmado es exactamente B + todos los tickets.
-        causas.append(Causa(replace(fallo, firma=firma), tuple(minimos)))
+        return Plan(causas=(Causa(replace(fallo, firma=firma), tuple(minimos)),))
+
+    causas = []
+    absoluciones = []
+    tanda = {}
+    for fallo in sorted(fallos, key=identidad):
+        plan = examinar(fallo)
+        if plan is None or plan.incierto:
+            if not tanda:
+                return plan
+            continue
+        if absolver and plan.siguiente is not None:
+            return plan
+        for solicitud in plan.tanda:
+            tanda.setdefault(solicitud.id, solicitud)
+        causas.extend(plan.causas)
+        absoluciones.extend(plan.absoluciones)
+    if tanda:
+        pedidos = tuple(tanda.values())
+        return Plan(siguiente=pedidos[0], tanda=pedidos)
     return Plan(causas=tuple(causas), terminado=True, absoluciones=tuple(absoluciones))
