@@ -216,6 +216,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                 if activacion(args.repo) != "activo":
                     return 2, {"error": "tick activo requiere inscripción activa"}
                 from adaptadores import seleccionar
+                from adaptadores.jale import Jale
                 from git_ops import GitTren, identidad_commits
                 from operativo import tick
                 if observador is None or git is None:
@@ -233,6 +234,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                                                         paralelas=PARALELAS_TICK_ACTIVO)
                     if adaptador is None:
                         adaptador = seleccionar(config, git)
+                if isinstance(adaptador, Jale):
+                    adaptador.limite_cancelacion = getattr(args, "limite_cancelacion", None)
                 return 0, tick(ledger, args.repo, observador, ahora, git, adaptador, frontera,
                                escritor)
             doble_camino = modo(args.repo) == "sombra"
@@ -279,6 +282,8 @@ def plazo_candado():
 ENCADENADOS = 8
 CUOTA_MINIMA = 1000
 PLAZO_ESPERA_CI_S = 100
+# Reserva 10 s del intervalo de launchd para cerrar el paso y sus efectos.
+PLAZO_TICK_CANCELACION_S = 110
 INTERVALO_SONDEO_CI_S = 20
 # Quien instala conserva el candado este tiempo: cubre el arranque de un proceso.
 GRACIA_INSTALACION_S = 5
@@ -410,6 +415,7 @@ def ticks(args):
     for modulo in PEREZOSOS:
         importlib.import_module(modulo)
     limite = ARRANQUE + PLAZO_ESPERA_CI_S
+    args.limite_cancelacion = ARRANQUE + PLAZO_TICK_CANCELACION_S
 
     def vigente():
         return inicial is not None and programa() == inicial
