@@ -380,6 +380,68 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.get_grant('primera')['vm'], NAME)
         self.assertEqual(self.get_grant('segunda')['vm'], other)
 
+    def test_pedir_limita_candidatas_y_ordena_por_carga_dentro_de_la_lista(self):
+        self.config['vms'][0]['lugares'] = 3
+        other = 'vm-otra'
+        self.get_lease('ocupante')
+        self.add_vm(other, fake_id('efgh2345'), places=3)
+
+        self.assertEqual(self.get_grant('limitada', 'contract', '--candidatas', NAME)['vm'], NAME)
+        self.assertEqual(self.get_grant('ambas', 'contract', '--candidatas', f'{NAME},{other}')['vm'], other)
+
+    def test_pedir_rechaza_candidatas_invalidas(self):
+        other = 'vm-ajena'
+        self.add_vm(other, fake_id('efgh2345'), overrides={'repo': 'otro/proyecto'})
+        for names, options, message in (
+            (f'{NAME},vm-desconocida', ('contract',), 'VM fuera del pool'),
+            (f'{NAME},{other}', ('contract',), 'pertenece a otro repositorio'),
+            (NAME, ('preparar', '--vm', NAME), 'no se admite con la clase preparar'),
+            (f'{NAME},', ('contract',), 'argumentos del pool inválidos'),
+            (f'{NAME},vm\ninválida', ('contract',), 'argumentos del pool inválidos'),
+        ):
+            with self.subTest(names=names, options=options):
+                code, output, stderr = self.run_cli(*self.args('suite', *options, '--candidatas', names))
+                self.assertEqual(code, 64, stderr)
+                self.assertIn(message, stderr)
+                self.assertFalse(output)
+        self.assertFalse(self.api.calls)
+
+    def test_pedir_espera_y_vence_si_la_unica_candidata_esta_llena(self):
+        self.get_lease('ocupante')
+        self.add_vm('vm-otra', fake_id('efgh2345'))
+        self.api.calls.clear()
+
+        def advance_clock(seconds):
+            self.api.now += seconds
+
+        with patch.object(pool.time, 'monotonic', side_effect=lambda: self.api.now - NOW), \
+                patch.object(self.api, 'sleep', side_effect=advance_clock):
+            self.assert_unavailable(
+                'sin_lugar', *self.args('limitada', 'contract', '--candidatas', NAME, '--esperar', '0.25'))
+        self.assertEqual(self.api.now, NOW + 0.25)
+        self.assertFalse(self.api.calls)
+
+    def test_turno_con_candidatas_no_bloquea_una_vm_fuera_de_su_lista(self):
+        token = self.get_lease('ocupante')
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'))
+        restricted = self.start_worker(
+            *self.args('tren', 'contract', '--candidatas', NAME, '--prioridad', 'tren', '--esperar', '8'))
+        self.queue('tren')
+
+        self.assertEqual(self.get_grant('suite', 'contract', '--prioridad', 'suite')['vm'], other)
+        self.assertIsNone(restricted.poll())
+        self.assertEqual(self.run_cli('soltar', token)[0], 0)
+        self.assertEqual(json.loads(self.result(restricted, 0))['vm'], NAME)
+
+    def test_pedir_no_prueba_vm_fuera_de_la_lista_si_rechaza_el_arranque(self):
+        self.add_vm('vm-otra', fake_id('efgh2345'))
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.limits['starts']['day']['remaining'] = 0
+
+        self.assert_unavailable('puerta', *self.args('limitada', 'contract', '--candidatas', NAME))
+        self.assertFalse(self.journal('vm-otra'))
+
     def test_contract_elige_otra_vm_si_una_e2e_ocupa_un_lugar(self):
         self.config['vms'][0].update(lugares=2, peso_clase={'contract': 2})
         other = 'vm-otra'
@@ -977,6 +1039,21 @@ class Harness(unittest.TestCase):
         self.assertEqual(worker.returncode, 75, stderr)
         self.assertFalse(stdout)
         self.assertTrue(stderr.startswith('boat-pool: sin_vm: '), stderr)
+
+    def test_turno_en_fila_conserva_candidatas_al_releer_registros(self):
+        self.get_lease('ocupante')
+        self.add_vm('vm-otra', fake_id('efgh2345'))
+        path = self.state / 'vms' / NAME / 'registro.json'
+
+        def mark_unfit(seconds):
+            self.api.now += seconds
+            pool.atomic_json(path, {**pool.read_json(path), 'apta': False})
+
+        with patch.object(pool.time, 'monotonic', side_effect=lambda: self.api.now - NOW), \
+                patch.object(self.api, 'sleep', side_effect=mark_unfit):
+            self.assert_unavailable(
+                'sin_vm', *self.args('limitada', 'contract', '--candidatas', NAME, '--esperar', '1'))
+        self.assertFalse(self.journal('vm-otra'))
 
     def test_turno_en_fila_encuentra_otra_vm_que_prepare_deja_apta(self):
         other = 'vm-recién-preparada'

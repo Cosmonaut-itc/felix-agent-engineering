@@ -397,6 +397,8 @@ class VM:
             return False
         if turn['clase'] == 'preparar':
             return turn['vm'] == self.name
+        if 'candidatas' in turn and self.name not in turn['candidatas']:
+            return False
         return self.apt and self.fits([], turn['clase'])
 
 
@@ -778,6 +780,13 @@ class Pool:
         turn = {'turno': uuid4().hex, 'repo': args.repo, 'corrida': args.corrida,
                 'clase': args.clase, 'vm': args.vm, 'prioridad': args.prioridad,
                 'orden': time.time_ns(), 'host': self.host, 'pid': os.getpid(), 'descartadas': []}
+        if args.candidatas is not None:
+            for name in args.candidatas:
+                if name not in self.vms:
+                    raise InvalidUse(f'VM fuera del pool: {name}')
+                if self.vms[name].repo != args.repo:
+                    raise InvalidUse(f'la VM pertenece a otro repositorio: {name}')
+            turn['candidatas'] = args.candidatas
         candidates = [vm for vm in self.candidates(repo=args.repo, name=args.vm) if vm.accepts(turn)]
         if not candidates:
             raise Unavailable('sin_vm', 'sin VM apta o registrada')
@@ -1408,6 +1417,7 @@ def parser():
         cmd.add_argument('--' + field, required=True)
     cmd.add_argument('--prioridad', choices=PRIORITY)
     cmd.add_argument('--vm')
+    cmd.add_argument('--candidatas')
     cmd.add_argument('--esperar', type=wait_seconds, default=0)
     cmd.add_argument('--ttl', type=ttl, default=900)
     cmd = commands.add_parser('latido')
@@ -1434,6 +1444,10 @@ def main(argv=None, **pool_options):
             preparing = args.clase == 'preparar'
             if preparing != (args.vm is not None) or (args.prioridad == 'preparar' and not preparing):
                 raise InvalidUse('--vm y la prioridad preparar corresponden a la clase preparar')
+            if args.candidatas is not None:
+                if preparing:
+                    raise InvalidUse('--candidatas no se admite con la clase preparar')
+                args.candidatas = [label(name) for name in args.candidatas.split(',')]
             args.prioridad = 'preparar' if preparing else (args.prioridad or 'otra')
         config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'boat-pool' / 'pool.json'
         state = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'boat-pool'
