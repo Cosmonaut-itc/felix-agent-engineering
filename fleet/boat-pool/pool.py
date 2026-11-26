@@ -266,6 +266,7 @@ class VM:
     tipo: str
     places: int
     classes: dict
+    weights: dict
     idle: float | None
     path: Path
     prohibited: dict
@@ -381,10 +382,13 @@ class VM:
                 self.change_lease('vencido', expiry, lease)
         return live
 
+    def used_places(self, leases):
+        return sum(self.weights.get(lease['clase'], 1) for lease in leases)
+
     def fits(self, leases, kind):
         if kind == 'preparar':
             return not leases
-        return (len(leases) < self.places
+        return (self.used_places(leases) + self.weights.get(kind, 1) <= self.places
                 and not any(lease['clase'] == 'preparar' for lease in leases)
                 and sum(lease['clase'] == kind for lease in leases) < self.classes.get(kind, self.places))
 
@@ -455,10 +459,16 @@ class Pool:
                 raise ValueError('VM duplicada o tipo inválido')
             places = integer(data['lugares'], 1)
             classes = {label(kind): integer(limit, 0) for kind, limit in data.get('limite_clase', {}).items()}
+            weights = data.get('peso_clase', {})
+            if not isinstance(weights, dict):
+                raise ValueError('peso_clase debe ser un objeto')
+            weights = {label(kind): integer(weight, 1) for kind, weight in weights.items()}
+            if any(weight > places for weight in weights.values()):
+                raise ValueError('peso_clase supera los lugares de la VM')
             idle = data.get('inactividad_min', default_idle)
             idle = None if idle is None else number(idle, 0) * 60
             self.vms[name] = VM(name, label(data['repo']), data['tipo'], places,
-                                classes, idle, state / 'vms' / name, self.prohibited)
+                                classes, weights, idle, state / 'vms' / name, self.prohibited)
 
     def candidates(self, *, name=None, repo=None):
         if name is not None:
@@ -717,7 +727,7 @@ class Pool:
                     stopping = (operation is not None and operation['sandbox_id'] == vm.id
                                 and self.stop_pending(operation))
                     stopped = vm.last_power_event() == 'apagada'
-                    order[vm.name] = (not fits, stopping or stopped, len(leases) / vm.places)
+                    order[vm.name] = (not fits, stopping or stopped, vm.used_places(leases) / vm.places)
             except (OSError, KeyError, TypeError, ValueError, OverflowError):
                 continue
         return sorted(candidates, key=lambda vm: order.get(vm.name, (True, True, math.inf)))
@@ -915,7 +925,7 @@ class Pool:
                     except (Unavailable, BoatError):
                         pass
                     if vm.apt and all(lease['clase'] != 'preparar' for lease in row['arriendos']):
-                        row['lugares_libres'] = max(0, vm.places - len(row['arriendos']))
+                        row['lugares_libres'] = max(0, vm.places - vm.used_places(row['arriendos']))
             rows.append(row)
         try:
             gates = self.gates()
