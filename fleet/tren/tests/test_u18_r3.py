@@ -1,8 +1,13 @@
 """U18 R3: obligaciones observadas en el transporte, independientes del diario."""
+from copy import deepcopy
 from itertools import product
+from pathlib import Path
+import shutil
+import tempfile
 import unittest
 from unittest.mock import patch
 
+from test_activo import Contexto
 from test_u18_r2 import ContextoR2
 from dominio import Aterrizado, Incierto, Terminal
 from git_ops import FalloGit
@@ -15,6 +20,17 @@ class ContextoR3(ContextoR2):
         # Esta matriz prueba el protocolo, no el timeout del proceso. Dar
         # margen al gancho real cuando el host comparte carga con otras suites.
         self.config['pre_aterrizaje']['plazo_s'] = 10
+
+    def combinacion(self):
+        """Comparte rutas, SHA y entorno; transporte, configuración y lo que
+        parchea instrumentar() son propios de cada combinación."""
+        c = ContextoR3()
+        c.__dict__.update({k: v for k, v in vars(self).items() if not k.startswith('_')})
+        c.contexto = Contexto(self.ruta_contexto)
+        c.contexto.config.clear()
+        c.contexto.config.update(deepcopy(self.config))
+        c.config = c.contexto.config
+        return c
 
     def instrumentar(self):
         self.fallos = (False, False, False)  # push, lectura posterior, cancelar
@@ -117,17 +133,30 @@ class RegresionTests(ContextoR3):
 
 class InvarianteTests(unittest.TestCase):
     def test_combinaciones_por_tick_con_origen_y_gancho_reales(self):
+        # preparar() cuesta más procesos git que los ticks que se prueban y
+        # deja el mismo tren certificado. La copia vuelve a la misma ruta
+        # porque el ledger, los worktrees y la configuración guardan rutas
+        # absolutas.
+        plantilla = ContextoR3()
+        plantilla.setUp()
+        self.addCleanup(plantilla.doCleanups)
+        plantilla.preparar()
+        plantilla.modo('seguir')
+        raiz = plantilla.raiz
+        copia = Path(tempfile.mkdtemp(prefix='pao-tren-u18r3-plantilla-')) / 'raiz'
+        shutil.copytree(raiz, copia, symlinks=True)
         opciones = list(product((False, True), repeat=3))
         cantidad = 0
         # 8 x 8: todos los pares de fallos de dos ticks consecutivos,
         # seguidos de dos ticks sanos. Incluye U18-sol-4 y CAS sin ACK legible.
-        for primero, segundo in product(opciones, repeat=2):
+        for n, (primero, segundo) in enumerate(product(opciones, repeat=2)):
             with self.subTest(primero=primero, segundo=segundo):
-                c = ContextoR3()
-                c.setUp()
+                if n:
+                    # Conserva la raíz de la combinación anterior como evidencia.
+                    raiz.rename(raiz.with_name('{}-combinacion-{:02d}'.format(raiz.name, n - 1)))
+                    shutil.copytree(copia, raiz, symlinks=True)
+                c = plantilla.combinacion()
                 try:
-                    c.preparar()
-                    c.modo('seguir')
                     with c.instrumentar():
                         for fallos in (primero, segundo, (False, False, False),
                                        (False, False, False)):
