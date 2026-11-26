@@ -206,6 +206,7 @@ class Jale:
         self.lanzador = str(Path(lanzador).resolve()) if resolver_lanzador else str(lanzador)
         self.lanzador_configurado = str(lanzador)
         self.operador = None
+        self.limite_cancelacion = None
         self.cancelacion_aplaza_prelanzamiento = False
         self.git = git
         self.host, self.modos = host.copy() if isinstance(host, dict) else host, tuple(modos)
@@ -353,6 +354,8 @@ class Jale:
         # hasta que sale el launcher que hace la cancelación en su host.
         pendientes = set(activas)
         limite = time.monotonic() + PLAZO_CANCELACION_S
+        if self.limite_cancelacion is not None:
+            limite = min(limite, self.limite_cancelacion)
         while pendientes:
             pendientes = {r for r in pendientes if lanzamiento_activo(r / 'candado')}
             restante = limite - time.monotonic()

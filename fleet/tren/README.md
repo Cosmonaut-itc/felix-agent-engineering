@@ -334,8 +334,9 @@ arranque, porque prueba el candado en cuanto termina de cargar.
 
 Cuándo sale 75:
 
-- Con un tren en `EsperandoCI`, el proceso del tick activo vive hasta 100 s
-  de cada 120. Reintenta cada pocos segundos hasta caer en el hueco:
+- Con un tren en `EsperandoCI`, el tick sondea el CI hasta 100 s desde el
+  arranque. Si cierra el lote, espera sus candados hasta el segundo 110
+  como máximo. Reintenta cada pocos segundos hasta caer en el hueco:
   `until pao-tren candado -- <comando>; [ $? -ne 75 ]; do sleep 2; done`.
 - El tick que espera una suite retiene el candado todo ese tiempo, que en
   Jale ronda los 90 minutos. `candado` no espera ni interrumpe ese tick. Si
@@ -1500,25 +1501,29 @@ corrida, manda TERM al lanzador que creó y conserva el candado hasta que
 y su salida queda sin consumir. El evento `suite-prelanzada-sin-leer`
 registra en el mismo paso el modo, la clave (si llegó a escribirse), si ya
 había terminado, si se pidió cancelar y si el candado se liberó dentro del
-plazo. Los errores de cancelación se registran en ese aviso.
+plazo. `cancelacion_confirmada` indica que el lanzador salió y soltó el
+candado. La liberación del recurso en el host depende del lanzador. Los
+errores de cancelación se registran en ese aviso.
 
-El tick espera hasta 30 s en total por los candados. Si quedan ocupados,
-el siguiente lote puede publicar el CI y conserva en disco el
-prelanzamiento aplazado. Un tick posterior lo ejecuta cuando los candados
-se liberan y el lote sigue esperando CI con sus miembros admitidos.
+El tick espera hasta 30 s en total por los candados, con tope en el
+segundo 110 desde el arranque. Si ya alcanzó el tope, pide la cancelación
+y comprueba los candados sin dormir. Si quedan ocupados, el siguiente
+lote puede publicar el CI y conserva en disco el prelanzamiento aplazado.
+El primer tick elegible lo ejecuta cuando los candados se liberan y el
+lote sigue esperando CI con sus miembros admitidos.
 Una pausa por sí sola conserva las repeticiones adelantadas. El reductor
 sólo consume su salida cuando pide la repetición y el efecto la confirma
 con los miembros admitidos.
 
 Boat atrapa TERM, pide la cancelación de la corrida despachada y al salir
-intenta soltar el arriendo. Si el pool no confirma la liberación, el
-arriendo vence por su TTL. En `desktop`, TERM pide cancelar la tarea
-identificada de Pueue. `auto` hereda el comportamiento del host que
-elige. El lanzador de `mini` usa transporte SSH directo, sin cancelación
-acreditada en el host. TERM se entrega al lanzador supervisado. Esto deja
-sin garantía de cancelación remota la caída de Boat a desktop ya en curso.
-Los coordinadores de la versión anterior no leen la nueva solicitud y
-conservan su candado hasta salir por su cuenta.
+llama a `pool.soltar`. Si el pool no confirma la liberación, el arriendo
+vence por su TTL. En `desktop`, TERM pide cancelar la tarea identificada
+de Pueue. Si Boat ya cayó a `desktop`, la corrida sigue en el desk
+(SEN-7715). `auto` hereda el comportamiento del host que elige. El
+lanzador de `mini` usa transporte SSH directo y carece de cancelación en
+el host. Los coordinadores de la versión anterior no leen `cancelar.json`.
+Antes de instalar, espera a que salgan las prelanzadas vivas o cancélalas
+a mano.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
