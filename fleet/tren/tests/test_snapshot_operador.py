@@ -354,9 +354,12 @@ for n in range(15):
 
     def test_main_avanza_en_pausa_y_reanudar_no_pide_ci_ni_lanza(self):
         self.prelanzar()
-        (self.raiz / 'ci-pendiente').touch()
         self.hasta_fase(EsperandoCI)
+        pendiente = self.raiz / 'ci-pendiente'
+        pendiente.touch()
         self.assertEqual(self.hasta_pausa().pausa.detalle, 'ci-sin-resultado')
+        # Con el CI verde, sólo la B vieja impide publicar y prelanzar.
+        pendiente.unlink()
         ramas, lanzamientos = self.ramas_ci(), self.lineas('lanzamientos.jsonl')
         tercero = self.version('tercero', self.nuevo)
         self.push(tercero, 'refs/heads/main')
