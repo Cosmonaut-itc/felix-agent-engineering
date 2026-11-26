@@ -125,6 +125,9 @@ class CacheTests(unittest.TestCase):
                        X_Ratelimit_Remaining="4000", X_Ratelimit_Reset=str(AHORA + 3000)),
              "secondary", AHORA + 60),
             (respuesta(429), "secondary", AHORA + 60),
+            (respuesta(403, '{"message":"You have exceeded a secondary rate limit."}',
+                       X_Ratelimit_Remaining="0", X_Ratelimit_Reset=str(AHORA + 1800)),
+             "secondary", AHORA + 1800),
         )
         for fake, recurso, reinicio in casos:
             with self.subTest(recurso=recurso, reinicio=reinicio), \
@@ -159,12 +162,27 @@ class CacheTests(unittest.TestCase):
                     for ruta in archivos:
                         with self.subTest(previos=previos, archivo=ruta.name):
                             self.assertEqual(ruta.stat().st_mode & 0o777, 0o600)
+        # Una base válida con su WAL vivo y modos ajenos, también de sólo lectura.
+        with tempfile.TemporaryDirectory() as temporal, CacheGitHub(temporal) as abierta:
+            abierta.guardar(EP, '"uno"', "[]", None)
+            archivos = sorted(Path(temporal).iterdir())
+            self.assertEqual(len(archivos), 3)
+            self.assertGreater(Path(temporal, "github-cache.sqlite3-wal").stat().st_size, 0)
+            for ruta in archivos:
+                os.chmod(ruta, 0o444 if ruta.name.endswith("sqlite3") else 0o644)
+            with CacheGitHub(temporal) as reabierta:
+                self.assertEqual(reabierta.leer(EP), ('"uno"', "[]", None))
+                for ruta in archivos:
+                    with self.subTest(archivo=ruta.name, previo="valido"):
+                        self.assertEqual(ruta.stat().st_mode & 0o777, 0o600)
 
     def test_sin_cache_clasifica_por_estado_http(self):
         casos = (
             ("gh: You have exceeded a secondary rate limit. (HTTP 403)", ("secondary", AHORA + 60)),
             ("gh: API rate limit exceeded (HTTP 429)", ("core", AHORA)),
             ("gh: rate limit backend unavailable (HTTP 503)", None),
+            ("gh: Too Many Requests (HTTP 429)", ("core", AHORA)),
+            ("gh: Resource not accessible by integration (HTTP 403)", None),
         )
         for stderr, esperado in casos:
             with self.subTest(stderr=stderr), patch("observador.time.time", return_value=AHORA):
