@@ -302,7 +302,8 @@ salida 75 y emite un JSON como
 El tick que encuentra el límite conserva la fase, la cola y las admisiones.
 No guarda un paso operativo ni consume plazos o reintentos con esa lectura.
 `reinicio` sale de `Retry-After` cuando GitHub lo envía. Si no, sale de
-`X-RateLimit-Reset`, salvo en un límite secundario, que espera un minuto.
+`X-RateLimit-Reset`. Un límite secundario con cuota primaria disponible, o
+sin `X-RateLimit-Reset`, espera un minuto.
 La limpieza local previa a observar sigue ocurriendo. Los POST de feedback
 conservan su reintento habitual.
 
