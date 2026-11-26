@@ -71,6 +71,9 @@ class Entrada:
     caducada: Optional[float] = None
     # Ligada al recibo: conserva el aislamiento hasta resolver la entrega.
     partida: bool = False
+    # Liberada por un rearmado antes de la suite: conserva su FIFO, como si
+    # siguiera en EsperandoCI, hasta entrar al lote siguiente.
+    rearmada: bool = False
 
 
 @dataclass(frozen=True)
@@ -548,7 +551,7 @@ def aterrizaje(estado, tren, observacion):
                                        else t for t in estado.trenes)), efectos
 
 
-def rearmar(estado, tren):
+def rearmar(estado, tren, temprano=False):
     """C ya no aterriza sobre main: cierra el tren y devuelve sus miembros a la fila.
 
     Las fechas FIFO no cambian; el reductor congela el lote siguiente sobre main.
@@ -556,7 +559,8 @@ def rearmar(estado, tren):
     return replace(estado,
         trenes=tuple(replace(t, fase=Terminal("REARMAR")) if t.id == tren.id else t
                      for t in estado.trenes),
-        entradas=tuple(replace(e, tren=None) if e.entrega.recibo in tren.recibos
+        entradas=tuple(replace(e, tren=None, rearmada=temprano)
+                       if e.entrega.recibo in tren.recibos
                        else e for e in estado.entradas))
 
 
@@ -963,7 +967,7 @@ def paso(estado, observacion):
                 admitida = (entrada.admitida if entrada.admitida is not None
                             else observacion.ahora)
             elif (decision == Retenido(Motivo.INCIERTO) or entrada.partida or
-                  entrada.tren in esperando_ci):
+                  entrada.rearmada or entrada.tren in esperando_ci):
                 # No perder FIFO al retener antes o después de una partición.
                 admitida = entrada.admitida
             else:
@@ -984,7 +988,7 @@ def paso(estado, observacion):
             return estado, tuple(efectos)
         # Un merge por fuera deja a C sin poder aterrizar: no gastar CI ni suite.
         if base_vieja(fase, observacion):
-            return rearmar(estado, tren), tuple(efectos)
+            return rearmar(estado, tren, temprano=True), tuple(efectos)
         ocupada = observacion.rama_ocupada
         if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
                 observacion.tren_id == tren.id and
@@ -1074,7 +1078,7 @@ def paso(estado, observacion):
         generacion += 1
         tren_id = clave("tren", estado.repo, observacion.base, recibos, generacion)
     tren = Tren(tren_id, recibos, Congelado(observacion.base))
-    estado = replace(estado, entradas=tuple(replace(e, tren=tren_id)
+    estado = replace(estado, entradas=tuple(replace(e, tren=tren_id, rearmada=False)
                      if e.entrega.recibo in recibos else e for e in entradas),
                      trenes=estado.trenes + (tren,))
     efectos.append(Efecto(clave("armar", tren_id), "armar-candidato", (tren_id,)))

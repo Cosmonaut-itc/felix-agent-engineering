@@ -69,6 +69,25 @@ class RearmarTempranoTests(unittest.TestCase):
         self.assertNotEqual(nuevo.trenes[-1].id, self.tren.id)
         self.assertEqual(efectos[0].tipo, "armar-candidato")
 
+    def test_miembros_retenidos_tras_rearmar_conservan_su_orden(self):
+        # En la base, EsperandoCI conservaba admitida hasta el lote siguiente.
+        marcas = {1: 340, 2: 220}
+        antes = replace(self.en_fase(EsperandoCI(self.candidato, 100)), entradas=tuple(
+            replace(e, admitida=marcas[e.entrega.pr]) for e in self.congelado.entradas))
+        pendiente = replace(self.obs, ahora=4000, base=MAIN, prs=tuple(
+            replace(v, ci="pendiente") for v in self.obs.prs))
+        estado, _ = paso(antes, pendiente)
+        self.assertEqual(estado.trenes[0].fase, Terminal("REARMAR"))
+        for ahora in (4120, 4240):
+            estado, _ = paso(estado, replace(pendiente, ahora=ahora))
+            self.assertEqual({e.entrega.pr: e.admitida for e in estado.entradas}, marcas)
+        estado, _ = paso(estado, replace(self.obs, ahora=4360, base=MAIN))
+        nuevo = estado.trenes[-1]
+        self.assertEqual(nuevo.fase, Congelado(MAIN))
+        recibos = {e.entrega.pr: e.entrega.recibo for e in antes.entradas}
+        self.assertEqual(nuevo.recibos, (recibos[2], recibos[1]))
+        self.assertFalse(any(e.rearmada for e in estado.entradas))
+
     def test_suite_iniciada_no_se_rearma(self):
         # Sus coordinadores pueden seguir vivos con la fase aún en EsperandoCI.
         antes = self.en_fase(EsperandoCI(self.candidato, 100))

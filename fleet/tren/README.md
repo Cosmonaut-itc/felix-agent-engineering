@@ -418,7 +418,8 @@ Si `Observacion.base` deja de ser la B de un tren en `Congelado`, `Armado` o
 lanzar la suite, porque su C ya no puede aterrizar. Esto ocurre, por ejemplo,
 al levantar una pausa larga durante la que se mergeó por fuera. Los miembros
 vuelven a la fila igual que en la promoción, pero sin pausa: en el tick
-siguiente el lote se congela sobre main. En `EsperandoCI` sólo se rearma
+siguiente el lote se congela sobre main. Como en `EsperandoCI`, conservan su
+fecha FIFO aunque un check vuelva a pendiente, hasta entrar al lote siguiente. En `EsperandoCI` sólo se rearma
 mientras el efecto `iniciar-suite` del tren siga `pendiente` en la outbox.
 Desde que deja de estarlo, puede haber coordinadores vivos aunque la fase
 no haya cambiado, y el tren sigue por la suite y la promoción, que pausa
