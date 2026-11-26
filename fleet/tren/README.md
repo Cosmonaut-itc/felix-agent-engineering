@@ -649,8 +649,10 @@ fijo; no se transportan otros campos del diagnóstico ni del config privado.
 En Hasito se publica la plantilla `bash scripts/mini/run.sh --repetir <resultado.json>
 --sha <SHA-causal> --worktree <worktree-en-SHA> --veces 2 --unidad check=unidad`.
 En Jale se publica `bash scripts/test-hosts/run-remote.sh <host> <log>
-<modo> <SHA-causal> <unidad>`. El dueño sustituye las rutas de resultado,
-worktree o log por las de su entorno. En ambos casos se usa el SHA de la
+<modo> <SHA-causal> <unidad>`. Con host `boat` el comando empieza con
+`SEN_RUN_OWNER=<agente>`, porque Boat sólo admite corridas con un dueño válido.
+El dueño sustituye las rutas de resultado, worktree o log, y el agente, por los
+de su entorno. En ambos casos se usa el SHA de la
 reproducción observada o el SHA de la evidencia si ésta carece de comando.
 Una devolución por juicio usa el SHA del candidato. El payload durable
 original permanece en el ledger.

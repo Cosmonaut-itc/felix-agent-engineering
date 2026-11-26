@@ -64,6 +64,20 @@ class ComandoFeedbackTests(unittest.TestCase):
             "bash scripts/test-hosts/run-remote.sh desktop '<log>' contract "
             + self.causal + " apps/api/src/a.contract.test.ts")
 
+    def test_jale_en_boat_publica_el_comando_del_lanzador(self):
+        argv = ("bash", "/privado/envoltorio", "boat", "/privado/corrida.log",
+                self.jale.check, self.causal, self.jale.unidad)
+        inicial, efecto = self.atribuir(self.jale, argv)
+        escritor = EscritorGitHub()
+        escritor.api = Mock(side_effect=[[], {"html_url": "https://github.com/example/comment"}, {}])
+        escritor.ejecutar_feedback(efecto, inicial, lambda *_: None)
+        self.comprobar_atribuido(self.jale, escritor.api.call_args_list[1].args[1]["body"],
+            "SEN_RUN_OWNER='<agente>' bash scripts/test-hosts/run-remote.sh boat '<log>' "
+            "contract " + self.causal + " apps/api/src/a.contract.test.ts")
+        endpoint, status = escritor.api.call_args_list[2].args
+        self.assertEqual(endpoint, "repos/{}/statuses/{}".format(inicial.repo, "a" * 40))
+        self.assertEqual((status["state"], status["context"]), ("failure", "pao-tren/resultado"))
+
     def test_hasito_conserva_texto_del_comando_publicado(self):
         argv = ("bash", "/privado/envoltorio", "--repetir", "/privado/resultado.json",
                 "--sha", self.causal, "--worktree", "/privado/arbol", "--veces", "2",
