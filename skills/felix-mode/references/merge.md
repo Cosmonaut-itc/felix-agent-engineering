@@ -257,7 +257,9 @@ restantes y la separación entre propietario, verificador y stacker.
      migraciones: el journal de la base sigue intacto y le siguen las altas
      revisadas en orden, su SQL no cambió, y los snapshots nuevos encadenan
      con los de la base y reproducen el esquema por mezcla de tres vías.
-     Fuera de ese directorio, el árbol es la mezcla limpia. La segunda línea
+     Fuera de ese directorio, el árbol es la mezcla limpia y la mezcla sólo
+     emite `Auto-merging`, `CONFLICT (content)` o `CONFLICT (add/add)` sobre
+     rutas de migraciones. La segunda línea
      lista cada `viejo → nuevo`. Si el delta incluye catálogos y migraciones,
      cada parte debe cumplir su excepción.
    - `Ronda delta`: la rama destino cambió los archivos del parche que
@@ -267,7 +269,8 @@ restantes y la separación entre propietario, verificador y stacker.
      ronda de sincronización. Si se rechaza la excepción de Drizzle, la
      última línea `Excepción de migraciones: punto N: …` indica qué falló.
      Si la mezcla fue limpia y el head difiere sin cumplir la excepción, la
-     salida es `Ronda`.
+     salida es `Ronda`, salvo si un mensaje de Git rechazó la excepción de
+     Drizzle.
    - `Ronda`, o un error del script: corre la ronda que fija **Rondas**.
 
    Una ronda de sincronización no cuenta para el límite de **Rondas**. Las

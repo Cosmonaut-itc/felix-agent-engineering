@@ -4,8 +4,8 @@
 # excepción de catálogos o Drizzle. `Ronda delta` lista archivos compartidos
 # o en conflicto y, con conflictos, el diff de resolución. `Ronda` pide una
 # ronda completa si la mezcla fue limpia y el head difiere sin excepción.
-# Una excepción de Drizzle rechazada añade el motivo. Sale con 2 si no puede
-# decidir. Necesita git 2.38+ y python3 para JSON.
+# Un mensaje de Git que impida la excepción de Drizzle exige ronda delta.
+# Sale con 2 si no puede decidir. Necesita git 2.38+ (2.39+ para Drizzle) y python3.
 set -uo pipefail
 fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
 
@@ -46,15 +46,22 @@ new_base=$(git merge-base "$target" "$new") || fail 'el head nuevo no comparte h
 # directorio que el destino renombró, y ninguna de las dos listas lo muestra.
 # Con conflictos, el árbol que escribe lleva los marcadores, y su diff contra el
 # head nuevo es la resolución.
-merged=$(git -c merge.directoryRenames=conflict merge-tree --write-tree --name-only --no-messages "$new_base" "$reviewed" 2>/dev/null)
+merge_report=$scratch/merge-report
+LC_ALL=C git -c merge.directoryRenames=conflict merge-tree --write-tree --name-only --messages -z \
+    "$new_base" "$reviewed" > "$merge_report" 2>/dev/null
 merge_status=$?
 case $merge_status in
     0|1) ;;
     *) fail 'git merge-tree --write-tree falló' ;;
 esac
-auto=${merged%%$'\n'*}
 conflicted=''
-[ "$merge_status" = 0 ] || conflicted=${merged#"$auto"}
+{
+    IFS= read -r -d '' auto || fail 'no puedo leer el árbol de la mezcla'
+    while IFS= read -r -d '' file && [ -n "$file" ]; do
+        case "$file" in *$'\n'*) printf -v file '%q' "$file" ;; esac
+        conflicted+=$file$'\n'
+    done
+} < "$merge_report"
 tree=$(git rev-parse --verify --quiet "$new^{tree}") || fail "no puedo leer el árbol de $new"
 # Rutas cuya entrada difiere entre dos árboles. Salen de `git ls-tree`, que
 # lista entradas y no tiene opciones de diff que escondan una.
@@ -71,7 +78,7 @@ while IFS= read -r file; do
 done <<< "$patch"
 # Las excepciones leen los objetos del mismo repositorio aislado.
 sync_exceptions() {
-    python3 -I - "$reviewed_base" "$reviewed" "$new_base" "$tree" "$auto" "$shared" "$conflicted" <<'PY_EXCEPTIONS'
+    python3 -I - "$reviewed_base" "$reviewed" "$new_base" "$tree" "$auto" "$shared" "$merge_report" <<'PY_EXCEPTIONS'
 import ast
 import json
 import re
@@ -340,9 +347,37 @@ def paths(lines):
             for path in lines.split('\n') if path}
 
 
+def rejected_message(messages, dirs):
+    fields = messages.split('\0')
+    offset = 0
+    # Git separa cada mensaje en número de rutas, rutas, tipo estable y texto.
+    while offset < len(fields) - 1 or fields[offset]:
+        count = fields[offset]
+        if not count.isascii() or not count.isdecimal():
+            return ' '.join(fields[offset:]).rstrip()
+        end = offset + 1 + int(count)
+        if end + 2 >= len(fields):
+            return ' '.join(fields[offset:]).rstrip()
+        named_paths = fields[offset + 1:end]
+        kind, message = fields[end:end + 2]
+        # Git agrupa content, add/add y submodule bajo el tipo contents.
+        allowed = kind in {'Auto-merging', 'CONFLICT (content)', 'CONFLICT (add/add)'} or (
+            kind == 'CONFLICT (contents)' and message.startswith(('CONFLICT (content): ', 'CONFLICT (add/add): ')))
+        if not allowed or not named_paths or not all(
+                path and any(path.startswith(prefix) for prefix in dirs) for path in named_paths):
+            return message.rstrip() or kind or count
+        offset = end + 2
+    return None
+
+
 dirs = set()
 try:
-    shared, conflicts = (paths(lines) for lines in sys.argv[6:8])
+    shared = paths(sys.argv[6])
+    with open(sys.argv[7], encoding='utf-8', errors='surrogateescape', newline='') as report:
+        stages, separator, messages = report.read().partition('\0\0')
+    if not separator:
+        raise RuntimeError('informe de mezcla sin separador')
+    conflicts = set(stages.split('\0')[1:])
     overlap = shared | conflicts
     trees = [inventory(revision) for revision in sys.argv[1:5]]
     migration_paths = set()
@@ -357,21 +392,16 @@ try:
     if not dirs and conflicts:
         sys.exit(3)
     if dirs:
+        message = rejected_message(messages, dirs)
+        if message is not None:
+            print(f'Excepción de migraciones: punto 1: {message}')
+            sys.exit(4)
         ancestor = subprocess.run(['git', 'merge-base', '--is-ancestor', sys.argv[1], sys.argv[3]],
                                   capture_output=True)
         if ancestor.returncode != 1:
             ancestor.check_returncode()
         require(ancestor.returncode == 0, 'punto 1: la base nueva no incorpora la base revisada')
         require(not (conflicts & catalogs), 'punto 1: hay conflictos fuera de las migraciones')
-        # Un renombre puede sugerir una ruta dentro de Drizzle para un archivo externo.
-        merge = subprocess.run(['git', '-c', 'merge.directoryRenames=false', 'merge-tree',
-                                '--write-tree', '--name-only', '--no-messages', sys.argv[3], sys.argv[2]],
-                               capture_output=True)
-        if merge.returncode != 1:
-            merge.check_returncode()
-        unmoved_tree, _, unmoved_conflicts = merge.stdout.decode('utf-8', 'surrogateescape').partition('\n')
-        require(unmoved_tree == sys.argv[5] and paths(unmoved_conflicts) == conflicts,
-                'punto 1: la detección de renombres de directorio cambia la mezcla')
         auto = inventory(sys.argv[5])
         require(all(any(path.startswith(prefix) for prefix in dirs) for path in changes(auto, trees[-1])),
                 'punto 1: el árbol fuera de las migraciones difiere de la mezcla')
@@ -401,13 +431,13 @@ PY_EXCEPTIONS
 }
 
 exception=''
-# El código interno 3 indica un rechazo. Cualquier otro fallo impide decidir.
+# El código interno 3 indica rechazo. El 4 indica rechazo por un mensaje de Git.
 exception_status=3
 if [ -n "$shared$conflicted" ]; then
     exception=$(sync_exceptions)
     exception_status=$?
     case $exception_status in
-        0|3) ;;
+        0|3|4) ;;
         *) fail 'falló el validador de excepciones' ;;
     esac
 fi
@@ -418,9 +448,13 @@ if [ "$exception_status" = 0 ] ||
 elif [ "$merge_status" = 1 ]; then
     printf 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos\nResolución: git diff --no-relative %s %s\n' "$auto" "$new"
     printf '%s\n%s' "$conflicted" "$shared" | sed '/^$/d' | LC_ALL=C sort -u
-elif [ "$auto" != "$tree" ]; then
+elif [ "$auto" != "$tree" ] && [ "$exception_status" != 4 ]; then
     printf 'Ronda: el head nuevo no es la mezcla del head revisado con el destino\n'
 else
-    printf 'Ronda delta: el destino cambió archivos del parche\n%s' "$shared"
+    printf 'Ronda delta: el destino cambió archivos del parche\n'
+    if [ "$auto" != "$tree" ]; then
+        printf 'Resolución: git diff --no-relative %s %s\n' "$auto" "$new"
+    fi
+    printf '%s' "$shared"
 fi
 if [ -n "$exception" ]; then printf '%s\n' "$exception"; fi
