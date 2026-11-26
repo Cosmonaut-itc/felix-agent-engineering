@@ -140,10 +140,12 @@ class ComandosConPlazoTests(unittest.TestCase):
                 self.assertNotIn(LINEA_FIJA, errores)
 
     def test_plazo_invalido_no_afecta_al_tick_en_seco(self):
+        self.ocupar()
         codigo, resultado, errores = self.terminar(self.cli(
             "tick", "--seco", entorno={"PAO_TREN_PLAZO_CANDADO_S": "diez"}))
-        self.assertEqual(codigo, 0, errores)
-        self.assertEqual(resultado["modo"], "sombra")
+        self.assertEqual(codigo, 75, errores)
+        self.assertEqual(resultado, {"candado": "ocupado", "registrado": False})
+        self.assertIn(LINEA_FIJA, errores)
 
 
 if __name__ == "__main__":
