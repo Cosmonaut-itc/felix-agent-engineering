@@ -422,7 +422,11 @@ siguiente el lote se congela sobre main. Como en `EsperandoCI`, conservan su
 fecha FIFO aunque un check vuelva a pendiente, hasta entrar al lote siguiente. En `EsperandoCI` sólo se rearma
 mientras el efecto `iniciar-suite` del tren siga `pendiente` en la outbox.
 Desde que deja de estarlo, puede haber coordinadores vivos aunque la fase
-no haya cambiado, y el tren sigue por la suite y la promoción, que pausa
+no haya cambiado. Un efecto `fallido` cuenta como iniciado sólo si el adaptador
+lee de disco que un coordinador pudo arrancar (`iniciado.json`, `codigo.json` o
+el candado tomado, sin red); si falló antes de lanzar, como cuando `disponer`
+no transfiere C, el tren se rearma. Sin esa consulta, como en Hasito, un `fallido`
+sigue contando. Cuando cuenta, el tren sigue por la suite y la promoción, que pausa
 `escritor-externo`. Un tren en `Corriendo` o `Diagnosticando` tampoco se
 rearma por este camino. La misma regla rige al ejecutar la outbox: al
 recuperar tras una muerte, al levantar una pausa o al resolver un juicio,
@@ -1398,7 +1402,14 @@ que la reconciliación previa acreditó como base del CAS. Si falta el objeto,
 el tren lo trae a su almacén bare y lo transfiere desde ahí al repositorio del
 operador, bajo `refs/pao-tren/operador/<SHA>`. La elección del SHA y la
 transferencia local son independientes de los remotos del checkout del
-operador. Jale conserva la comprobación de `origin/main` de su lanzador. Si
+operador. Antes de cada lanzamiento de Jale, el tren transfiere de la misma
+forma el commit que se prueba, como el C recién armado en su clon. El export
+de Boat lee ese commit del repositorio del snapshot y, sin él, cae al desk con
+`export-ValueError`. Si la transferencia falla, el tren pausa en
+`checkout-operador:sha-no-disponible` sin lanzar. Al prelanzar, sólo registra
+el aviso, como cualquier fallo del snapshot. La pausa sólo llega si la
+transferencia vuelve a fallar y el lote llega a `iniciar-suite`.
+Jale conserva la comprobación de `origin/main` de su lanzador. Si
 entra un cambio del lanzador tras fijar el SHA, el 64 pausa la vía en
 `lanzador-rechazo` y el nuevo intento toma otra lectura de `main`.
 

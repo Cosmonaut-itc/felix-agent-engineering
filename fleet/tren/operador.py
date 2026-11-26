@@ -83,6 +83,13 @@ class Snapshots:
             raise FalloSnapshot("sha-no-disponible")
         self.comando_git(checkout, "update-ref", ref, commit)
 
+    def disponer(self, commit):
+        """Trae un commit del clon del tren al repositorio del checkout del operador."""
+        try:
+            self.traer(self.checkout.resolve(), commit)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            raise FalloSnapshot("sha-no-disponible") from None
+
     def relativa(self, valor, checkout):
         if not isinstance(valor, str) or not Path(valor).is_absolute():
             return None

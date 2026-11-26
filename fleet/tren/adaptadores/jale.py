@@ -227,6 +227,13 @@ class Jale:
                    and time.monotonic() < limite):
                 time.sleep(.01)
 
+    def suite_con_coordinador(self, tren_id):
+        """Un coordinador de la suite pudo arrancar: lectura de disco, sin red."""
+        raiz = self.estado / clave('suite', tren_id)
+        return any((registro / 'iniciado.json').exists() or (registro / 'codigo.json').exists()
+                   or lanzamiento_activo(registro / 'candado')
+                   for registro in raiz.glob('*/*') if registro.is_dir())
+
     def prelanzadas_sin_leer(self, tren_id):
         raiz = self.estado / clave('suite', tren_id)
         for modo in MODOS:
@@ -320,6 +327,10 @@ class Jale:
             if self.operador is not None:
                 self.operador.validar_guardado(guardado[1])
                 env = self.operador.entorno_lanzador(guardado[1])
+                # El export de Boat lee el commit del repositorio del snapshot;
+                # un C recién armado sólo existe en el clon del tren.
+                if self.operador.checkout is not None:
+                    self.operador.disponer(commit)
             # Otro coordinador espera el mismo candado y recupera su resultado.
             # La sesión nueva sigue viva aunque muera el proceso del tick.
             try:
