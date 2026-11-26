@@ -137,6 +137,8 @@ if f.get('interrumpida'):
 if host == 'boat':
     encabezado = 'HOST=desktop fallback=sin-lugar' if f.get('fallback') else 'HOST=boat fallback=none'
     linea = encabezado + '\n' + f.get('cobertura', '') + linea
+    if f.get('terminal'):
+        linea += f'RESULT mode={modo} exit={codigo}\nEXIT={codigo}\n'
     sidecar.unlink(missing_ok=True)
 log.write_text(linea)
 sys.exit(codigo)
@@ -1050,6 +1052,33 @@ class JaleTests(Aislado):
         primera, segunda = self.invocaciones()
         self.assertNotEqual(primera['boat']['SEN_RUN_ID'], segunda['boat']['SEN_RUN_ID'])
 
+    def test_boat_terminal_sin_recibo_reanuda_con_otro_registro_e_identidad(self):
+        from test_hasito import GitFalso, verificar_rechazo
+        self.git = GitFalso(self.raiz)
+        self.adaptador = self.Jale(self.lanzador, host='boat')
+
+        def configurar(_):
+            self.plan({'e2e': [{'codigo': 1, 'sin_linea': True, 'terminal': True}, {}]})
+
+        verificar_rechazo(self, 'iniciar-suite', configurar, codigo=1, detalle='boat-sin-recibo')
+        self.assertCountEqual([i['modo'] for i in self.invocaciones()], ['contract', 'e2e', 'e2e'])
+        primera, segunda = [i for i in self.invocaciones() if i['modo'] == 'e2e']
+        self.assertEqual([Path(i['log']).parent.name for i in (primera, segunda)], ['0', '1'])
+        self.assertNotEqual(primera['boat']['SEN_RUN_ID'], segunda['boat']['SEN_RUN_ID'])
+        self.assertCountEqual([a[2] for a in self.lanzamientos()], ['contract', 'e2e', 'e2e'])
+
+    def test_boat_fallback_terminal_sin_recibo_usa_host_guardado(self):
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',))
+        self.plan([{'codigo': 1, 'sin_linea': True, 'terminal': True, 'fallback': True}])
+        raiz, resultado = self.suite()
+        primera, = self.invocaciones()
+        self.assertIn('HOST=desktop fallback=sin-lugar', Path(primera['log']).read_text())
+        self.assertEqual(resultado, RechazoLanzador(primera['log'], 'boat-sin-recibo'))
+
+        self.adaptador = self.Jale(self.lanzador, host='desktop', modos=('contract',))
+        self.assertEqual(self.suite(), (raiz, resultado))
+        self.assertEqual(self.invocaciones(), [primera])
+
     def test_boat_cobertura_parcial_pausa_el_tren_y_reanuda_en_otro_intento(self):
         self.adaptador = self.Jale(self.lanzador, host='boat')
         self.plan({'contract': [
@@ -1084,6 +1113,14 @@ class JaleTests(Aislado):
         self.assertEqual(Path(segunda['log']).parent.name, '1')
         self.assertNotEqual(segunda['boat']['SEN_RUN_ID'], primera['boat']['SEN_RUN_ID'])
         self.assertCountEqual([a[2] for a in self.lanzamientos()], ['contract', 'contract', 'e2e'])
+
+    def test_boat_cobertura_parcial_prevalece_sobre_recibo_invalido_del_otro_modo(self):
+        self.adaptador = self.Jale(self.lanzador, host='boat')
+        self.plan({'contract': [{'malformado': True}],
+                   'e2e': [{'cobertura': 'PARTIAL: boat omitted=1\n'}]})
+        _, resultado = self.suite()
+        e2e = next(i for i in self.invocaciones() if i['modo'] == 'e2e')
+        self.assertEqual(resultado, RechazoLanzador(e2e['log'], 'cobertura-parcial-boat'))
 
     def test_boat_tick_muerto_recupera_los_dos_coordinadores_vivos(self):
         self.adaptador = self.Jale(self.lanzador, host='boat')

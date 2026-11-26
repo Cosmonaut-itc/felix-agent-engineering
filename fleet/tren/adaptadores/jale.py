@@ -79,7 +79,7 @@ def objeto(pares):
     return resultado
 
 
-def leer_recibo(log, codigo, commit, modo, filtros):
+def leer_recibo(log, codigo, commit, modo, filtros, *, host):
     exigir(type(codigo) is int, 'salida-no-utilizable')
     if codigo == 64:
         return RechazoLanzador(str(Path(log).with_name('coordinador.log')))
@@ -97,9 +97,15 @@ def leer_recibo(log, codigo, commit, modo, filtros):
     if not recibos:
         if codigo == 75:
             return None
-        detalle = ('corrida-interrumpida' if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas
-                   else 'salida-sin-recibo')
-        return RechazoLanzador(str(Path(log).with_name('coordinador.log')), detalle)
+        coordinador = str(Path(log).with_name('coordinador.log'))
+        if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas:
+            return RechazoLanzador(coordinador, 'corrida-interrumpida')
+        # Boat republica el resultado terminal al reenviar la misma identidad.
+        if (host == 'boat' and f'EXIT={codigo}' in lineas and
+                any(linea.startswith('RESULT ') and f'exit={codigo}' in linea.split()
+                    for linea in lineas)):
+            return RechazoLanzador(str(log), 'boat-sin-recibo')
+        return RechazoLanzador(coordinador, 'salida-sin-recibo')
     exigir(len(recibos) == 1, 'salida-sin-recibo')
     exigir(0 <= codigo <= 255, 'salida-no-utilizable')
     match = re.fullmatch(r'RECIBO jale-recibo@1 ([A-Za-z0-9+/]+={0,2})', recibos[0])
@@ -156,7 +162,8 @@ def leer_salida(registro, log, codigo, commit, modo, filtros):
     estado = leer_json(codigo)
     if estado == 75 and leer_pendiente_boat(log) is not None:
         return None
-    resultado = leer_recibo(log, estado, commit, modo, filtros)
+    host = leer_json(registro / 'solicitud.json')[2]
+    resultado = leer_recibo(log, estado, commit, modo, filtros, host=host)
     # Tras un reenganche la tarea original puede seguir viva: un 64 no autoriza otra clave.
     if (isinstance(resultado, RechazoLanzador) and resultado.detalle == 'lanzador-rechazo' and
             any(registro.glob('codigo-reenganche-*.json'))):
@@ -228,7 +235,7 @@ class Jale:
                 if not isinstance(id_corrida, str) or not re.fullmatch(
                         r'[A-Za-z0-9._-]{8,128}', id_corrida):
                     id_corrida = None
-                yield {'tren': tren_id, 'clave': id_corrida,
+                yield {'tren': tren_id, 'modo': modo, 'clave': id_corrida,
                        'terminada': (registro / 'codigo.json').exists()}
 
     def lanzar(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None,
@@ -364,14 +371,15 @@ class Jale:
                 recibos.append(self.recoger_corrida(registro, proceso, candidato.C, modo, ()))
             except ResultadoInvalido as exc:
                 recibos.append(exc)
-        for r in recibos:
-            if isinstance(r, ResultadoInvalido):
-                raise r
+        rechazos = [r for r in recibos if isinstance(r, RechazoLanzador)]
+        if not any(r.detalle == 'cobertura-parcial-boat' for r in rechazos):
+            for r in recibos:
+                if isinstance(r, ResultadoInvalido):
+                    raise r
         if reenganche and any(proceso is False and
                               str(registro / 'coordinador.log') == reenganche[1]
                               for _, registro, proceso in lanzadas):
             return None
-        rechazos = [r for r in recibos if isinstance(r, RechazoLanzador)]
         if rechazos:
             # Un salida-sin-recibo se reengancha a su envío; los demás rechazos abren otro intento.
             return str(raiz), next((r for r in rechazos if r.detalle == 'salida-sin-recibo'),

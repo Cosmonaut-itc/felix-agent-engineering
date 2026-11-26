@@ -307,7 +307,7 @@ class TickActivoTests(Productor, unittest.TestCase):
             registro = Jale(self.lanzador).estado / clave('suite', tren.id) / modo / '0'
             self.esperar_archivo(registro / 'codigo.json')
             iniciado = json.loads((registro / 'iniciado.json').read_text())
-            esperado.append(dict(tren=tren.id, clave=iniciado['clave'], terminada=True))
+            esperado.append(dict(tren=tren.id, modo=modo, clave=iniciado['clave'], terminada=True))
         self.hasta(Terminal)
         self.assertCountEqual(self.eventos('suite-prelanzada-sin-leer'), esperado)
         self.tick()

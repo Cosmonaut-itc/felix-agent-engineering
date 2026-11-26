@@ -266,6 +266,17 @@ class TablaTests(unittest.TestCase):
         self.assertEqual(politica(Pausa("motivo-futuro")), {})
         self.assertEqual(politica(Pausa("necesita-juicio", detalle="detalle-futuro")), {})
 
+    def test_tabla_documenta_pausas_de_boat(self):
+        readme = (activo.RAIZ / "README.md").read_text()
+        tabla = readme.split("| Motivo de pausa | Detalle | Decisiones admitidas y efecto |", 1)[1]
+        filas = tabla.split("\n\n", 1)[0].splitlines()
+        for detalle in ("cobertura-parcial-boat", "boat-sin-recibo"):
+            with self.subTest(detalle=detalle):
+                fila, = [fila for fila in filas if fila.startswith("| `infraestructura` |") and
+                         f"`{detalle}`" in fila.split("|")[2]]
+                self.assertIn("`reanudar`", fila)
+                self.assertIn("`abortar`", fila)
+
 
 if __name__ == "__main__":
     unittest.main()
