@@ -345,7 +345,7 @@ class VM:
                                  if item['evento'] in ('arranque', 'encendida', 'apagada')
                                  and item.get('id') == self.id), None)
                 except (OSError, KeyError, TypeError, ValueError, OverflowError):
-                    raise JournalError(self.name) from None
+                    kind = UNREADABLE_POWER_EVENT
                 self._power_event = (version, kind)
             _, kind = self._power_event
             if kind is UNREADABLE_POWER_EVENT:

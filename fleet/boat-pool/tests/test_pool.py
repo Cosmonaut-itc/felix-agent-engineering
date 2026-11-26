@@ -697,6 +697,45 @@ class Harness(unittest.TestCase):
             self.assertEqual(instance.ask_order(candidates, 'e2e')[0].name, NAME)
             self.assertEqual(scan.call_count, 2)
 
+    def test_review_7485_pedir_descarta_una_linea_json_sin_evento(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'), places=2)
+        self.assertEqual(self.run_cli('apagar', other)[0], 0)
+        self.assertEqual(self.run_cli('encender', other)[0], 0)
+        journal = self.state / 'vms' / other / 'eventos.jsonl'
+        journal.write_bytes(b'{}\n' + journal.read_bytes())
+
+        code, output, stderr = self.run_cli(*self.args('fragmento', 'e2e'))
+        granted_vm = json.loads(output)['vm'] if output else None
+        self.assertEqual((code, granted_vm, stderr), (0, NAME, ''))
+
+    def test_review_7485_pedir_conserva_causa_si_falla_recuperar_arriendo(self):
+        token = self.get_lease('contrato', 'contract')
+        append = pool.append_event
+
+        def interrupted_append(path, event):
+            if event['evento'] == 'soltado':
+                raise OSError('escritura interrumpida')
+            append(path, event)
+
+        with patch.object(pool, 'append_event', side_effect=interrupted_append):
+            self.assertEqual(self.run_cli('soltar', token)[0], 75)
+        directory = self.state / 'vms' / NAME
+        self.assertTrue((directory / 'arriendo-pendiente.json').is_file())
+        journal = directory / 'eventos.jsonl'
+        journal.write_bytes(b'no es JSON\n' + journal.read_bytes())
+
+        code, output, stderr = self.run_cli(*self.args('fragmento', 'e2e'))
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'))
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], other)
+        with pool.lock(directory / 'lock', wait=False) as acquired:
+            self.assertTrue(acquired)
+        self.assertEqual((code, output, stderr.split(': ')[:2]), (75, '', ['boat-pool', 'apagado']),
+                         stderr)
+
     def test_arriendo_vencido_y_soltar_idempotente(self):
         lease = self.get_lease('caduca', 'contract', '--ttl', '300')
         self.api.now += 301
