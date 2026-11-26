@@ -645,8 +645,13 @@ def mac_capacity():
     return dict(cores=cores, load=load, psi_avg60=None), dict(total=total, available=available, swap_total=swap['total'], swap_used=swap['used'])
 
 
-def linux_processes(proc, deadline=None):
-    """Una lectura de contadores; ningún texto privado entra al resultado público."""
+def linux_processes(proc, deadline=None, children_first=None):
+    """Una lectura de contadores; ningún texto privado entra al resultado público.
+
+    Con children_first, un segundo barrido ordenado por arranque relee cada proceso: si un padre
+    cosecha a un hijo a mitad del barrido, la cuenta sólo puede quedarse corta, nunca sumar la
+    historia del hijo. La primera lectura de una muestra va de hijos a padres y la última al revés.
+    """
     lines = (proc / 'stat').read_text().splitlines()
     ticks = [int(n) for n in lines[0].split()[1:9]]
     boot = next((int(line.split()[1]) for line in lines if line.startswith('btime ')), None)
@@ -655,23 +660,25 @@ def linux_processes(proc, deadline=None):
         now = float((proc / 'uptime').read_text().split()[0]) * hertz
     except (OSError, ValueError, IndexError):
         now = 0
-    rows = {}
-    for path in proc.iterdir():
+    def read(pid):
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError()
-        if not path.name.isdigit():
-            continue
         try:
-            text = (path / 'stat').read_text()
+            text = (proc / str(pid) / 'stat').read_text()
             name, _, tail = text.partition('(')[2].rpartition(')')
             fields = tail.split()
             # cutime+cstime: la CPU de los hijos ya cosechados sigue en el árbol.
-            rows[int(path.name)] = dict(ppid=int(fields[1]), ticks=int(fields[11]) + int(fields[12]),
-                                        reaped=int(fields[13]) + int(fields[14]),
-                                        start=int(fields[19]), mem=max(0, int(fields[21])) * os.sysconf('SC_PAGE_SIZE'),
-                                        born=boot + int(fields[19]) / hertz if boot else None, daemon=name == 'pueued')
+            return dict(ppid=int(fields[1]), ticks=int(fields[11]) + int(fields[12]),
+                        reaped=int(fields[13]) + int(fields[14]),
+                        start=int(fields[19]), mem=max(0, int(fields[21])) * os.sysconf('SC_PAGE_SIZE'),
+                        born=boot + int(fields[19]) / hertz if boot else None, daemon=name == 'pueued')
         except (OSError, ValueError, IndexError):  # procesos que terminaron durante la lectura
-            continue
+            return None
+    rows = {pid: row for pid in (int(path.name) for path in proc.iterdir() if path.name.isdigit())
+            if (row := read(pid))}
+    if children_first is not None:
+        order = sorted(rows, key=lambda pid: (rows[pid]['start'], pid), reverse=children_first)
+        rows = {pid: row for pid in order if (row := read(pid))}
     return (sum(ticks), sum(ticks) - ticks[3] - ticks[4], now), rows
 
 
@@ -686,11 +693,11 @@ def process_sample(mode, cores, proc, deadline):
                                   argv=argv, daemon=bool(re.match(r'(?:\S*/)?pueued(?:\s|$)', argv)))
         return 0, sum(row['cpu'] for row in rows.values()), rows
     started = time.monotonic()
-    first, before = linux_processes(proc, deadline)
+    first, before = linux_processes(proc, deadline, children_first=True)
     if deadline - time.monotonic() < 1:
         raise TimeoutError()
     time.sleep(1)
-    last, rows = linux_processes(proc, deadline)
+    last, rows = linux_processes(proc, deadline, children_first=False)
     interval = time.monotonic() - started
     total = last[0] - first[0]
     if total <= 0:

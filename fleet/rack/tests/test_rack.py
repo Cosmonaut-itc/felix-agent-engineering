@@ -286,6 +286,41 @@ class UsageTests(unittest.TestCase):
         self.assertAlmostEqual(out['tasks'][0]['usage']['cpu'], (10 + 200 + 30) * 12 / 1200)
         self.assertAlmostEqual(usage['outside']['cpu'], 12 - 2.4)
 
+    def test_linux_reap_mid_scan_never_adds_child_history(self):
+        """Un padre que cosecha a un hijo en cualquier momento de la muestra no suma la historia del hijo."""
+        read_text = Path.read_text
+        for moment in range(0, 20):  # 0: durante la pausa; luego antes de cada lectura de un stat.
+            with self.subTest(moment=moment):
+                (self.root / 'stat').write_text('cpu 0 0 0 0 0 0 0 0\nbtime 1000\n')
+                self.proc_row(10, 1, 0, name='pueued')
+                self.proc_row(20, 10, 100, argv='bash /private/job-12345678/task.sh', start=5)
+                self.proc_row(22, 20, 5000, start=7)
+                reads, phase = [], [1]
+                def reap():
+                    if (self.root / '22').exists():
+                        shutil.rmtree(self.root / '22')
+                        self.proc_row(20, 10, 100 if phase[0] == 1 else 110, argv='bash /private/job-12345678/task.sh', start=5, cticks=5000)
+                def reading(path, *args, **kwargs):
+                    if path.name == 'stat' and path.parent.name.isdigit():
+                        reads.append(path)
+                        if len(reads) == moment:
+                            reap()
+                    return read_text(path, *args, **kwargs)
+                def advance(seconds):
+                    if moment == 0:
+                        reap()
+                    phase[0] = 2
+                    (self.root / 'stat').write_text('cpu 1200 0 0 0 0 0 0 0\nbtime 1000\n')
+                    cticks = 5000 if not (self.root / '22').exists() else 0
+                    self.proc_row(20, 10, 110, argv='bash /private/job-12345678/task.sh', start=5, cticks=cticks)
+                out = self.output()
+                with patch.object(Path, 'read_text', autospec=True, side_effect=reading), \
+                        patch.object(snapshot.time, 'sleep', side_effect=advance):
+                    snapshot.collect_usage(out, {1: 'job-12345678'}, 'linux', self.root)
+                # Los 10 ticks propios del padre son la única CPU del intervalo.
+                self.assertAlmostEqual(out['tasks'][0]['usage']['cpu'], 10 * 12 / 1200)
+                shutil.rmtree(self.root / '22', ignore_errors=True)
+
     def test_macos_collect_single_ps_and_pid_container_without_cwd(self):
         raw = dict(groups={'suites': dict(status='Running', parallel_tasks=3)}, tasks={
             '1': dict(id=1, group='suites', status='Running', path='/private/remote-run/runs/run-1'),
