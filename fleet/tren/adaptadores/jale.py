@@ -3,6 +3,7 @@ import base64
 import binascii
 import fcntl
 import hashlib
+from itertools import islice
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -170,7 +171,8 @@ class Jale:
     firma_distingue_fallo = False
 
     def __init__(self, lanzador, git=None, host='auto', modos=MODOS, estado=None, *,
-                 resolver_lanzador=True, prelanzar=False, boat_esperar_s=ESPERA_BOAT_S):
+                 resolver_lanzador=True, prelanzar=False, boat_esperar_s=ESPERA_BOAT_S,
+                 repeticiones_paralelas=1):
         if not (isinstance(modos, (tuple, list)) and modos and
                 all(m in MODOS for m in modos) and len(set(modos)) == len(modos)):
             raise ValueError('modos-invalidos')
@@ -182,8 +184,11 @@ class Jale:
             raise ValueError('prelanzar-invalido')
         if type(boat_esperar_s) is not int or not 0 <= boat_esperar_s <= 7200:
             raise ValueError('boat-esperar-invalido')
+        if type(repeticiones_paralelas) is not int or not 1 <= repeticiones_paralelas <= 8:
+            raise ValueError('repeticiones-paralelas-invalidas')
         self.prelanzar_habilitado = prelanzar
         self.boat_esperar_s = boat_esperar_s
+        self.repeticiones_paralelas = repeticiones_paralelas
         self.lanzador = str(Path(lanzador).resolve()) if resolver_lanzador else str(lanzador)
         self.lanzador_configurado = str(lanzador)
         self.operador = None
@@ -205,12 +210,17 @@ class Jale:
         raiz = self.estado / clave('suite', tren_id)
         lanzadas = []
         for modo in self.modos:
-            if not (raiz / modo / 'completo.json').exists():
-                registro = raiz / modo / '0'
-                proceso = self.lanzar(registro, candidato.C, modo, (), True, tren_id,
-                                      prelanzamiento=True)
-                if proceso:
-                    lanzadas.append((registro / 'candado', proceso))
+            self.prelanzar_corrida(raiz / modo, candidato.C, modo, (), tren_id, lanzadas)
+        self.esperar_prelanzadas(lanzadas)
+
+    def prelanzar_corrida(self, raiz, commit, modo, filtros, tren_id, lanzadas):
+        if not (raiz / 'completo.json').exists():
+            registro = raiz / '0'
+            proceso = self.lanzar(registro, commit, modo, filtros, True, tren_id, prelanzamiento=True)
+            if proceso:
+                lanzadas.append((registro / 'candado', proceso))
+
+    def esperar_prelanzadas(self, lanzadas):
         limite = time.monotonic() + PLAZO_PRELANZAMIENTO_S
         for candado, proceso in lanzadas:
             while (proceso.poll() is None and not lanzamiento_activo(candado)
@@ -396,13 +406,12 @@ class Jale:
         return str(ruta), Completo('rojo' if fallos or restantes else 'verde', fallos,
             sum(u['duracion_s'] for r in recibos for u in r['unidades']), restantes)
 
-    def repetir(self, candidato, suite, solicitud, commit, tren_id, intento=0, reanudar='',
-                permitir_lanzar=True, *, reenganche=None):
+    def preparar_repeticion(self, candidato, suite, solicitud, commit, tren_id, reanudar='',
+                            permitir_lanzar=True):
         fallo = solicitud.fallo
         exigir(fallo.parte == 'jale' and fallo.check in self.modos, 'seleccion-no-corresponde')
         raiz = self.estado / clave('repetir', tren_id, solicitud.id)
-        base = (self.estado / clave('base', commit, fallo.check, fallo.unidad)
-                if commit == candidato.B else None)
+        base = self.cache_de_base(candidato, commit, fallo)
         exigir(not reanudar or reanudar == str(raiz), 'reanudar-no-corresponde')
         origen = leer_json(suite)
         exigir(isinstance(origen, list) and all(isinstance(r, dict) for r in origen) and
@@ -414,39 +423,115 @@ class Jale:
             exigir(self.git is not None, 'subconjunto-sin-git')
             publicado = self.git.publicar('subconjunto-' + clave(tren_id, commit), commit)
             exigir(isinstance(publicado, Publicado), 'subconjunto-no-publicado')
+        return raiz, base
+
+    def cache_de_base(self, candidato, commit, fallo):
+        return (self.estado / clave('base', commit, fallo.check, fallo.unidad)
+                if commit == candidato.B else None)
+
+    def adelanto(self, candidato, tren_id, solicitud):
+        raiz = self.estado / clave('repetir', tren_id, solicitud.id)
+        base = (self.cache_de_base(candidato, candidato.B, solicitud.fallo)
+                if solicitud.objetivo == 'B' else None)
+        if any(lanzamiento_activo(raiz / n / '0' / 'candado') for n in ('1', '2')):
+            return 'vivo'
+        return 'terminado' if all(
+            (raiz / n / '0' / 'codigo.json').exists() or
+            (base is not None and (base / n / 'registro.json').exists())
+            for n in ('1', '2')) else ''
+
+    def adelantar_repeticiones(self, candidato, suite, pedidos, tren_id):
+        if self.repeticiones_paralelas == 1:
+            return
+        lanzadas = []
+        try:
+            for solicitud, commit in islice(pedidos, self.repeticiones_paralelas - 1):
+                raiz, base = self.preparar_repeticion(candidato, suite, solicitud, commit, tren_id)
+                fallo = solicitud.fallo
+                for n in ('1', '2'):
+                    if base is None or not (base / n / 'registro.json').exists():
+                        self.prelanzar_corrida(raiz / n, commit, fallo.check,
+                                              (fallo.unidad,), tren_id, lanzadas)
+        finally:
+            self.esperar_prelanzadas(lanzadas)
+
+    def repetir(self, candidato, suite, solicitud, commit, tren_id, intento=0, reanudar='',
+                permitir_lanzar=True, *, reenganche=None):
+        raiz, base = self.preparar_repeticion(candidato, suite, solicitud, commit, tren_id,
+                                              reanudar, permitir_lanzar)
+        fallo = solicitud.fallo
+        filtros = (fallo.unidad,)
+
+        def lanzar_intentos():
+            for n in (1, 2):
+                cache = base / str(n) / 'registro.json' if base is not None else None
+                cache_disponible = cache is not None and cache.exists()
+                raiz_corrida = raiz / str(n)
+                log = raiz_corrida / str(intento) / 'coordinador.log'
+                # Otro tren pudo completar el caché mientras éste estaba pausado.
+                desde_base = cache_disponible and not (reenganche and reenganche[1] == str(log))
+                if desde_base:
+                    puntero = leer_json(cache)
+                    exigir(isinstance(puntero, str) and re.fullmatch(
+                        r'[0-9a-f]{64}/' + str(n) + r'/[0-9]+', puntero), 'cache-invalida')
+                    registro = self.estado / puntero
+                    proceso = self.lanzar(registro, commit, fallo.check, filtros, False)
+                else:
+                    registro, proceso = self.lanzar_corrida(raiz_corrida, commit, fallo.check,
+                        filtros, intento, permitir_lanzar, tren_id, reenganche)
+                yield n, cache, cache_disponible, desde_base, registro, proceso
+                if proceso is False:
+                    return
+
         intentos = []
-        for n in (1, 2):
-            cache = base / str(n) / 'registro.json' if base is not None else None
-            cache_disponible = cache is not None and cache.exists()
-            raiz_corrida = raiz / str(n)
-            log = raiz_corrida / str(intento) / 'coordinador.log'
-            # Otro tren pudo completar el caché mientras éste estaba pausado.
-            if cache_disponible and not (reenganche and reenganche[1] == str(log)):
-                puntero = leer_json(cache)
-                exigir(isinstance(puntero, str) and re.fullmatch(
-                    r'[0-9a-f]{64}/' + str(n) + r'/[0-9]+', puntero), 'cache-invalida')
-                ultimo = self.estado / puntero
-                proceso = self.lanzar(ultimo, commit, fallo.check, (fallo.unidad,), False)
-                r = self.recoger(ultimo, proceso, commit, fallo.check, (fallo.unidad,))
-                exigir(isinstance(r, dict) and r['codigo'] != 75, 'cache-invalida')
-            else:
-                ultimo, proceso = self.lanzar_corrida(raiz_corrida, commit, fallo.check,
-                    (fallo.unidad,), intento, permitir_lanzar, tren_id, reenganche)
-                r = self.recoger_corrida(ultimo, proceso, commit, fallo.check, (fallo.unidad,))
-                if isinstance(r, dict) and r['codigo'] != 75:
-                    if cache is not None and not cache_disponible:
-                        cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                        guardar(cache, str(ultimo.relative_to(self.estado)))
+        lanzadas = lanzar_intentos()
+        fallo_al_lanzar = None
+        if self.repeticiones_paralelas > 1:
+            simultaneas = []
+            try:
+                simultaneas.extend(lanzadas)
+            except ResultadoInvalido as exc:
+                fallo_al_lanzar = exc
+            lanzadas = simultaneas
+            if any(proceso is False for *_, proceso in lanzadas):
+                return None
+        rechazo = None
+        for n, cache, cache_disponible, desde_base, ultimo, proceso in lanzadas:
+            try:
+                if desde_base:
+                    r = self.recoger(ultimo, proceso, commit, fallo.check, filtros)
+                    exigir(isinstance(r, dict) and r['codigo'] != 75, 'cache-invalida')
+                else:
+                    r = self.recoger_corrida(ultimo, proceso, commit, fallo.check, filtros)
+                    if isinstance(r, dict) and r['codigo'] != 75:
+                        if cache is not None and not cache_disponible:
+                            cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                            guardar(cache, str(ultimo.relative_to(self.estado)))
+            except ResultadoInvalido:
+                if rechazo is None:
+                    raise
+                continue
+            if rechazo is not None:
+                continue
             if r is False:
                 return None
             if isinstance(r, RechazoLanzador):
-                return r
+                if self.repeticiones_paralelas == 1:
+                    return r
+                # El otro intento ya corre: su recibo queda en la caché y el
+                # intento siguiente no lo vuelve a lanzar.
+                rechazo = r
+                continue
             if r is None or r['codigo'] == 75:
                 return Incompleto(75, str(raiz))
             u = r['unidades'][0]
             intentos.append(Intento(n, 'omitida' if u['resultado'] == 'no-corrida' else
                 u['resultado'], u['firma'], u['duracion_s'], str(ultimo.parent),
                 json.dumps(r['huella_entorno'], sort_keys=True)))
+        if rechazo is not None:
+            return rechazo
+        if fallo_al_lanzar is not None:
+            raise fallo_al_lanzar
         return Repeticion(commit, candidato.C, candidato.B,
             hashlib.sha256(Path(suite).read_bytes()).hexdigest(),
             (UnidadRepetida(fallo.check, fallo.unidad, fallo.parte,

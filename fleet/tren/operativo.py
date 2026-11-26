@@ -96,7 +96,8 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     if not estado.pausa and any(isinstance(t.fase, Diagnosticando) for t in estado.trenes):
         observacion = replace(
             observacion, absoluciones_recientes=ledger.absoluciones_recientes(repo, ahora),
-            firma_distingue_fallo=getattr(adaptador, "firma_distingue_fallo", False) is True)
+            firma_distingue_fallo=getattr(adaptador, "firma_distingue_fallo", False) is True,
+            repeticiones_en_paralelo=getattr(adaptador, "repeticiones_paralelas", 1) > 1)
     previo.limpiar(estado, observacion)
 
     def prelanzadas(nuevo):

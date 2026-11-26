@@ -253,6 +253,21 @@ class Evidencia:
     resultado: Repeticion
 
 
+def costo_atribucion(evidencias, en_paralelo=False, *, siguiente=None):
+    costos = [(e.solicitud, max(e.solicitud.costo_s,
+        sum(i.duracion_s for u in e.resultado.unidades for i in u.intentos)))
+        for e in evidencias]
+    if siguiente is not None:
+        costos.append((siguiente, siguiente.costo_s))
+    if not en_paralelo:
+        return sum(costo for _, costo in costos)
+    tandas = {}
+    for solicitud, costo in costos:
+        grupo = len(solicitud.prs) if solicitud.objetivo == "subconjunto" else 0
+        tandas[grupo] = max(tandas.get(grupo, 0), costo)
+    return sum(tandas.values())
+
+
 @dataclass(frozen=True)
 class Causa:
     fallo: Fallo
@@ -427,6 +442,7 @@ class Observacion:
     absoluciones_recientes: Tuple[Tuple[str, int], ...] = ()
     archivos_lote: Optional[Tuple[str, ...]] = None
     firma_distingue_fallo: bool = False
+    repeticiones_en_paralelo: bool = False
 
 
 @dataclass(frozen=True)
@@ -731,6 +747,7 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
     from atribucion import planificar
     fase = tren.fase
     ligada = observacion.tren_id == tren.id
+    en_paralelo = observacion.repeticiones_en_paralelo
     if isinstance(fase, Corriendo):
         resultado = observacion.resultado_suite if (ligada and
             observacion.suite_intento == intento_suite(fase) and
@@ -800,10 +817,8 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
         elif fase.esperar_hasta is not None:
             if observacion.ahora < fase.esperar_hasta or not despachar:
                 return cambiar_fase(estado, tren, fase), ()
-            gastado = sum(max(e.solicitud.costo_s,
-                sum(i.duracion_s for u in e.resultado.unidades for i in u.intentos))
-                for e in fase.evidencias)
-            if gastado + fase.costo_infra_s + 2 * s.costo_s > fase.presupuesto_s:
+            costo = costo_atribucion(fase.evidencias, en_paralelo, siguiente=s)
+            if costo + fase.costo_infra_s + s.costo_s > fase.presupuesto_s:
                 return replace(cambiar_fase(estado, tren, fase), pausa=Pausa(
                     "necesita-juicio", detalle="presupuesto-agotado-en-reanudacion")), ()
             fase = replace(fase, esperar_hasta=None, reanudaciones=fase.reanudaciones + 1,
@@ -812,12 +827,13 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
     if fase.pendiente is None:
         prs = tuple(pr for pr, _, _ in fase.candidato.eslabones)
         presupuesto = fase.presupuesto_s - fase.costo_infra_s
-        plan = planificar(fase.fallos, prs, fase.evidencias, presupuesto)
+        plan = planificar(fase.fallos, prs, fase.evidencias, presupuesto, en_paralelo=en_paralelo)
         if (plan.incierto.startswith(("confirmacion-candidato:", "confirmacion-base:")) and
                 not fase.restantes and len(fase.fallos) <= 2 and
                 archivos_acreditados(fase, observacion)):
             automatico = planificar(fase.fallos, prs, fase.evidencias, presupuesto, absolver=True,
-                                    firma_distingue_fallo=observacion.firma_distingue_fallo)
+                                    firma_distingue_fallo=observacion.firma_distingue_fallo,
+                                    en_paralelo=en_paralelo)
             if automatico is not None and not automatico.incierto:
                 recientes = dict(observacion.absoluciones_recientes)
                 for absolucion in automatico.absoluciones:

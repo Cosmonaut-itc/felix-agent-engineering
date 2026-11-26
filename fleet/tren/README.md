@@ -446,7 +446,7 @@ se usa como fallo: espera 5, 15 y 60 minutos según `Observacion.ahora`, y
 pausa `infraestructura` al agotarse las tres reanudaciones. La misma regla
 se aplica a las repeticiones; su costo también consume el presupuesto.
 
-`atribucion.planificar` es puro y emite un ensayo por vez. Confirma cada
+`atribucion.planificar` es puro y elige la siguiente reproducción. Confirma cada
 unidad con dos intentos sobre C y dos sobre B. Exige la misma firma estable
 en C y pases positivos en B para atribuir; la misma firma estable en B es
 preexistente. Una firma vacía del origen requiere firmas nuevas estables y
@@ -459,14 +459,23 @@ pueden ordenar los ensayos de atribución. Se guardan todos los mínimos observa
 Sin culpables, certifica sólo si la suite no dejó `restantes`; si el
 fail-fast cortó checks, pausa `necesita-juicio` con `suite-incompleta`.
 
-Presupuesto: `min(3600 s-máquina, 0.5 * costo_suite_sana_s)`. La medida sana
+Una tanda reúne las confirmaciones pendientes y los subconjuntos del tamaño
+en curso que pueden probarse con la evidencia disponible. Con
+`repeticiones_paralelas` mayor que 1, Jale corre a la vez los dos intentos de
+cada reproducción y adelanta las demás de la tanda hasta el límite configurado.
+El reductor conserva un solo pendiente y consume las reproducciones una por una.
+
+Presupuesto: `min(3600 s, 0.5 * costo_suite_sana_s)`. La medida sana
 viene de `Observacion.costo_suite_sana_s` o de la última suite verde limpia
 guardada en `Estado`; si falta, pausa para juicio. No se estima una suite
 sana desde una suite roja cortada. Cada ensayo reserva dos veces el máximo
 entre segundos del check original y duraciones por intento ya observadas;
-el consumo es el máximo entre reserva y costo observado. Es conservador al
-no existir tiempos por unidad en el recibo original. Sin duración o sin
-saldo, no despacha la reproducción. Cada reanudación reserva otro ensayo.
+el consumo es el máximo entre reserva y costo observado. Sin duración o sin
+saldo, no despacha la reproducción. En serie se suman los costos. Con
+`repeticiones_paralelas` mayor que 1 se suma el mayor costo de cada tanda
+presupuestaria (todas las confirmaciones juntas y un grupo por tamaño de
+subconjunto), aunque el host haya puesto las corridas en fila. El costo de
+infraestructura de cada reanudación se suma aparte.
 
 Los culpables reciben `Entrada.terminal=Terminal("DEVUELTO")`; `devolver`
 es sólo un dato idempotente por PR, con lote, B, C, fallos, firmas, conjuntos
@@ -1332,6 +1341,20 @@ configurado en Boat usan `auto`.
 publica C y pide su CI. La clave es booleana, vale `false` por omisión y se
 lee en cada tick. Apagarla surte efecto en el tick siguiente sin instalar.
 
+`"repeticiones_paralelas"` acepta enteros de 1 a 8 y se lee en cada tick.
+Con 1, el valor por omisión, los intentos corren en serie. Con un valor N
+mayor, cada efecto `repetir` adelanta reproducciones de la tanda hasta
+completar N vivas: cuentan la pendiente y las adelantadas de la tanda cuyo
+coordinador sigue vivo. Una adelantada que ya terminó no ocupa lugar ni se
+vuelve a lanzar. Si uno de los dos intentos simultáneos de una reproducción
+sale con un rechazo del lanzador, el efecto recoge antes el otro intento. Si
+ese intento deja un recibo válido con código distinto de 75, queda en la
+caché y el intento que abre `absolver` o `reanudar` no lo vuelve a lanzar.
+El efecto espera a que ese otro intento termine antes de devolver el
+rechazo, como la suite espera a todos sus modos: la pausa se declara cuando
+ya no queda ninguna corrida de la reproducción en vuelo.
+Las corridas filtradas conservan el host que decide `host_de`.
+
 ### Checkout del operador
 
 `checkout_operador` es un campo opcional del objeto de configuración privada
@@ -1422,6 +1445,10 @@ registra el modo, la clave de la corrida (si llegó a escribirse) y si ya
 terminó. Cada corrida sigue en el host hasta terminar y su resultado queda
 sin consumir.
 SEN-7331 añadirá la cancelación.
+
+Las reproducciones adelantadas también quedan en el host hasta terminar
+si el tren se pausa o termina. El reductor sólo consume su salida si llega
+a pedirlas y el efecto las confirma con los miembros admitidos.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
