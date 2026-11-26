@@ -1396,7 +1396,12 @@ que la reconciliación previa acreditó como base del CAS. Si falta el objeto,
 el tren lo trae a su almacén bare y lo transfiere desde ahí al repositorio del
 operador, bajo `refs/pao-tren/operador/<SHA>`. La elección del SHA y la
 transferencia local son independientes de los remotos del checkout del
-operador. Jale conserva la comprobación de `origin/main` de su lanzador. Si
+operador. Antes de cada lanzamiento de Jale, el tren transfiere de la misma
+forma el commit que se prueba, como el C recién armado en su clon. El export
+de Boat lee ese commit del repositorio del snapshot y, sin él, cae al desk con
+`export-ValueError`. Si la transferencia falla, el tren pausa en
+`checkout-operador:sha-no-disponible` sin lanzar.
+Jale conserva la comprobación de `origin/main` de su lanzador. Si
 entra un cambio del lanzador tras fijar el SHA, el 64 pausa la vía en
 `lanzador-rechazo` y el nuevo intento toma otra lectura de `main`.
 

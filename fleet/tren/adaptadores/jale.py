@@ -320,6 +320,10 @@ class Jale:
             if self.operador is not None:
                 self.operador.validar_guardado(guardado[1])
                 env = self.operador.entorno_lanzador(guardado[1])
+                # El export de Boat lee el commit del repositorio del snapshot;
+                # un C recién armado sólo existe en el clon del tren.
+                if self.operador.checkout is not None:
+                    self.operador.disponer(commit)
             # Otro coordinador espera el mismo candado y recupera su resultado.
             # La sesión nueva sigue viva aunque muera el proceso del tick.
             try:
