@@ -617,8 +617,6 @@ class Pool:
         stop = info.get('stop')
         if state in READY and isinstance(stop, dict) and stop.get('status') in ('pending', 'failing'):
             return 'archiving'
-        if state in READY and vm.last_power_event() == 'apagada':
-            append_event(vm.journal, vm.event('encendida', self.now()))
         return state
 
     def stop_pending(self, operation):
