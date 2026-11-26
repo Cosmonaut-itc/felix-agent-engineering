@@ -242,6 +242,9 @@ class JaleTests(Aislado):
     def test_sen7030_recuperar_repetir(self):
         self.verificar_rechazo("repetir", recuperacion=True)
 
+    def test_repeticion_sin_recibo_absuelta_desde_diagnostico(self):
+        self.verificar_rechazo('repetir', codigo=127, decision='absolver')
+
     def test_sen7124_recuperar_repeticion_fallida_y_reanudar(self):
         self.verificar_rechazo('repetir', codigo=127, recuperacion=True)
         rechazados = [log for _, log, *_ in self.lanzamientos()
