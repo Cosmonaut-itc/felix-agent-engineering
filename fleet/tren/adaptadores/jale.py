@@ -227,6 +227,13 @@ class Jale:
                    and time.monotonic() < limite):
                 time.sleep(.01)
 
+    def suite_con_coordinador(self, tren_id):
+        """Un coordinador de la suite pudo arrancar: lectura de disco, sin red."""
+        raiz = self.estado / clave('suite', tren_id)
+        return any((registro / 'iniciado.json').exists() or (registro / 'codigo.json').exists()
+                   or lanzamiento_activo(registro / 'candado')
+                   for registro in raiz.glob('*/*') if registro.is_dir())
+
     def prelanzadas_sin_leer(self, tren_id):
         raiz = self.estado / clave('suite', tren_id)
         for modo in MODOS:

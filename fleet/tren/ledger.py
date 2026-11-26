@@ -276,11 +276,18 @@ class Ledger:
         estado = desde_datos(json.loads(fila[0])["estado"])
         return {tren.id for tren in estado.trenes if isinstance(tren.fase, Terminal)}
 
-    def efecto_iniciado(self, repo, clave):
-        """El efecto pasó por iniciar_efecto en algún tick: su IO pudo ocurrir."""
-        return self.db.execute(
-            "SELECT 1 FROM effects e JOIN outbox o ON o.clave=e.clave "
-            "WHERE e.repo=? AND e.clave=? AND o.estado!='pendiente'", (repo, clave)).fetchone() is not None
+    def efecto_iniciado(self, repo, clave, evidencia=None):
+        """El efecto pasó por iniciar_efecto en algún tick: su IO pudo ocurrir.
+
+        Un efecto fallido pudo no llegar a su IO (falla antes de lanzar). Con
+        `evidencia`, sólo cuenta si esa lectura sin red confirma que arrancó.
+        """
+        fila = self.db.execute(
+            "SELECT o.estado FROM effects e JOIN outbox o ON o.clave=e.clave "
+            "WHERE e.repo=? AND e.clave=? AND o.estado!='pendiente'", (repo, clave)).fetchone()
+        if fila is None:
+            return False
+        return fila[0] != "fallido" or evidencia is None or evidencia()
 
     def outbox(self, repo):
         return [dict(r) for r in self.db.execute(

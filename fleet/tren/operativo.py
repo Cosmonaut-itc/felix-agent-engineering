@@ -94,7 +94,10 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     previo.limpiar(estado)
     observacion = observador.observar(estado, ahora)
     activo = next((t for t in estado.trenes if not isinstance(t.fase, Terminal)), None)
-    if activo is not None and ledger.efecto_iniciado(repo, clave("suite", activo.id)):
+    consulta = getattr(adaptador, "suite_con_coordinador", None)
+    if activo is not None and ledger.efecto_iniciado(
+            repo, clave("suite", activo.id),
+            None if consulta is None else (lambda: consulta(activo.id))):
         observacion = replace(observacion, suite_iniciada=True)
     if not estado.pausa and any(isinstance(t.fase, Diagnosticando) for t in estado.trenes):
         observacion = replace(
