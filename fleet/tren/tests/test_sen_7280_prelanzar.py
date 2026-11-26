@@ -17,7 +17,7 @@ from test_tren import Aislado, estado, observacion
 from adaptadores import seleccionar
 from adaptadores.ejecucion_jale import guardar
 from adaptadores.hasito import Hasito, ResultadoInvalido
-from adaptadores.jale import Jale, PLAZO_PRELANZAMIENTO_S
+from adaptadores.jale import EN_CURSO, Jale, PLAZO_PRELANZAMIENTO_S
 from atribucion import planificar
 from dominio import (Armado, Certificado, Corriendo, Diagnosticando, Efecto, EscritorExterno,
                      EsperandoCI, Pausa, Promoviendo, ResultadoCI, Terminal, Tren, clave,
@@ -104,7 +104,7 @@ class PrelanzarTests(Productor, Aislado):
         self.adaptador.prelanzar(CANDIDATO, 'lote')
 
     def suite(self, permitir):
-        return self.adaptador.suite(CANDIDATO, 'lote', permitir_lanzar=permitir)
+        return jale.esperar_resultado(self.adaptador.suite, CANDIDATO, 'lote', permitir_lanzar=permitir)
 
     def test_pre_lanza_una_vez_y_la_suite_recupera_el_resultado_confirmado(self):
         self.plan([{'esperar': True}])
@@ -127,6 +127,18 @@ class PrelanzarTests(Productor, Aislado):
         self.prelanzar()
         self.assertEqual(len(self.invocaciones()), 1)
 
+    def test_suite_sin_permiso_sondea_el_modo_especulativo_vivo(self):
+        self.plan([{'esperar': True}])
+        self.prelanzar()
+        self.esperar_archivo(self.raiz / 'listo')
+        adaptador = Jale(self.lanzador)
+        self.assertIs(adaptador.suite(CANDIDATO, 'lote', permitir_lanzar=False), EN_CURSO)
+        self.assertFalse((self.registro / 'confirmada.json').exists())
+        self.assertFalse((self.registro.parents[1] / 'e2e' / '0' / 'solicitud.json').exists())
+        (self.raiz / 'seguir').touch()
+        self.esperar_archivo(self.registro / 'codigo.json')
+        self.assertIsNone(adaptador.suite(CANDIDATO, 'lote', permitir_lanzar=False))
+
     def test_interruptor_apagado_por_omision_y_validacion_booleana(self):
         config = {'adaptador': 'jale', 'lanzador': str(self.lanzador)}
         for campo in ({}, {'prelanzar': False}):
@@ -139,8 +151,8 @@ class PrelanzarTests(Productor, Aislado):
 
     def test_sondea_hasta_candado_salida_o_tope_y_lanza_aislado(self):
         for tren, sondeos, traba, dormidas in (
-                ('candado', None, (False, False, True), 1),
-                ('salida', (None, 0), (False, False), 1),
+                ('candado', None, (False, True), 1),
+                ('salida', (None, 0), (False,), 1),
                 ('tope', None, False, PLAZO_PRELANZAMIENTO_S * 100)):
             with self.subTest(tren=tren):
                 proceso = Mock()
@@ -292,6 +304,9 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertCountEqual([fila[2] for fila in self.lanzamientos()], ['contract', 'e2e'])
         self.ci = 'verde'
         (self.raiz / 'seguir').touch()
+        for modo in ('contract', 'e2e'):
+            registro = Jale(self.lanzador).estado / clave('suite', self.estado().trenes[0].id)
+            self.esperar_archivo(registro / modo / '0' / 'codigo.json')
         resultado = self.tick()
         self.assertTrue(any(f['efecto']['tipo'] == 'iniciar-suite' and f['estado'] == 'resultado'
                             for f in resultado['outbox']))
@@ -472,6 +487,10 @@ class TickActivoTests(Productor, unittest.TestCase):
         for registro in registros:
             self.esperar_archivo(registro / 'term')
             self.assertTrue(lanzamiento_activo(registro / 'candado'))
+        adaptador = Jale(self.lanzador)
+        self.assertFalse(adaptador.suite_con_coordinador(tren.id))
+        with self.assertRaisesRegex(ResultadoInvalido, 'corrida-interrumpida'):
+            adaptador.suite(tren.fase.candidato, tren.id)
         (self.raiz / 'predecesor.json').write_text(json.dumps(list(map(str, registros))))
         sucesor = self.esperar_sucesor_ci(tren)
         self.assertTrue(all(not r.exists() for r in self.registros_de_suite(sucesor)))
@@ -563,6 +582,44 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertEqual(self.estado().trenes[0].fase, Terminal('ABORTADO'))
         self.assert_canceladas(registros, codigo=255)
         self.assert_avisos_cancelacion(tren, 2, True)
+
+    def test_aborto_avisa_por_suite_confirmada_y_cancela_solo_la_especulativa(self):
+        tren, (contract, e2e) = self.lote_con_prelanzadas()
+        # La configuración cambia entre el prelanzamiento y el verde de CI.
+        self.contexto.config['modos'] = ['contract']
+        self.configurar(True)
+        (self.raiz / 'codigo-cancelacion').write_text('143')
+        self.ci = 'verde'
+        resultado = self.tick()
+        [fila] = [f for f in resultado['outbox'] if f['efecto']['tipo'] == 'iniciar-suite']
+        self.assertEqual((fila['estado'], fila['resultado']), ('ejecutando', None))
+        self.assertTrue((contract / 'confirmada.json').exists())
+        self.assertFalse((e2e / 'confirmada.json').exists())
+        self.assertTrue(all(lanzamiento_activo(r / 'candado') for r in (contract, e2e)))
+
+        (self.raiz / 'pr-cerrado-1').touch()
+        self.tick()
+        self.abortar(tren)
+        with patch('adaptadores.jale.leer_salida') as leer:
+            self.tick()
+            self.assertEqual(self.estado().trenes[0].fase, Terminal('ABORTADO'))
+            self.assert_canceladas([e2e], codigo=143)
+            self.assertFalse((contract / 'cancelar.json').exists())
+            self.assertTrue(lanzamiento_activo(contract / 'candado'))
+            (self.raiz / 'salir').touch()
+            self.esperar_candado_libre(contract)
+            self.tick()
+            leer.assert_not_called()
+        self.assertEqual(self.eventos('suite-sin-leer'), [dict(
+            tren=tren.id, modo='contract', terminada=False,
+            clave=json.loads((contract / 'iniciado.json').read_text())['clave'])])
+        self.assert_avisos_cancelacion(tren, 1, True)
+        self.assertEqual(self.eventos('suite-prelanzada-sin-leer')[0]['modo'], 'e2e')
+        self.assertFalse(any((r.parent / 'completo.json').exists() for r in (contract, e2e)))
+        with self.ledger() as ledger:
+            fila = ledger.db.execute('SELECT estado FROM outbox WHERE clave=?',
+                                     (clave('suite', tren.id),)).fetchone()
+            self.assertEqual(fila[0], 'cancelado')
 
     def test_juicio_aborta_repeticiones_adelantadas(self):
         self.instalar_lanzador_cancelable()

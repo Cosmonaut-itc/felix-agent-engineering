@@ -208,11 +208,13 @@ class Ledger:
             e for e in nuevas if e.entrega.recibo not in recibos))
 
     def guardar_paso(self, estado, efectos, ahora, consumido=None, fallo_operador=None, *,
-                     prelanzadas=()):
+                     prelanzadas=(), suites_sin_leer=()):
         """Snapshot, proyecciones, outbox y ACK del resultado: un solo COMMIT."""
         with self.transaccion():
             for aviso in prelanzadas:
                 self.evento(estado.repo, "suite-prelanzada-sin-leer", ahora, aviso)
+            for aviso in suites_sin_leer:
+                self.evento(estado.repo, "suite-sin-leer", ahora, aviso)
             # entries es custodia inmutable: la sombra también la importa.
             # La continuación operativa completa vive sólo en su evento.
             for tren in estado.trenes:
@@ -289,6 +291,12 @@ class Ledger:
             return False
         return fila[0] != "fallido" or evidencia is None or evidencia()
 
+    def primer_inicio(self, repo, clave):
+        """Secuencia del primer efecto-iniciado de la clave, o None."""
+        return self.db.execute(
+            "SELECT MIN(seq) FROM events WHERE repo=? AND tipo='efecto-iniciado' "
+            "AND json_extract(payload, '$.clave')=?", (repo, clave)).fetchone()[0]
+
     def outbox(self, repo):
         return [dict(r) for r in self.db.execute(
             "SELECT e.clave, e.payload, o.estado, r.payload AS resultado FROM effects e "
@@ -336,10 +344,12 @@ class Ledger:
                                "ORDER BY rowid LIMIT 1", (repo,)).fetchone()
         return desde_datos(json.loads(fila[0])) if fila else None
 
-    def iniciar_efecto(self, repo, efecto, ahora):
+    def iniciar_efecto(self, repo, efecto, ahora, *, limpiar_resultado=False):
         # Durable antes del IO: tras una muerte se reconcilia antes del paso.
         with self.transaccion():
             self.db.execute("UPDATE outbox SET estado='ejecutando' WHERE clave=?", (efecto.clave,))
+            if limpiar_resultado:
+                self.db.execute("DELETE FROM effect_results WHERE clave=?", (efecto.clave,))
             self.evento(repo, "efecto-iniciado", ahora, {"clave": efecto.clave})
 
     def registrar_efecto(self, repo, efecto, ahora, resultado, completo=False,
