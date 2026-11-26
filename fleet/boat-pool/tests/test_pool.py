@@ -652,6 +652,51 @@ class Harness(unittest.TestCase):
 
         self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], NAME)
 
+    def test_pedir_reconsidera_la_vm_que_vigilar_vio_reanudada(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = 'vm-otra'
+        other_id = fake_id('efgh2345')
+        self.add_vm(other, other_id, places=2, overrides={'inactividad_min': None})
+        self.assertEqual(self.run_cli('apagar', other)[0], 0)
+        self.api.sandbox(other_id, state='ready', stoppedAt=None, holdsCreatorLogins=False)
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], other)
+        self.assertEqual(self.run_cli('encender', other)[0], 0)
+        power = [event['evento'] for event in self.journal(other)
+                 if event.get('id') == other_id and event['evento'] in ('apagada', 'arranque', 'encendida')]
+        self.assertEqual(power, ['apagada', 'encendida'])
+
+    def test_pedir_descarta_el_diario_danado_antes_del_ultimo_evento(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'), places=2)
+        self.assertEqual(self.run_cli('apagar', other)[0], 0)
+        self.assertEqual(self.run_cli('encender', other)[0], 0)
+        journal = self.state / 'vms' / other / 'eventos.jsonl'
+        journal.write_bytes(b'no es JSON\n' + journal.read_bytes())
+
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], NAME)
+
+    def test_orden_de_pedir_reutiliza_el_fallo_hasta_que_cambia_el_diario(self):
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'))
+        instance = pool.Pool(self.config, self.state, boat_factory=self.api.factory, now=lambda: NOW)
+        candidates = instance.candidates(repo=REPO)
+        vm = instance.vms[NAME]
+        vm.journal.write_bytes(b'no es JSON\n')
+
+        with patch.object(pool, 'events_from_end', wraps=pool.events_from_end) as scan:
+            for _ in range(2):
+                self.assertEqual(instance.ask_order(candidates, 'e2e')[0].name, other)
+            self.assertEqual(scan.call_count, 1)
+
+            vm.journal.write_text(json.dumps(vm.event('encendida', NOW)) + '\n', encoding='utf-8')
+            self.assertEqual(instance.ask_order(candidates, 'e2e')[0].name, NAME)
+            self.assertEqual(scan.call_count, 2)
+
     def test_arriendo_vencido_y_soltar_idempotente(self):
         lease = self.get_lease('caduca', 'contract', '--ttl', '300')
         self.api.now += 301

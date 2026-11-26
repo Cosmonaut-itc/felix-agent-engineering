@@ -51,12 +51,18 @@ RENEW_FOR = 7 * 86400
 STOPPED_NOTICE = 12 * 86400
 LOCK_WAIT = 10
 INCIERTO = 1.0
+UNREADABLE_POWER_EVENT = object()
 
 
 class Unavailable(RuntimeError):
     def __init__(self, cause, detail):
         super().__init__(detail)
         self.cause = cause
+
+
+class JournalError(Unavailable):
+    def __init__(self, name):
+        super().__init__('apagado', 'diario ilegible en ' + name)
 
 
 def print_unavailable(error):
@@ -328,15 +334,29 @@ class VM:
             stream = self.journal.open('rb')
         except FileNotFoundError:
             return None
+        except OSError:
+            raise JournalError(self.name) from None
         with stream:
             stat = os.fstat(stream.fileno())
             version = (self.id, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
             if self._power_event is None or self._power_event[0] != version:
-                kind = next((item['evento'] for item in events_from_end(stream, stat.st_size)
-                             if item['evento'] in ('arranque', 'encendida', 'apagada')
-                             and item.get('id') == self.id), None)
+                try:
+                    kind = next((item['evento'] for item in events_from_end(stream, stat.st_size)
+                                 if item['evento'] in ('arranque', 'encendida', 'apagada')
+                                 and item.get('id') == self.id), None)
+                except (OSError, KeyError, TypeError, ValueError, OverflowError):
+                    kind = UNREADABLE_POWER_EVENT
                 self._power_event = (version, kind)
-            return self._power_event[1]
+            _, kind = self._power_event
+            if kind is UNREADABLE_POWER_EVENT:
+                raise JournalError(self.name)
+            return kind
+
+    def read_events(self):
+        try:
+            return events(self.journal)
+        except (OSError, ValueError):
+            raise JournalError(self.name) from None
 
     def event(self, kind, when, **fields):
         identity = {'id': self.id} if self.id else {}
@@ -352,7 +372,7 @@ class VM:
         except FileNotFoundError:
             return
         event = change['evento']
-        if not any(item.get('cambio') == event['cambio'] for item in events(self.journal)):
+        if not any(item.get('cambio') == event['cambio'] for item in self.read_events()):
             append_event(self.journal, event)
         path = self.lease_path(event['arriendo'])
         if change['arriendo'] is None:
@@ -551,7 +571,8 @@ class Pool:
         vm.validate(self.now())
         if vm.id in vm.recorded_ids:
             return
-        if not any(item['evento'] == 'registro' and item.get('id') == vm.id for item in events(vm.journal)):
+        if not any(item['evento'] == 'registro' and item.get('id') == vm.id
+                   for item in vm.read_events()):
             event = vm.event('registro', vm.prepared)
             try:
                 event['creada_en'], _ = self.fetch_creation(vm.name, vm.id, vm.prepared)
@@ -596,6 +617,8 @@ class Pool:
         stop = info.get('stop')
         if state in READY and isinstance(stop, dict) and stop.get('status') in ('pending', 'failing'):
             return 'archiving'
+        if state in READY and vm.last_power_event() == 'apagada':
+            append_event(vm.journal, vm.event('encendida', self.now()))
         return state
 
     def stop_pending(self, operation):
@@ -621,7 +644,7 @@ class Pool:
 
     def record_power_event(self, vm, operation, kind, when):
         if not any(item['evento'] == kind and item.get('operacion') == operation['id']
-                   for item in events(vm.journal)):
+                   for item in vm.read_events()):
             append_event(vm.journal, vm.event(kind, when, operacion=operation['id']))
 
     def send_power(self, vm, action):
@@ -728,7 +751,7 @@ class Pool:
                                 and self.stop_pending(operation))
                     stopped = vm.last_power_event() == 'apagada'
                     order[vm.name] = (not fits, stopping or stopped, vm.used_places(leases) / vm.places)
-            except (OSError, KeyError, TypeError, ValueError, OverflowError):
+            except (JournalError, OSError, KeyError, TypeError, ValueError, OverflowError):
                 continue
         return sorted(candidates, key=lambda vm: order.get(vm.name, (True, True, math.inf)))
 
@@ -762,7 +785,11 @@ class Pool:
                     locks.close()
                     continue
                 eligible = True
-                leases = vm.leases(self.now())
+                try:
+                    leases = vm.leases(self.now())
+                except JournalError:
+                    locks.close()
+                    continue
                 first = next((item for item in queue if vm.accepts(item) and (
                     item['clase'] == 'preparar' or vm.fits(leases, item['clase'])
                 )), None)
@@ -803,6 +830,9 @@ class Pool:
                             if leases and state not in READY:
                                 raise BoatError('VM con arriendos vivos fuera de servicio')
                             info = self.start(vm, state, info)
+                        except JournalError as error:
+                            self.reject(str(error), nombre=vm.name, repo=args.repo, corrida=args.corrida)
+                            last_error = error
                         except (Unavailable, BoatError) as error:
                             self.reject(str(error), vm, repo=args.repo, corrida=args.corrida)
                             last_error = error
