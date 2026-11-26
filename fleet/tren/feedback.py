@@ -41,7 +41,10 @@ def comando_publico(fallo):
             raise ValueError("Comando de reproducción de Jale inválido")
         if not sha(commit):
             raise ValueError("SHA de reproducción inválido")
-        return shlex.join(["bash", LANZADOR_JALE, *carril, host, "<log>", modo, commit, unidad])
+        comando = shlex.join(["bash", LANZADOR_JALE, *carril, host, "<log>", modo, commit, unidad])
+        # Boat sólo admite corridas con un dueño válido; el lector pone el suyo.
+        return ("SEN_RUN_OWNER=" + shlex.quote("<agente>") + " " + comando
+                if host == "boat" else comando)
     if args[0] == "--repetir":
         args = args[2:]
     elif args[0] != "--sha":
