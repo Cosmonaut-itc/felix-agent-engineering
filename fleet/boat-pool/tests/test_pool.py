@@ -627,7 +627,18 @@ class Harness(unittest.TestCase):
                 args = [part for pair in options.items() for part in pair]
                 self.assertEqual(self.run_cli('reservar', *args)[0], 64)
         self.assertEqual(self.run_cli('liberar-reserva', '--repo', REPO, '--lote', '\t')[0], 64)
+        self.reserve()
         self.assertFalse(self.api.calls)
+
+    def test_reserva_conserva_su_motivo_aunque_otra_candidata_falle(self):
+        self.config['vms'][0].update(RESERVATION_VM)
+        self.add_vm('vm-caida', fake_id('kmnp2345'), overrides=RESERVATION_VM, remote_state='error')
+        self.reserve()
+        take_vm = lambda: self.get_lease('tren-contract', 'contract', '--prioridad', 'tren', '--candidatas', NAME)
+        with self.resume_clock({1: take_vm}):
+            self.assert_reservation_blocked(*self.args('ajena', 'e2e', '--prioridad', 'suite', '--esperar', '2'))
+        self.assertEqual([event['corrida'] for event in self.journal() if event['evento'] == 'concedido'],
+                         ['tren-contract'])
 
     def test_reserva_cuenta_un_arriendo_sin_prioridad_como_ajeno(self):
         other = self.reservation_vms()
