@@ -14,6 +14,7 @@ import time
 from adaptadores.ejecucion_jale import (ACUSE_CANCELACION, CANCELAR, clave_iniciada,
                                        clave_registro, guardar)
 from adaptadores.hasito import ResultadoInvalido, exigir, leer_json
+from adaptadores.salud_desk import GRUPOS_DESK, sondear
 from atribucion import id_reproduccion, identidad
 from dominio import (Completo, Diagnosticando, Fallo, Incompleto, Intento, Repeticion,
                      UnidadRepetida, RechazoLanzador, clave)
@@ -203,7 +204,8 @@ class Jale:
 
     def __init__(self, lanzador, git=None, host='auto', modos=MODOS, estado=None, *,
                  resolver_lanzador=True, prelanzar=False, boat_esperar_s=ESPERA_BOAT_S,
-                 repeticiones_paralelas=1):
+                 repeticiones_paralelas=1, boat_esperar_no_sano_s=None, desk_host='desk',
+                 desk_grupos=GRUPOS_DESK, sonda_desk=subprocess.check_output):
         if not (isinstance(modos, (tuple, list)) and modos and
                 all(m in MODOS for m in modos) and len(set(modos)) == len(modos)):
             raise ValueError('modos-invalidos')
@@ -215,10 +217,24 @@ class Jale:
             raise ValueError('prelanzar-invalido')
         if type(boat_esperar_s) is not int or not 0 <= boat_esperar_s <= 7200:
             raise ValueError('boat-esperar-invalido')
+        if boat_esperar_no_sano_s is not None:
+            if (type(boat_esperar_no_sano_s) is not int or
+                    not boat_esperar_s <= boat_esperar_no_sano_s <= 7200):
+                raise ValueError('boat-esperar-no-sano-invalido')
+            if not isinstance(desk_host, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', desk_host):
+                raise ValueError('desk-host-invalido')
+            if not (isinstance(desk_grupos, (tuple, list)) and desk_grupos and
+                    all(isinstance(g, str) and g for g in desk_grupos) and
+                    len(set(desk_grupos)) == len(desk_grupos)):
+                raise ValueError('desk-grupos-invalidos')
         if type(repeticiones_paralelas) is not int or not 1 <= repeticiones_paralelas <= 8:
             raise ValueError('repeticiones-paralelas-invalidas')
         self.prelanzar_habilitado = prelanzar
         self.boat_esperar_s = boat_esperar_s
+        self.boat_esperar_no_sano_s = boat_esperar_no_sano_s
+        self.desk_host = desk_host
+        self.desk_grupos = desk_grupos
+        self.sonda_desk = sonda_desk
         self.repeticiones_paralelas = repeticiones_paralelas
         self.lanzador = str(Path(lanzador).resolve()) if resolver_lanzador else str(lanzador)
         self.lanzador_configurado = str(lanzador)
@@ -467,6 +483,7 @@ class Jale:
         host = self.host_de(modo)
         argv = ['bash', self.lanzador, host, str(log), modo, commit, *filtros]
         solicitud = registro / 'solicitud.json'
+        entorno = registro / 'entorno.json'
         candado_corrida = registro / 'candado'
         if solicitud.exists():
             guardado = leer_json(solicitud)
@@ -482,20 +499,30 @@ class Jale:
             if self.operador is not None and self.operador.checkout is not None:
                 argv[1] = self.operador.lanzador(self.lanzador_configurado, tren_id, codigo)
             variables = {}
-            if host == 'boat':
+            if not entorno.exists() and host == 'boat':
                 intento = int(registro.name)
                 identidad = (identidad_boat_pendiente(registro.with_name(str(intento - 1)))
                              if intento else None)
+                espera = self.boat_esperar_s
+                decision = registro / 'salud-desk.json'
+                if decision.exists():
+                    espera = leer_json(decision)['espera_s']
+                elif self.boat_esperar_no_sano_s is not None:
+                    salud = sondear(self.desk_host, self.desk_grupos, self.sonda_desk)
+                    if not salud['sano']:
+                        espera = self.boat_esperar_no_sano_s
+                    guardar(decision, dict(salud, espera_s=espera))
                 variables = {
                     'REMOTE_RUN_CLAVE': None,
                     'SEN_E2E_FRAGMENTO': None,
                     'SEN_RUN_OWNER': 'pao-tren',
                     'SEN_RUN_ID': identidad or clave_registro(registro),
                     'SEN_BOAT_PRIORIDAD': 'tren',
-                    'SEN_BOAT_ESPERAR': str(self.boat_esperar_s),
+                    'SEN_BOAT_ESPERAR': str(espera),
                     'TURBO_FORCE': 'true',
                 }
-            guardar(registro / 'entorno.json', variables)
+            if not entorno.exists():
+                guardar(entorno, variables)
             if prelanzamiento:
                 guardar(registro / 'prelanzada.json', True)
             guardado = argv

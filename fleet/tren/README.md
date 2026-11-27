@@ -1435,6 +1435,18 @@ lanzador de Jale que emita en Boat el recibo parcial de una corrida filtrada
 (SEN-7601) y VMs preparadas con esa revisión: sin él, la repetición termina
 sin recibo y el tren se pausa con `salida-sin-recibo`.
 
+`"boat_esperar_no_sano_s": 900` activa una sonda antes de preparar cada
+corrida nueva en Boat. Conserva `boat_esperar_s` si los grupos del desk están
+en ejecución y la carga de un minuto es menor o igual a `nproc`. Si el desk
+está saturado, un grupo está en pausa o la sonda falla, el lanzador usa la
+espera configurada y, si el pool sigue lleno, cae al desk en la misma
+invocación. La espera debe estar entre `boat_esperar_s` y 7200 segundos.
+`desk_host` indica el alias SSH y vale `"desk"` por omisión. `desk_grupos`
+vale `["pesadas", "jale"]` por omisión. El registro de la corrida guarda
+el motivo, la carga y la espera elegida en `salud-desk.json`. Al recuperar
+una corrida con entorno o solicitud ya guardados, se conserva su entorno.
+Sin la clave `boat_esperar_no_sano_s`, se usa directamente `boat_esperar_s`.
+
 `"prelanzar": true` adelanta todos los modos configurados de Jale al tick que
 publica C y pide su CI. La clave es booleana, vale `false` por omisión y se
 lee en cada tick. Apagarla surte efecto en el tick siguiente sin instalar.
