@@ -225,6 +225,9 @@ class Ledger:
                 if efecto.tipo == "registrar-absolucion":
                     self.evento(estado.repo, EVENTO_ABSOLUCION, ahora, json.loads(efecto.datos[1]))
                     continue
+                if efecto.tipo == "avisar-conflicto-en-cadena":
+                    self.evento(estado.repo, "conflicto-en-cadena-aplazado", ahora,
+                                json.loads(efecto.datos[2]))
                 if efecto.tipo == "resolver-juicio":
                     identificador, resultado, motivo = efecto.datos
                     actualizado = self.db.execute(

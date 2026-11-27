@@ -418,7 +418,7 @@ Límites conocidos:
 o en la ruta indicada. `armar(B, [(pr, head), ...])` trae las refs de PR y
 comprueba sus heads; usa `merge-tree --write-tree` y `commit-tree` sin índice
 ni checkout. Requiere git >=2.38, con error tipado si falta. Un conflicto
-devuelve `ConflictoCadena(pr, archivos)` y pausa `conflicto-en-cadena`.
+devuelve `ConflictoCadena(pr, archivos)`: el tren rearma el prefijo, devuelve el resto a la fila y avisa al PR en conflicto, que puede volver a entrar cuando cambie `main`.
 El SHA es reproducible con las mismas entradas y versión de git: identidad
 y mensaje fijos, sin firma ni configuración global/sistema al construir.
 La identidad de autor y committer es `PAO Tren <tren@example.invalid>`. La

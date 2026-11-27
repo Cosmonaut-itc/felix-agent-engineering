@@ -14,10 +14,11 @@ from unittest.mock import patch
 
 RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ))
-from dominio import (Aterrizado, Armado, Candidato, Certificado, ConflictoCadena,
+from dominio import (Admitido, Aterrizado, Armado, Candidato, Certificado, ConflictoCadena,
                      Congelado, EnBase, Entrada, Entrega, EscritorExterno, Estado,
-                     Incierto, LIMITE_PROMOCION, Observacion, Pausa, Promoviendo,
-                     ResultadoCI, Terminal, VistaPR, clave, datos, desde_datos, paso, recibo_ci)
+                     Incierto, LIMITE_PROMOCION, Motivo, Observacion, Pausa, Promoviendo,
+                     ResultadoCI, Retenido, Terminal, VistaPR, clave, datos, desde_datos,
+                     paso, recibo_ci)
 from efectos import EfectoFallido, ejecutar
 from git_ops import ErrorGit, GitTren, Publicado, RamaOcupada
 from ledger import Ledger, codificar
@@ -270,14 +271,79 @@ class AterrizajeTests(unittest.TestCase):
             self.push(head, "refs/pull/{}/head".format(pr))
             miembros.append((pr, head))
             self.assertIsInstance(self.git.armar(self.B, [(pr, head)]), Candidato)
+        sufijo = self.miembros[2][1]
+        self.push(sufijo, "refs/pull/6/head")
+        miembros.append((6, sufijo))
         resultado = self.git.armar(self.B, miembros)
         self.assertEqual(resultado, ConflictoCadena(5, ("comun",)))
         estado, efecto, obs = self.congelar(miembros)
         obs = ejecutar(efecto, estado, obs, self.git).observacion
-        final, efectos = paso(estado, obs)
-        self.assertEqual(final.pausa, Pausa("conflicto-en-cadena", pr=5, archivos=("comun",)))
-        self.assertEqual(efectos, ())
+        rearmado, efectos = paso(estado, obs)
+        self.assertIsNone(rearmado.pausa)
+        self.assertEqual(rearmado.trenes[0].fase, Terminal("REARMAR"))
+        self.assertEqual(rearmado.trenes[-1].recibos, (estado.entradas[0].entrega.recibo,))
+        self.assertNotEqual(rearmado.trenes[-1].id, estado.trenes[0].id)
+        for anterior, aplazada in zip(estado.entradas[1:], rearmado.entradas[1:]):
+            self.assertIsNone(aplazada.tren)
+            self.assertIsNone(aplazada.terminal)
+            self.assertEqual(aplazada.admision, Admitido())
+            self.assertEqual((aplazada.admitida, aplazada.recibida),
+                             (anterior.admitida, anterior.recibida))
+        self.assertEqual([e.tipo for e in efectos],
+                         ["avisar-conflicto-en-cadena", "armar-candidato", "avisar-en-tren"])
         self.assertEqual(self.remoto(), self.B)
+
+        armado = ejecutar(efectos[1], rearmado, obs, self.git).observacion
+        rearmado, _ = paso(rearmado, armado)
+        candidato = armado.candidato
+        certificado = Certificado(candidato.C, candidato.arbol, "recibo-suite", "recibo-ci", candidato.B)
+        certificado = replace(rearmado, trenes=(rearmado.trenes[0],
+                              replace(rearmado.trenes[-1], fase=certificado)))
+        promoviendo, (promover,) = paso(certificado, self.ci_verde(certificado, armado))
+        llegada = self.promover(promover, promoviendo, armado).observacion
+        final, _ = paso(promoviendo, llegada)
+        self.assertEqual(final.trenes[-1].fase, Terminal("ATERRIZADO"))
+        self.assertEqual(self.remoto(), armado.candidato.C)
+        self.assertEqual(self.git.armar(self.remoto(), miembros[1:]),
+                         ConflictoCadena(5, ("comun",)))
+        vistas = (replace(obs.prs[0], abierto=False), replace(obs.prs[1], conflicto=True), obs.prs[2])
+        siguiente, efectos = paso(final, Observacion(200, self.remoto(), vistas))
+        self.assertIsNone(siguiente.pausa)
+        self.assertEqual(siguiente.trenes[-1].recibos, (estado.entradas[2].entrega.recibo,))
+        self.assertEqual(siguiente.entradas[1].admision, Retenido(Motivo.CONFLICTO))
+        self.assertEqual(siguiente.entradas[1].admitida, estado.entradas[1].admitida)
+        self.assertEqual([e.tipo for e in efectos],
+                         ["avisar-conflicto-main", "armar-candidato", "avisar-en-tren"])
+
+    def test_conflicto_del_primero_no_rearma_mientras_siga_la_base(self):
+        head = self.miembros[0][1]
+        estado, _, obs = self.congelar(self.miembros[:1])
+        nueva_base = self.commit({"pr-1": "rival\n", "comun": "base\n"}, (self.B,))
+        self.push(nueva_base, "refs/heads/main")
+        obs = replace(obs, base=nueva_base)
+        estado, _ = paso(estado, obs)
+        estado, efectos = paso(estado, obs)
+        resultado = ejecutar(efectos[0], estado, obs, self.git).observacion
+        self.assertEqual(resultado.conflicto_cadena, ConflictoCadena(1, ("pr-1",)))
+        aplazado, efectos = paso(estado, resultado)
+        self.assertIsNone(aplazado.pausa)
+        self.assertEqual(len(aplazado.trenes), 2)
+        self.assertEqual(aplazado.trenes[-1].fase, Terminal("REARMAR"))
+        self.assertEqual(aplazado.entradas[0].admision, Admitido())
+        self.assertIsNone(aplazado.entradas[0].tren)
+        self.assertEqual([e.tipo for e in efectos], ["avisar-conflicto-en-cadena"])
+        for ahora in range(300, 304):
+            self.assertEqual(paso(aplazado, replace(obs, ahora=ahora)), (aplazado, ()))
+        lectura = replace(obs, prs=(replace(obs.prs[0], conflicto=True),))
+        retenido, efectos = paso(aplazado, lectura)
+        self.assertEqual(retenido.entradas[0].admision, Retenido(Motivo.CONFLICTO))
+        self.assertEqual([e.tipo for e in efectos], ["avisar-conflicto-main"])
+        self.assertEqual(paso(retenido, lectura), (retenido, ()))
+        resuelta = self.commit({"comun": "base\n"}, (nueva_base,))
+        self.push(resuelta, "refs/heads/main")
+        listo, _ = paso(retenido, replace(obs, base=resuelta))
+        self.assertEqual(listo.trenes[-1].recibos, (estado.entradas[0].entrega.recibo,))
+        self.assertEqual(listo.entradas[0].entrega.head, head)
 
     def test_publicar_idempotente_y_rama_ocupada_no_se_sobrescribe(self):
         candidato = self.git.armar(self.B, self.miembros)
