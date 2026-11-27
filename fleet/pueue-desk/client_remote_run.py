@@ -117,6 +117,15 @@ class Originals:
     def read(self, name):
         return read_file(name, parent=self.run, limit=c.MAX_BYTES)
 
+    def require_original_leg(self, task_id):
+        # H1 publishes this marker before creating the successor. Its presence
+        # is enough to stop accrediting the previous leg, even during enqueue.
+        try:
+            os.stat(f'pueue.tramo-{task_id}.json', dir_fd=self.run, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        raise Unavailable('identity')
+
     def original(self, raw, schema, fields):
         value = c.decode(raw)
         c.keys(value, 'schema launcher ref ' + fields)
@@ -268,12 +277,15 @@ class RemoteRun:
                         binding = originals.binding(self.artifacts, reservation)
                         if binding['group'] not in self.engine.profile:
                             raise Unavailable('unsupported')
+                        task_id = binding['identity']['task_id']
+                        originals.require_original_leg(task_id)
                         originals.attempt(binding)
                         if reservation is not None:
                             match(binding['group'] == reservation['group']
                                   and originals.identity == stable(reservation['identity']))
                         yield binding['group'], originals
                         match(originals.current == originals.read('pueue.client-current.json'))
+                        originals.require_original_leg(task_id)
                 except FileNotFoundError:
                     reason = 'not_found' if not opened and reservation is None else 'evidence_missing'
                     raise Unavailable(reason) from None
@@ -285,9 +297,9 @@ class RemoteRun:
         except (ValueError, TypeError, KeyError, OverflowError):
             raise Unavailable('evidence_missing') from None
 
-    def generation(self, originals, state):
+    def generation(self, identity, state):
         raw = state['generation']
-        if (originals.identity['generation'] != hashlib.sha256(raw.encode()).hexdigest()
+        if (identity['generation'] != hashlib.sha256(raw.encode()).hexdigest()
                 or state.get('startup', {}).get('phase') not in (None, 'ready')
                 or state.get('mini_handoff', {}).get('phase') not in (None, 'done', 'withdrawn', 'aborted')):
             raise Unavailable('startup')
@@ -385,7 +397,7 @@ class RemoteRun:
 
     def observe(self, request, state, reservation, *, posterior=False):
         with self.evidence(request, reservation) as (group, originals):
-            self.generation(originals, state)
+            self.generation(originals.identity, state)
             daemon = self.engine.pueue.status()
             try:
                 generation = self.engine.generation(state)
@@ -418,7 +430,9 @@ class RemoteRun:
             ref=request['ref'], action_id=request['action_id'], mode=request['mode'], expected=current,
             acceptance=accepted, proof=proof))
 
-    def verify(self, request, observation, reservation):
+    def verify(self, request, observation, reservation, *, state=None):
+        if state is not None:
+            self.generation(request['expected'], state)
         with self.evidence(request, reservation) as (group, originals):
             current = observation['identity']
             match(group == observation['group'] and stable(current) == originals.identity
@@ -435,16 +449,20 @@ class RemoteRun:
                 match(selected == request['phase'])
                 if op in RETIRE:
                     originals.retirement(request)
-                if op in ('signal', 'cancel-no-payload'):
+                accepted = request['acceptance']
+                if op == 'cancel-no-payload' or op == 'signal' and accepted is not None:
                     match(originals.acceptance(request['action_id']) == request['acceptance'])
                 if op == 'signal':
                     worker = originals.worker()
-                    match((worker['action_id'], worker['acceptance_receipt']) in
-                          ((None, None), (request['action_id'], request['acceptance']['receipt'])))
+                    pair = worker['action_id'], worker['acceptance_receipt']
+                    if accepted is None:
+                        match(request['mode'] in ('own', 'own-legacy') and pair == (None, None))
+                    else:
+                        match(pair in ((None, None), (request['action_id'], accepted['receipt'])))
 
     def recover(self, request, state, reservation, process, daemon):
         with self.evidence(request, reservation) as (group, originals):
-            self.generation(originals, state)
+            self.generation(originals.identity, state)
             if callable(daemon):
                 daemon = daemon()
             if daemon is None:

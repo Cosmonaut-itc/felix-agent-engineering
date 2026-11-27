@@ -183,6 +183,168 @@ class RemoteRunTests(unittest.TestCase):
             operation(*args)
         self.assertEqual(error.exception.reason, reason)
 
+    def handoff(self, phase):
+        with self.engine.connect(write=True) as db:
+            state = self.engine.state(db)
+            if phase is None:
+                state.pop('mini_handoff', None)
+            else:
+                state['mini_handoff'] = dict(
+                    version=2, target='withdraw', phase=phase, effect=None,
+                    original_disabled={'synthetic-a': False, 'synthetic-b': False, 'synthetic-c': True},
+                    deadline=None, source=dict(owner='prepared', pid=123, generation=state['generation']),
+                )
+            self.engine.store(db, state)
+
+    def relay(self):
+        # H1 publishes the old leg before enqueue, leaving binding/current intact.
+        self.fixture.write(self.fixture.run / 'pueue.tramo-77.json', dict(task_id=77))
+        self.tasks['78'] = dict(id=78, group='suites', created_at='2026-11-18T12:10:05Z',
+                                status={'Queued': dict(enqueued_at='2026-11-18T12:10:04.999999Z')})
+
+    def test_relay_denies_old_capability_and_phase(self):
+        f = self.fixture
+        f.binding['group'] = 'rapidas'
+        f.publish_binding()
+        self.tasks['77']['group'] = 'rapidas'
+        self.active()
+        self.tasks['77']['status'] = {
+            'Done': dict(enqueued_at=ATTEMPT, start=STARTED, end='2026-11-18T12:10:04Z',
+                         result={'Failed': 124}),
+        }
+        self.relay()
+        response = self.act(self.cap)
+        self.assertEqual((response['identity'], response['reason']), (None, 'identity'))
+        f.action(mode='own')
+        f.select('retire-interrupted')
+        original = f.document('retirement@1', **f.links, identity=f.stable, action_id=ACTION,
+                              mode='own', previous_result=None, stop_exit=130)
+        original['receipt'] = a.digest(original)
+        f.write(f.file('retirement'), original)
+        request = self.request('retire-interrupted', f.identity('Done', enqueued_at=ATTEMPT, started_at=STARTED),
+                               mode='own')
+        response = self.act(request)
+        self.assertEqual((response['status'], response['reason']), ('rejected', 'identity'))
+        self.assertEqual(self.effects, [])
+
+    def test_relay_marker_published_during_observation(self):
+        self.active()
+
+        def status():
+            # A dangling name still fences the old leg. Its contents never
+            # participate in the result.
+            (self.fixture.run / 'pueue.tramo-77.json').symlink_to('not-opened')
+            return self.status()
+
+        self.p.status = status
+        response = self.act(self.cap)
+        self.assertEqual((response['identity'], response['reason']), (None, 'identity'))
+
+    def test_relay_retains_existing_reservation(self):
+        request = self.started()
+        self.fixture.complete()
+        self.done()
+        reconciler = self.recoverer()
+        item, = reconciler.copies(None, advance=False)
+        proposal = reconciler.collect(item, self.status())
+        self.assertIsNotNone(proposal.get('finish'))
+        self.relay()
+        self.assertEqual(reconciler.gather([item], None), [dict(kind='retain', reason='identity')])
+        self.assertTrue(reconciler.apply(item, proposal, None))
+        reservation = self.actions.reservation(request)
+        self.assertTrue(reservation['open'])
+        self.assertEqual(reservation.get('reconcile_reason'), 'identity')
+
+    def test_handoff_blocks_direct_and_cached_finish(self):
+        request = self.started()
+        self.fixture.complete()
+        self.done()
+        reconciler = self.recoverer()
+        for phase, cached in (('stage', False), ('drain', True)):
+            self.handoff(None)
+            item, = reconciler.copies(None, advance=False)
+            proposal, = reconciler.gather([item], None)
+            finish = proposal.get('finish')
+            self.assertIsNotNone(finish)
+            if cached:
+                reconciler.cache(item, proposal)
+            with reconciler.lock():
+                self.handoff(phase)
+            fresh, = reconciler.copies(None, advance=False)
+            self.assertEqual(fresh['generation'], item['generation'])
+            self.assertEqual(reconciler.gather([fresh], None), [dict(kind='retain', reason='startup')])
+            if cached:
+                with reconciler.lock():
+                    self.assertEqual(len(reconciler.protected_turn()), 1)
+            else:
+                self.assertTrue(reconciler.apply(item, proposal, None))
+            reservation = self.actions.reservation(request)
+            self.assertTrue(reservation['open'], phase)
+            self.assertEqual(reservation.get('reconcile_reason'), 'startup')
+            self.assertIsNone(self.actions.record(finish))
+
+        # Older adapters keep their own verification rules under CC2.
+        legacy = a.Reconciler(self.engine, adapter=object(), **self.engine_options())
+        item, = legacy.copies(None, advance=False)
+        self.assertTrue(legacy.apply(item, proposal, None))
+        self.assertFalse(self.actions.reservation(request)['open'])
+
+    def test_handoff_blocks_cached_stock_attribution(self):
+        self.active()
+        with patch.object(self.actions, 'posterior', side_effect=a.Unavailable('evidence_missing')):
+            self.assertEqual(self.act(self.hold)['status'], 'unknown')
+        reconciler = self.recoverer()
+        item, = reconciler.copies(None, advance=False)
+        proposal, = reconciler.gather([item], None)
+        self.assertEqual(proposal['kind'], 'stock')
+        self.assertIsNotNone(proposal.get('post'))
+        reconciler.cache(item, proposal)
+        with reconciler.lock():
+            self.handoff('drain')
+            self.assertEqual(len(reconciler.protected_turn()), 1)
+        reservation = self.actions.reservation(self.hold)
+        self.assertTrue(reservation['open'])
+        self.assertEqual(reservation.get('reconcile_reason'), 'startup')
+        self.assertIsNone(reservation['hold_identity'])
+        record = self.actions.record(self.hold)
+        self.assertEqual((record['response']['status'], record['response']['reason']), ('unknown', 'startup'))
+        self.assertNotIn('attribution', record)
+
+    def test_handoff_changed_generation_keeps_finish_open_with_reason(self):
+        request = self.started()
+        self.fixture.complete()
+        self.done()
+        reconciler = self.recoverer()
+        item, = reconciler.copies(None, advance=False)
+        proposal = reconciler.collect(item, self.status())
+        self.assertIsNotNone(proposal.get('finish'))
+        self.gen = 'daemon-next'
+        self.assertTrue(reconciler.apply(item, proposal, None))
+        reserve = self.actions.reservation(request)
+        self.assertTrue(reserve['open'])
+        self.assertEqual(reserve.get('reconcile_reason'), 'startup')
+        self.assertIsNone(self.actions.record(proposal['finish']))
+
+    def test_own_signal_without_acceptance_checks_worker_pair(self):
+        self.active()
+        f = self.fixture
+        f.select('signal:TERM')
+        self.tasks['77']['status'] = {'Running': dict(enqueued_at=ATTEMPT, start=STARTED)}
+        observed = f.identity('Running', enqueued_at=ATTEMPT, started_at=STARTED)
+        observation = dict(group='suites', identity=observed)
+        for mode in ('own', 'own-legacy'):
+            f.action(mode=mode)
+            request = self.request('signal', observed, mode=mode)
+            f.worker(queued=False, action_id='different-action', acceptance_receipt='a' * 64)
+            self.unavailable('identity', self.actions.adapter.verify, request, observation, None)
+            f.worker(queued=False)
+            try:
+                self.actions.adapter.verify(request, observation, None)
+            except a.Unavailable as error:
+                self.fail(f'Unlinked worker rejected: {error.reason}')
+        self.assertEqual(self.act(request)['status'], 'signalled')
+        self.assertEqual(self.effects, ['kill'])
+
     def test_observe_h1_and_caja(self):
         self.active()
         self.engine.profile = dict(self.engine.profile, caja=1)

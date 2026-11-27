@@ -95,8 +95,8 @@ class InstalledAdapters:
     def observe(self, request, state, reservation):
         return self.adapter(request).observe(request, state, reservation)
 
-    def verify(self, request, observation, reservation):
-        self.adapter(request).verify(request, observation, reservation)
+    def verify(self, request, observation, reservation, *, state=None):
+        self.adapter(request).verify(request, observation, reservation, state=state)
 
     def recover(self, request, state, reservation, process, daemon, *, recorded=None):
         read_record = None
@@ -989,8 +989,7 @@ class Reconciler:
             with self.engine.connect() as db:
                 state = self.engine.state(db)
             generation = self.apply_generation(state, item, offline)
-            if (state['generation'] != item['state']['generation'] or generation != item['generation']
-                    or current['revision'] != old['revision']
+            if (current['revision'] != old['revision']
                     or current['digest'] != old['digest']
                     or current.get('process') != old.get('process')
                     or reservation['revision'] != before['revision']
@@ -999,6 +998,24 @@ class Reconciler:
                 return False  # Discard; the rotating index rereads on a later tick.
             if current['response']['status'] == 'finished':
                 return False
+            verification = None
+            if isinstance(self.actions.adapter, InstalledAdapters) and r['launcher'] == 'remote-run':
+                if proposal['kind'] == 'stock' and proposal.get('post') is not None:
+                    verification = r, dict(group=reservation['group'], identity=r['expected'])
+                elif proposal['kind'] == 'evidence' and proposal['finish'] is not None:
+                    verification = proposal['finish'], proposal['observation']
+            if state['generation'] != item['state']['generation'] or generation != item['generation']:
+                if verification is None:
+                    return False  # Discard; the rotating index rereads on a later tick.
+                proposal = dict(kind='retain', reason='startup')
+            elif verification is not None:
+                try:
+                    self.actions.adapter.verify(*verification, reservation, state=state)
+                except Unavailable as error:
+                    if proposal['kind'] == 'stock' and error.reason not in ('identity', 'startup'):
+                        proposal = dict(proposal, post=None)
+                    else:
+                        proposal = dict(kind='retain', reason=error.reason)
             reason = proposal.get('reason', 'evidence_missing')
             if reason not in c.REASONS:
                 reason = 'evidence_missing'
@@ -1023,23 +1040,12 @@ class Reconciler:
                 # without any daemon read; only the collector's Q travels.
                 if not self.actions.stock(current.get('process')) or current['response']['status'] != 'unknown':
                     return False
-                if proposal.get('post') is not None and isinstance(self.actions.adapter, InstalledAdapters):
-                    try:
-                        self.actions.adapter.verify(r, dict(group=reservation['group'], identity=r['expected']),
-                                                    reservation)
-                    except Unavailable:
-                        proposal = dict(proposal, post=None)
                 verdict, after, post = self.actions.stock_verdict(current, post=proposal.get('post'))
                 self.actions.settle(current, reservation, verdict, after, post)
                 reason = verdict[2] or reason
             elif proposal['kind'] == 'evidence':
                 observed, finish = proposal['observation'], proposal['finish']
                 after = observed['identity']
-                if finish is not None and isinstance(self.actions.adapter, InstalledAdapters):
-                    try:
-                        self.actions.adapter.verify(finish, observed, reservation)
-                    except Unavailable as error:
-                        finish, reason = None, error.reason
                 if current['response']['status'] == 'unknown':
                     if not self.effect_matches(proposal.get('effect_applied'), current):
                         raise Unavailable('evidence_missing')

@@ -1074,6 +1074,9 @@ python -I -m unittest discover -s fleet/pueue-desk/tests -p "test_*.py" -v
   puntero después de usarlo. Los JSON son UTF-8, con campos cerrados y
   límite de 16 384 bytes; para el hash del productor se admiten hasta
   1 MiB. La copia del productor sólo aporta bytes a ese hash.
+  El nombre del marcador de tramo anterior se coteja antes y después de
+  observar o verificar. Su presencia devuelve `identity` y conserva una
+  reserva existente. H1 publica ese marcador antes de encolar la sucesora.
 - **Observación.** Basta la proyección de ID, grupo, creación, estado y
   tiempos del daemon. Se coteja el grupo con el binding y el perfil
   instalado, incluido `caja` donde pertenece a ese perfil. La generación
@@ -1091,7 +1094,11 @@ python -I -m unittest discover -s fleet/pueue-desk/tests -p "test_*.py" -v
   `started` o `signalled` ya acreditada. En una retirada propia exige
   su original de arbitraje y la fase `retired` acreditada por PAO. CC2
   recopila observación y posible `finish` fuera del candado y vuelve a
-  verificar los originales locales antes de aplicarlos. La recogida
+  verificar los originales locales y la autoridad vigente antes de aplicar
+  un cierre o atribuir un efecto stock. Un cambio de generación, arranque
+  o relevo de la Mini retiene con `startup`, también para evidencia
+  cacheada. La señal propia sin aceptación exige que el nacimiento del
+  worker carezca de enlaces a acción y recibo. La recogida
   consulta el daemon sólo para acciones con evidencia aplicable. Los
   sellos y `rpc_verdict` conservan la autoría de `settled` y
   `effect_applied`.

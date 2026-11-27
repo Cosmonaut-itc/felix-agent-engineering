@@ -11,6 +11,40 @@ R = 'client_remote_run.py'
 A = 'client_actions.py'
 T = 'test_client_remote_run.RemoteRunTests.'
 CASES = [
+    ('a relayed run cannot expose its old task', R,
+     """        try:
+            os.stat(f'pueue.tramo-{task_id}.json', dir_fd=self.run, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        raise Unavailable('identity')""", '        pass', 'test_relay_denies_old_capability_and_phase'),
+    ('cached finish rechecks the run leg', A,
+     'elif verification is not None:', 'elif verification is not None and proposal["kind"] != "evidence":',
+     'test_relay_retains_existing_reservation'),
+    ('relay marker reread after observation', R,
+     """                        match(originals.current == originals.read('pueue.client-current.json'))
+                        originals.require_original_leg(task_id)""",
+     "                        match(originals.current == originals.read('pueue.client-current.json'))",
+     'test_relay_marker_published_during_observation'),
+    ('finish is fenced by fresh authority', R,
+     "if state is not None:\n            self.generation(request['expected'], state)",
+     "if state is not None and request['op'] != 'finish':\n            self.generation(request['expected'], state)",
+     'test_handoff_blocks_direct_and_cached_finish'),
+    ('stock attribution is fenced by fresh authority', R,
+     "if state is not None:\n            self.generation(request['expected'], state)",
+     "if state is not None and request['op'] != 'hold':\n            self.generation(request['expected'], state)",
+     'test_handoff_blocks_cached_stock_attribution'),
+    ('a new daemon retains a fixed finish with startup', A,
+     "or generation != item['generation']:\n                if verification is None:",
+     "or generation != item['generation']:\n                if True:",
+     'test_handoff_changed_generation_keeps_finish_open_with_reason'),
+    ('own signal without acceptance requires an unlinked worker', R,
+     "match(request['mode'] in ('own', 'own-legacy') and pair == (None, None))",
+     "match(request['mode'] in ('own', 'own-legacy'))",
+     'test_own_signal_without_acceptance_checks_worker_pair'),
+    ('own signal may omit acceptance', R,
+     "if op == 'cancel-no-payload' or op == 'signal' and accepted is not None:",
+     "if op in ('signal', 'cancel-no-payload'):",
+     'test_own_signal_without_acceptance_checks_worker_pair'),
     ('observe binds the installed groups', R, 'if binding[\'group\'] not in self.engine.profile:',
      "if binding['group'] == 'caja':", 'test_observe_h1_and_caja'),
     ('stock Q recognizes a force start', R, "if posterior and request['op'] == 'cancel-no-payload':",
@@ -25,7 +59,7 @@ CASES = [
     ('collector reads the copied phase instead of SQLite', A,
      'recorded=record)', 'recorded=None)', 'test_recover_closes_once_from_live_done'),
     ('apply reopens completion', A,
-     'if finish is not None and isinstance(self.actions.adapter, InstalledAdapters):',
+     'elif verification is not None:',
      'if False:', 'test_apply_revalidates_completion'),
     ('finish waits for Done', R, "and current['state'] in ('Done', 'Absent'):",
      "and current['state'] in ('Running', 'Done', 'Absent'):",
@@ -69,7 +103,7 @@ CASES = [
      "match(value['action_id'] == action_id and all(value[key] == self.links[key] for key in LINKS))",
      "match(all(value[key] == self.links[key] for key in LINKS))", 'test_old_action_original_is_identity'),
     ('generation comes from authority', R,
-     "originals.identity['generation'] != hashlib.sha256(raw.encode()).hexdigest()",
+     "identity['generation'] != hashlib.sha256(raw.encode()).hexdigest()",
      'False', 'test_old_generation_is_startup'),
     ('generation checked after daemon read', R,
      "if generation != state['generation']:", 'if False:',
