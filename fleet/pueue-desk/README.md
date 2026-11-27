@@ -469,7 +469,7 @@ Si la tabla incorpora un grupo, sigue este orden:
    `pueued` se reinicia antes de instalar, el grupo queda fuera del reparto y
    pausado; revisa sus `pause_reasons` después de migrar.
 4. Corre el ensayo y la instalación de esta sección.
-5. Actualiza enseguida el rack (paso 3 de U3.2). Mientras el controlador y el
+5. Actualiza enseguida el rack, como el paso 3 de «Instalar U3.2 en un desk que ya tiene servicio y timers». Mientras el controlador y el
    rack tienen tablas distintas, el panel descarta la foto del desk y no lo
    muestra; vuelve sola cuando ambos coinciden.
 6. Cuando el panel muestre los grupos nuevos, retira `slots.disabled`.
