@@ -1256,10 +1256,23 @@ class JaleTests(Aislado):
             {'codigo': 75, 'sin_linea': True}, {'codigo': 64, 'sin_linea': True},
             'lanzador-rechazo')
 
-    def test_repeticiones_paralelas_interrumpida_y_sin_recibo_pausan_sin_otra_clave(self):
-        self.verificar_repeticiones_paralelas_sin_relanzar(
-            {'codigo': 125, 'sin_linea': True, 'interrumpida': True},
-            {'transportes': 3, 'codigo_transporte': 127}, 'corrida-interrumpida')
+    def test_repeticiones_paralelas_interrumpida_y_sin_recibo_reenganchan_el_incierto(self):
+        self.adaptador = self.Jale(self.lanzador, host='desktop', repeticiones_paralelas=2)
+        parte = {'por_intento': {'1': {'codigo': 125, 'sin_linea': True, 'interrumpida': True},
+                                 '2': {'transportes': 3, 'codigo_transporte': 127}}}
+        self.plan({'contract': [{'estados': ['falla']}, parte, parte]})
+        inicial, obs, efecto = self.preparar_suite_de_prueba(
+            costo_suite_sana_s=10000, repeticiones_en_paralelo=True)
+        llegada = esperar_resultado(ejecutar, efecto, inicial, obs, object(), self.adaptador)
+        diagnostico, (repetir,) = paso(inicial, llegada.observacion)
+        llegada = esperar_resultado(ejecutar, repetir, diagnostico, obs, object(), self.adaptador)
+        siguiente, efectos = paso(diagnostico, llegada.observacion)
+        self.assertIsNone(siguiente.pausa)
+        self.assertEqual(len(efectos), 1)
+        fase = siguiente.trenes[0].fase
+        self.assertEqual(fase.reenganches, 1)
+        # Se reengancha el intento sin recibo, no el interrumpido.
+        self.assertEqual(Path(fase.registro_reenganche).parent.parent.name, '2')
 
     def verificar_repeticiones_paralelas_sin_relanzar(self, primera, segunda, detalle):
         self.adaptador = self.Jale(self.lanzador, host='desktop', repeticiones_paralelas=2)

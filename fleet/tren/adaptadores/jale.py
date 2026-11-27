@@ -794,12 +794,11 @@ class Jale:
         if impedimento is False:
             return None
         if isinstance(impedimento, RechazoLanzador):
-            if any(not admite_relanzamiento(r) or (r.detalle == 'salida-sin-recibo' and
-                   impedimento.detalle != 'salida-sin-recibo')
-                   for r in rechazos if r is not impedimento):
-                # Conserva el primer impedimento para el juicio y evita abrir otra clave incierta.
-                return replace(impedimento, relanzable=False)
-            return impedimento
+            # Como en la suite: el envío incierto primero, para reengancharlo con su clave.
+            elegido = next((r for r in rechazos if r.detalle == 'salida-sin-recibo'), impedimento)
+            if any(not admite_relanzamiento(r) for r in rechazos if r is not elegido):
+                return replace(elegido, relanzable=False)
+            return elegido
         if impedimento is not SIN_IMPEDIMENTO:
             for rechazo in rechazos:
                 if not admite_relanzamiento(rechazo):
