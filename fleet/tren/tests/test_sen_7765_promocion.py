@@ -272,12 +272,8 @@ class PromocionCITests(fixtures.CasosCI):
         self.contexto.tick(1023)
         self.assertEqual(self.estado().trenes[-1].recibos, antes.trenes[-1].recibos)
 
-    def test_base_movida_con_ci_verde_conserva_el_camino_de_escritor_externo(self):
-        _, nuevo_main = self.mover_main_certificado("success")
-        self.assertIsInstance(self.estado().trenes[-1].fase, Promoviendo)
-        self.contexto.tick(1023)
-        self.assertEqual(self.estado().pausa, Pausa("escritor-externo", main=nuevo_main))
-        self.assertEqual(self.remoto(), nuevo_main)
+    def test_base_movida_rearma_certificado_con_ci_verde_con_fifo(self):
+        self.comprobar_rearme_certificado("success")
 
 
 class CITrasAbortarTests(fixtures.CasosCI):

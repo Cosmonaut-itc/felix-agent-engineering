@@ -3,6 +3,7 @@ from dataclasses import replace
 import json
 import unittest
 
+import test_activo as activo
 import test_u16 as u16
 from dominio import (Certificado, Efecto, EsperandoCI, Pausa, Promoviendo,
                      Terminal, datos, desde_datos, paso)
@@ -142,12 +143,15 @@ class RelojTests(u16.ContextoCI):
         antes = self.hasta_fase(EsperandoCI)
         fase = antes.trenes[0].fase
         self.ci_en(lambda head: 'pending' if head == fase.candidato.C else None)
-        self.assertEqual(self.cli('pausa', '--motivo', 'inspección')[0], 0)
+        opciones = ['pausa', '--repo', u16.REPO]
+        args = activo.cli.parser().parse_args(opciones + ['--motivo', 'inspección'])
+        self.assertEqual(activo.cli.ejecutar(args, ahora=fase.desde + 50)[0], 0)
         self.contexto.tick(fase.desde + 100)
         self.assertEqual(self.estado().pausa.motivo, 'manual')
         self.contexto.tick(fase.desde + 3600)
         self.assertEqual(self.estado().trenes[0].fase.desde, fase.desde)
-        self.assertEqual(self.cli('pausa', '--levantar', '--motivo', 'continuar')[0], 0)
+        args = activo.cli.parser().parse_args(opciones + ['--levantar', '--motivo', 'continuar'])
+        self.assertEqual(activo.cli.ejecutar(args, ahora=fase.desde + 3600)[0], 0)
         self.contexto.tick(fase.desde + 3601)
         self.contexto.tick(fase.desde + 3602)
         self.assertEqual(self.estado().pausa, Pausa('infraestructura', detalle='ci-sin-resultado'))

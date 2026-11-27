@@ -19,8 +19,8 @@ ARRANQUE = time.monotonic()
 # Script location is trusted, independent of cwd, including python -I invocations.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cache_github import CacheGitHub
-from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion, Terminal,
-                     admision_entrada, datos, paso)
+from dominio import (MAX_MINUTOS_PAUSA, Admitido, Decision, Entrada, Entrega, Estado, Observacion,
+                     Terminal, admision_entrada, datos, paso)
 from inscripcion import activacion, modo
 from ledger import (CandadoOcupado, Ledger, candado_programa, directorio_estado, filas_medicion,
                     lectura_medicion)
@@ -54,6 +54,13 @@ def motivo(valor):
     return valor
 
 
+def minutos(valor):
+    numero = int(valor)
+    if not 1 <= numero <= MAX_MINUTOS_PAUSA:
+        raise argparse.ArgumentTypeError(f"minutos debe estar entre 1 y {MAX_MINUTOS_PAUSA}")
+    return numero
+
+
 def texto_iso(valor):
     instante_iso(valor)
     return valor
@@ -79,10 +86,19 @@ def parser():
                         choices=("absolver", "expulsar", "reanudar", "abortar"))
     juicio.add_argument("--pr", type=positivo)
     juicio.add_argument("--motivo", required=True, type=motivo)
-    pausa = comandos.add_parser("pausa")
-    pausa.add_argument("--repo", required=True, type=repositorio)
-    pausa.add_argument("--levantar", action="store_true")
-    pausa.add_argument("--motivo", required=True, type=motivo)
+    for nombre, cierre in (("pausa", "--levantar"), ("hueco", "--cerrar")):
+        descripcion = ("Retiene nuevas promociones. Abrir mientras un tren está en "
+                       "Promoviendo devuelve push-a-main-en-curso." if nombre == "hueco"
+                       else "Pausa manual con vencimiento automático.")
+        control = comandos.add_parser(nombre, description=descripcion)
+        control.add_argument("--repo", required=True, type=repositorio)
+        control.add_argument("--motivo", required=True, type=motivo)
+        opciones = control.add_mutually_exclusive_group()
+        opciones.add_argument(cierre, dest="cerrar", action="store_true")
+        defecto = 60 if nombre == "hueco" else MAX_MINUTOS_PAUSA
+        opciones.add_argument("--minutos", type=minutos, help=(
+            f"duración desde el tick que aplica la orden (1 a {MAX_MINUTOS_PAUSA}, "
+            f"{defecto} por omisión)"))
     tick = comandos.add_parser("tick")
     tick.add_argument("--repo", required=True, type=repositorio)
     tick.add_argument("--seco", action="store_true")
@@ -111,7 +127,8 @@ def parser():
 
 def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, frontera=None,
              escritor=None, instalando=False):
-    if args.comando in ("juicio", "pausa") or args.comando == "tick" and not args.seco:
+    decide = args.comando in ("juicio", "pausa", "hueco")
+    if decide or args.comando == "tick" and not args.seco:
         inscripcion = activacion(args.repo)
         if inscripcion != "activo":
             mensaje = ("tick activo requiere inscripción activa" if args.comando == "tick" else
@@ -152,26 +169,33 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
             codigo = subprocess.run(args.orden).returncode
             time.sleep(GRACIA_INSTALACION_S)
         return codigo, {"candado": "tomado", "codigo": codigo}
-    plazo = plazo_candado() if args.comando in ("juicio", "pausa") else None
-    if args.comando in ("juicio", "pausa") and plazo is None:
+    plazo = plazo_candado() if decide else None
+    if decide and plazo is None:
         return 2, {"error": "PAO_TREN_PLAZO_CANDADO_S inválido: segundos, número no negativo"}
     ledger = Ledger()
     recursos = ExitStack()
-    ahora = time.time() if ahora is None else ahora
+    reloj_real = ahora is None
+    ahora = time.time() if reloj_real else ahora
     try:
-        if args.comando in ("juicio", "pausa"):
+        if decide:
             from juicios import error_decision
             with ledger.candado(args.repo, plazo, lambda: print(
                     f"{TICK_EN_CURSO}: espero el candado hasta {plazo:g} s", file=sys.stderr, flush=True)):
                 if activacion(args.repo) != "activo":
                     return 2, {"error": "comando activo requiere inscripción activa"}
+                if reloj_real:
+                    ahora = time.time()
                 estado = ledger.estado(args.repo, operativo=True)
+                if args.comando == "juicio":
+                    accion = args.decision
+                elif args.comando == "hueco":
+                    accion = "cerrar-hueco" if args.cerrar else "abrir-hueco"
+                else:
+                    accion = "levantar" if args.cerrar else "pausar"
                 decision = Decision(uuid.uuid4().hex, args.repo,
-                    args.tren if args.comando == "juicio" else None,
-                    args.decision if args.comando == "juicio" else
-                    "levantar" if args.levantar else "pausar",
-                    args.pr if args.comando == "juicio" else None,
-                    args.motivo, ahora, ledger.pausa_id(args.repo, estado), estado.pausa)
+                    getattr(args, "tren", None), accion, getattr(args, "pr", None),
+                    args.motivo, ahora, ledger.pausa_id(args.repo, estado), estado.pausa,
+                    getattr(args, "minutos", None))
                 error = error_decision(estado, decision, decision.pausa_id)
                 if error:
                     return 2, {"error": error}
@@ -227,12 +251,14 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                            "eventos": ledger.ultimos_eventos(args.repo)}
                 if args.juicio:
                     from juicios import expediente
-                    resultado["juicio"] = expediente(ledger, args.repo)
+                    resultado["juicio"] = expediente(ledger, args.repo, ahora)
                 return 0, resultado
         # El tick en seco no espera: durante la suite la admisión se lee con `estado`.
         candado = ledger.candado(args.repo, 0) if args.seco else ledger.candado(args.repo)
         with candado:
             if not args.seco:
+                if reloj_real:
+                    ahora = time.time()
                 # Releer tras esperar el flock: pudieron retirar la inscripción.
                 if activacion(args.repo) != "activo":
                     return 2, {"error": "tick activo requiere inscripción activa"}
@@ -259,7 +285,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                 if isinstance(adaptador, Jale):
                     adaptador.limite_cancelacion = getattr(args, "limite_cancelacion", None)
                 return 0, tick(ledger, args.repo, observador, ahora, git, adaptador, frontera,
-                               escritor)
+                               escritor, reloj=time.time if reloj_real else None)
             doble_camino = modo(args.repo) == "sombra"
             estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
             if observador is None:
@@ -327,7 +353,7 @@ def huella(repo):
         try:
             with ledger.transaccion(escritura=False):
                 estado = ledger.estado(repo, operativo=True)
-                return (estado.pausa is None,
+                return (estado.pausa is None, estado.hueco,
                         tuple((t.id, type(t.fase).__name__) for t in estado.trenes),
                         # Un efecto fallido sigue pendiente: su reintento no es avance.
                         tuple((f["clave"], "pendiente" if f["estado"] == "fallido" else f["estado"])

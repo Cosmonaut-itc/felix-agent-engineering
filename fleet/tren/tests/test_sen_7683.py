@@ -249,12 +249,12 @@ with open({str(self.log)!r}, 'a') as log:
     def test_pausa_manual_libera_y_levantar_vuelve_a_reservar(self):
         lote = self.guardar(EsperandoCI(CANDIDATO, 1)).id
         self.tick()
-        self.cli('pausa', '--motivo', 'prueba')
+        self.cli('pausa', '--motivo', 'prueba', ahora=200)
         self.tick(220)
-        self.assertEqual(self.estado().pausa, Pausa('manual', detalle='prueba'))
+        self.assertEqual(self.estado().pausa, Pausa('manual', detalle='prueba', hasta=7420))
         self.assert_ultimo_estado_guardado()
         self.tick(340)
-        self.cli('pausa', '--levantar', '--motivo', 'prueba')
+        self.cli('pausa', '--levantar', '--motivo', 'prueba', ahora=400)
         self.tick(460)
         self.assertIsNone(self.estado().pausa)
         self.assert_llamadas(self.reserva(lote, 100), self.liberacion(lote, 220),

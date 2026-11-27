@@ -89,6 +89,16 @@ class Pausa:
     main: str = ""
     archivos: Tuple[str, ...] = ()
     detalle: str = ""
+    hasta: Optional[float] = None
+
+
+MAX_MINUTOS_PAUSA = 120
+
+
+@dataclass(frozen=True)
+class Hueco:
+    hasta: float
+    motivo: str
 
 
 @dataclass(frozen=True)
@@ -102,6 +112,11 @@ class Decision:
     instante: float
     pausa_id: str
     pausa: Optional[Pausa]
+    minutos: Optional[int] = None
+
+    def vencimiento(self, aplicacion):
+        defecto = 60 if self.decision == "abrir-hueco" else MAX_MINUTOS_PAUSA
+        return aplicacion + 60 * (defecto if self.minutos is None else self.minutos)
 
 
 @dataclass(frozen=True)
@@ -404,6 +419,10 @@ class Estado:
     trenes: Tuple[Tren, ...] = ()
     pausa: Optional[Pausa] = None
     costo_suite_sana_s: float = 0
+    hueco: Optional[Hueco] = None
+
+    def promocion_retenida(self, ahora):
+        return self.hueco is not None and ahora < self.hueco.hasta
 
 
 def inicial(repo):
@@ -549,6 +568,12 @@ def aterrizaje(estado, tren, observacion):
     if isinstance(fase, Certificado):
         if not fase.B:
             return replace(estado, pausa=Pausa("certificado-sin-base")), ()
+        # Sin push todavía: un main que avanzó (p. ej. un merge por fuera en un
+        # hueco) sólo rearma el lote, como base_vieja antes de la suite.
+        if observacion.base and observacion.base != fase.B:
+            return rearmar(estado, tren, temprano=True), ()
+        if estado.promocion_retenida(observacion.ahora):
+            return estado, ()
         fase = Promoviendo(fase)
         efectos = (efecto_promover(tren.id, fase.intentos),)
     else:
@@ -1281,7 +1306,7 @@ def paso(estado, observacion):
 
 # Tagged encoding keeps the SQLite/event contract explicit and round-trippable.
 _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrada,
-          Pausa, Decision, Candidato, ConflictoCadena, RamaOcupada, Aterrizado, EnBase, EscritorExterno,
+          Pausa, Hueco, Decision, Candidato, ConflictoCadena, RamaOcupada, Aterrizado, EnBase, EscritorExterno,
           Incierto, EsperaPrevia, BloqueoPrevia, VentanaAutorizada, Fallo, Completo, Incompleto, RechazoLanzador, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
           Promoviendo, Terminal, Tren, Estado, Efecto, Intento, UnidadRepetida,
@@ -1303,7 +1328,9 @@ def datos(valor):
                        and not (isinstance(valor, Certificado) and f.name == "ci_pendiente_desde"
                                 and valor.ci_pendiente_desde is None)
                        and not (isinstance(valor, Promoviendo) and f.name == "reintento_autorizado"
-                                and not valor.reintento_autorizado)})
+                                and not valor.reintento_autorizado)
+                       and not (f.name in ("hasta", "hueco", "minutos")
+                                and getattr(valor, f.name) is None)})
     if isinstance(valor, tuple):
         return [datos(v) for v in valor]
     return valor.value if isinstance(valor, Enum) else valor

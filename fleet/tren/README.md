@@ -821,17 +821,35 @@ pao-tren juicio --repo owner/project --tren <id> --decision absolver --motivo 'R
 pao-tren juicio --repo owner/project --tren <id> --decision expulsar --pr 123 --motivo 'Devolver al dueño'
 pao-tren juicio --repo owner/project --tren <id> --decision abortar --motivo 'Readmitir las entregas'
 pao-tren juicio --repo owner/project --tren <id> --decision reanudar --motivo 'Causa resuelta'
-pao-tren pausa --repo owner/project --motivo 'Mantenimiento'
+pao-tren pausa --repo owner/project --minutos 30 --motivo 'Mantenimiento'
 pao-tren pausa --repo owner/project --levantar --motivo 'Mantenimiento terminado'
+pao-tren hueco --repo owner/project --minutos 60 --motivo 'Merge por fuera'
+pao-tren hueco --repo owner/project --cerrar --motivo 'Merge terminado'
 ```
 
-`juicio` y `pausa` exigen `activacion(repo) == activo`, antes de abrir el
+`juicio`, `pausa` y `hueco` exigen `activacion(repo) == activo`, antes de abrir el
 ledger y bajo su flock. En sombra, sin inscripción o con inscripción ambigua
 salen con 2. No activan repos, ejecutan efectos, leen recibos ni llaman a
 GitHub. El motivo es obligatorio y no puede estar vacío. `--tren` es
 obligatorio cuando la pausa corresponde a un tren; se omite para `etapa-1`.
 `--pr` es obligatorio para expulsar y se rechaza en las otras decisiones.
 Una pausa automática no puede sustituirse ni levantarse con `pausa`.
+
+`pausa` acepta entre 1 y 120 minutos y usa 120 por omisión, desde el tick que
+aplica la decisión. El primer tick al vencer levanta la pausa manual y anota el
+motivo original en `pausa-manual-vencida`. Para una pausa manual anterior sin
+vencimiento guardado, las dos horas cuentan desde el primer tick que la ve.
+`--levantar` permite terminarla antes. Si se registra a tiempo, el tick aplica
+la orden aunque el plazo haya vencido para entonces.
+
+`hueco` retiene las nuevas promociones mientras siguen el armado, las suites y
+las repeticiones. Mientras está activo, el tren no cambia main. Si un tren está
+en `Promoviendo`, abrirlo devuelve código 2 con `push-a-main-en-curso`. La
+promoción en curso sigue su ciclo de verificación, reconciliación y reintentos.
+El hueco acepta entre 1 y 120 minutos y usa 60 por omisión, desde el tick que
+aplica la orden. El tick lo cierra al vencer con el evento `hueco-vencido`, y
+`--cerrar` permite cerrarlo antes. El carril retoma la promoción al cerrarse.
+Tanto `estado` como el panel muestran el vencimiento de cada control.
 
 Los comandos registran una entrada `pendiente` en la tabla aditiva
 `decisions` y el evento `juicio-registrado`: id, repo, tren, acción, PR,
@@ -857,7 +875,7 @@ readmitiéndose y el feedback pendiente sigue drenándose durante la pausa.
 La identidad de la pausa es la primera secuencia `operativo` de su aparición
 (más el caso de la pausa inicial), no sólo su texto. Ticks pausados conservan
 la identidad; levantar y volver a pausar la renueva. Los snapshots anteriores
-y los contratos de `Estado`, `Pausa` y eventos de sombra no añaden campos.
+se leen con los campos de vencimiento y hueco ausentes.
 `paso` recibe la decisión y la identidad vigente en su observación y vuelve a
 validar repo, pausa, tren, miembro, fase y política. Un juicio ya obsoleto se
 registra `rechazada` sin modificar el estado. Si el CLI puede determinar el
@@ -909,7 +927,7 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `necesita-juicio` | `presupuesto-agotado-en-reanudacion`, `suite-incompleta`, `tamano-de-lote-no-soportado`, `sin-costo-de-suite-sana` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
 | `necesita-juicio` | `sin-duracion:<unidad>`, `presupuesto-agotado:<unidad>`, `confirmacion-candidato:<unidad>`, `definicion-distinta:<unidad>`, `confirmacion-base:<unidad>`, `reproduccion-incierta:<unidad>` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
 | `necesita-juicio` | `intermitente-reincidente:<unidad>` | La unidad ya tiene dos absoluciones automáticas en siete días para este repo. `absolver` exige una suite nueva sobre C. También admite `expulsar` y `abortar`. |
-| `manual` | motivo humano | Sólo `pausa --levantar`: continuar desde la fase guardada. `juicio` no la levanta. |
+| `manual` | motivo humano | Continúa desde la fase guardada al vencer o con `pausa --levantar`. |
 
 El tick activo puede absolver una unidad que pasa dos veces en C y dos veces en
 B (caso 1), o que falla dos veces con una firma estable en C y al menos una vez

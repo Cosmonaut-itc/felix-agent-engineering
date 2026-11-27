@@ -19,7 +19,8 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
         def sin_enviar(args, **kwargs):
             llamadas.append(args)
             if "push" in args:
-                return subprocess.CompletedProcess(args, 1, "", "fallo antes de enviar")
+                return subprocess.CompletedProcess(args, 1,
+                    f"!\t{args[-1]}\t[rejected] (stale info)\n", "")
             return subprocess.run(args, **kwargs)
 
         self.git.ejecutar = sin_enviar
@@ -107,7 +108,8 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
             # Rechazo antes de enviar para los siguientes intentos también.
             def sin_enviar(args, **kwargs):
                 if "push" in args:
-                    return subprocess.CompletedProcess(args, 1, "", "sin enviar")
+                    return subprocess.CompletedProcess(args, 1,
+                        f"!\t{args[-1]}\t[rejected] (stale info)\n", "")
                 return subprocess.run(args, **kwargs)
             self.git.ejecutar = sin_enviar
             obs = self.promover(efectos[0], estado, sana).observacion

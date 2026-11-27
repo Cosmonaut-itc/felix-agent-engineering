@@ -531,6 +531,8 @@ const TREN_RESULT = {ATERRIZADO:'Aterrizó',DEVUELTO:'Devuelto',ABSUELTO:'Absuel
   ABORTADO:'Abortado',PARTIDO:'Partido',REARMAR:'Rearmado sobre otra base',SIMULADO:'Lote simulado'};
 const trenDur = seconds => seconds < 60 ? 'menos de 1 min' : fmtDur(seconds);
 const trenAgo = at => 'hace '+trenDur(NOW-at);
+const trenHasta = at => at==null ? '' : ' hasta '+new Date(at*1000).toLocaleTimeString('es-MX',
+  {hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 const trenCount = count => count===1 ? '1 PR' : count+' PRs';
 function trenNode(tag, cls, text){
   const node=document.createElement(tag);
@@ -541,7 +543,7 @@ function trenNode(tag, cls, text){
 function trenState(repo, stage){
   let text, color;
   if(repo.pausa){
-    text='En pausa · '+repo.pausa.motivo;
+    text='En pausa · '+repo.pausa.motivo+trenHasta(repo.pausa.hasta);
     color='warn';
   }else if(repo.modo==='sombra'){
     text='Sombra · simula lotes, no corre suites';
@@ -551,6 +553,10 @@ function trenState(repo, stage){
   }else{
     text='Libre';
     color='good';
+  }
+  if(repo.hueco){
+    text+=' · Promoción retenida'+trenHasta(repo.hueco.hasta);
+    color='warn';
   }
   const state=trenNode('span','state');
   if(color){
