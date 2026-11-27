@@ -219,9 +219,14 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
         resultado = ejecutar(efecto, estado, incompleta, self.git)
         self.assertTrue(resultado.completo)
         final, efectos = paso(estado, resultado.observacion)
-        self.assertEqual(final.pausa, Pausa("conflicto-en-cadena", pr=5, archivos=("comun",)))
-        self.assertIsInstance(final.trenes[0].fase, Congelado)
-        self.assertEqual(efectos, ())
+        self.assertIsNone(final.pausa)
+        self.assertEqual(final.trenes[0].fase, Terminal("REARMAR"))
+        self.assertEqual(final.trenes[-1].fase, Congelado(self.B))
+        self.assertEqual(final.trenes[-1].recibos, estado.trenes[0].recibos[:1])
+        self.assertEqual(final.entradas[0].admision, Retenido(Motivo.INCIERTO))
+        self.assertIsNone(final.entradas[1].tren)
+        self.assertEqual([e.tipo for e in efectos],
+                         ["avisar-conflicto-en-cadena", "armar-candidato", "avisar-en-tren"])
 
     def test_rama_ocupada_con_lectura_incompleta_no_se_pierde(self):
         estado, candidato, obs = self.armar()
