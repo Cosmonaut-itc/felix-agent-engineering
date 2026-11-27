@@ -27,6 +27,32 @@ El LaunchAgent usa los valores del entorno de launchd.
 
 Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}`. Cada peso es un entero entre 1 y `lugares` y las clases sin peso declarado ocupan un lugar por arriendo.
 
+## Alineación automática de Jale
+
+`fleet/boat-pool/install-alinear-jale.sh` carga `local.pao.boat-alinear-jale`
+en la sesión gráfica y deja un ejemplo con `activo: false`. Con la
+alineación activa, el agente consulta `origin/main` al cargar y cada cinco
+minutos, actualiza un worktree dedicado con HEAD separado y ejecuta
+`boat-pilot.py alinear` cuando cambia el SHA o falla la última pasada. El
+comando de Jale espera las corridas vigentes antes de preparar una VM
+existente. Si el worktree está sucio, el agente avisa y conserva los cambios.
+
+Cuando `alinear` ya esté en `main` de Jale, copia el ejemplo a
+`~/.config/boat-pool/alinear-jale.json` y cambia `activo` a `true` para
+permitir el uso de Boat. Puedes indicar `repo` si el clon vive fuera de
+`~/VSCODE/REPOS/SEN-CheckIn` y `worktree` para elegir otra ruta dedicada.
+El worktree predeterminado es `main/` dentro del directorio de estado
+`~/.local/state/boat-pool/alinear-jale/`. El agente usa `XDG_CONFIG_HOME` y
+`XDG_STATE_HOME` si están definidos en el entorno de launchd.
+
+El directorio de estado guarda `estado.json`, la salida de cada ejecución
+en `alinear-*.log`, los fallos de Git en `git-*.log` y el stderr del agente
+en `launchd.err.log`. `alinear` tiene un plazo de dos horas. Una salida 1
+se reintenta en la próxima pasada para recuperar fallos transitorios.
+Jale evita repetir una preparación fallida para la misma revisión y el
+agente avisa una vez por fallo con el mismo SHA y salida. Para apagarlo,
+pon `activo: false`. Surte efecto desde la siguiente pasada.
+
 ## Operación
 
 - `pedir --repo R --corrida ID --clase C [--candidatas A,B] [--prioridad P] [--esperar S] [--ttl S]`
