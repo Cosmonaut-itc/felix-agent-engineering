@@ -482,11 +482,9 @@ Son cuatro acreditaciones distintas:
 
 1. **Protocolo instalado.** Con ambos módulos presentes se puede negociar la
    versión global del protocolo; eso no acredita una corrida.
-2. **Soporte por corrida.** Los cuatro adaptadores instalados (`remote-run`,
-   `jale`, `apotheca`, `vigilante`) devuelven hoy `unsupported`. Los formatos
-   actuales no publican un vínculo acreditado entre launcher/ref y la
-   generación e identidad originales de tarea/intento, o no permiten acreditar
-   su clasificación manual. Un ID almacenado puede referirse a otra tarea
+2. **Soporte por corrida.** `remote-run` dispone de un lector fijo para los
+   originales H1 con perfil `filtered` y acreditación local. `jale`,
+   `apotheca` y `vigilante` siguen en `unsupported`. Un ID almacenado puede referirse a otra tarea
    tras reconstruir la cola; cotejarlo con la tarea actual no demuestra
    pertenencia. Los productores deben publicar el vínculo desde el alta
    verificada y contemplar caídas, relevo, reencolado y nueva generación.

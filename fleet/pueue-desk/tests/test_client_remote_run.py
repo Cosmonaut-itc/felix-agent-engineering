@@ -273,6 +273,18 @@ class RemoteRunTests(unittest.TestCase):
         self.engine.reconcile_clients()
         self.assertTrue(self.actions.reservation(request)['open'])
 
+    def test_completion_without_attribution_keeps_open(self):
+        request = self.started()
+        self.fixture.complete()
+        self.done()
+        record = self.actions.record(request)
+        del record['attribution']
+        self.actions.save(record, self.actions.reservation(request))
+        self.engine.reconcile_clients()
+        reservation = self.actions.reservation(request)
+        self.assertEqual(reservation['reconcile_reason'], 'evidence_missing')
+        self.assertTrue(reservation['open'])
+
     def test_running_worker_can_predate_acceptance(self):
         f = self.fixture
         f.action(mode='rack-running')

@@ -28,6 +28,13 @@ CASES = [
     ('completion uses the same worker pid', R,
      "and value['pid'] == worker['pid'] and value['birth'] == worker['birth']",
      "and value['birth'] == worker['birth']", 'test_completion_from_other_worker_keeps_open'),
+    ('completion requires stock attribution', R,
+     """        attribution = recorded.get('attribution')
+        c.keys(attribution, 'dispatch seal_receipt exclusion')
+        c.digest(attribution['seal_receipt'])
+        c.require(attribution['exclusion'] == 'filtered'
+                  and attribution['dispatch'] == recorded['process']['dispatch'], 'remote_run_attribution')""",
+     '        pass', 'test_completion_without_attribution_keeps_open'),
     ('running worker may predate acceptance', R,
      "match(pair == winner or kind == 'terminated' and pair == (None, None))",
      'match(pair == winner)', 'test_running_worker_can_predate_acceptance'),
@@ -60,7 +67,7 @@ CASES = [
      "originals.identity['generation'] != hashlib.sha256(raw.encode()).hexdigest()",
      'False', 'test_old_generation_is_startup'),
     ('generation checked after daemon read', R,
-     "if self.engine.generation(state) != state['generation']:", 'if False:',
+     "if generation != state['generation']:", 'if False:',
      'test_daemon_replaced_during_observe_is_startup'),
     ('legacy binding stays unsupported', R, "if envelope.get('schema') == 'remote-run-client-binding@1':",
      'if False:', 'test_legacy_binding_is_unsupported_before_daemon'),

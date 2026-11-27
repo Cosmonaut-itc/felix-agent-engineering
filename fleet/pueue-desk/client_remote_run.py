@@ -73,7 +73,10 @@ def read_file(path, *, parent=None, limit, private=True):
         with os.fdopen(fd, 'rb', closefd=False) as stream:
             raw = stream.read(limit + 1)
         after = os.fstat(fd)
-        current = os.stat(path, dir_fd=parent, follow_symlinks=False)
+        try:
+            current = os.stat(path, dir_fd=parent, follow_symlinks=False)
+        except OSError:
+            raise Unavailable('identity') from None
         match(inode(current) == inode(info) and after.st_nlink == 1
               and after.st_mtime_ns == info.st_mtime_ns and after.st_ctime_ns == info.st_ctime_ns)
         if len(raw) > limit:
@@ -303,10 +306,16 @@ class RemoteRun:
         return selected, self.reservation(selected)
 
     def phase_record(self, originals, request, reservation):
-        key = dict(request, phase=reservation['phase'])
-        recorded = self.record(key)
-        if recorded is None or reservation['uncertain']:
-            raise Unavailable('rpc_unresolved' if reservation['uncertain'] else 'evidence_missing')
+        if reservation['uncertain']:
+            raise Unavailable('rpc_unresolved')
+        recorded = self.record(dict(request, phase=reservation['phase']))
+        if recorded is None:
+            raise Unavailable('evidence_missing')
+        attribution = recorded.get('attribution')
+        c.keys(attribution, 'dispatch seal_receipt exclusion')
+        c.digest(attribution['seal_receipt'])
+        c.require(attribution['exclusion'] == 'filtered'
+                  and attribution['dispatch'] == recorded['process']['dispatch'], 'remote_run_attribution')
         match(recorded['request']['mode'] == request['mode']
               and stable(recorded['request']['expected']) == originals.identity)
         return recorded
@@ -370,7 +379,11 @@ class RemoteRun:
         with self.evidence(request, reservation) as (group, originals):
             self.generation(originals, state)
             daemon = self.engine.pueue.status()
-            if self.engine.generation(state) != state['generation']:
+            try:
+                generation = self.engine.generation(state)
+            except (OSError, ValueError):
+                raise Unavailable('startup') from None
+            if generation != state['generation']:
                 raise Unavailable('startup')
             current = self.project(request, originals, group, daemon, reservation, posterior)
             return dict(group=group, identity=current)
@@ -406,7 +419,9 @@ class RemoteRun:
             originals.action(request)
             op = request['op']
             if op == 'finish':
-                match(selected in (reservation['phase'], 'finish') if reservation else False)
+                if reservation is None:
+                    raise Unavailable('evidence_missing')
+                match(selected in (reservation['phase'], 'finish'))
                 match(self.finish(request, originals, current, reservation) == request)
             else:
                 match(selected == request['phase'])
