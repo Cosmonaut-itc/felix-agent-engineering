@@ -247,7 +247,7 @@ STARTUP_CASES += (
     ('startup-default-interruption','index.html'," || h.tasks.some(t=>t.group===n && t.interruption_reason)",'',
      'test_startup.StartupPipelineTests.test_a_w4_snapshot_validate_publish_render_default_interrupted_and_empty_hidden'),
     ('startup-auto-not-held','../pueue-desk/control.py',"if 'startup' in r and set(r) & {'manual', 'ambiguous'}","if 'startup' in r",
-     'test_startup.StartupPipelineTests.test_a_w5_pipeline_six_waits_one_hold_and_no_redundant_ssh'),
+     'test_startup.StartupPipelineTests.test_a_w5_pipeline_group_waits_one_hold_and_no_redundant_ssh'),
     ('startup-wait-code','host_action.py',"code != 'cuotas_sensores'","False",
      'test_startup.StartupPipelineTests.test_wait_codes_are_closed_and_disjoint_from_holds'),
     ('startup-wait-sanitize','host_action.py',"result['startup_waiting'] = waiting","result['startup_waiting'] = {}",

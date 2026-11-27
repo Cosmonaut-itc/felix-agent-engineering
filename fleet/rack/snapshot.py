@@ -121,7 +121,7 @@ def valid_admission_cut(cut, resources):
     return (isinstance(cut, dict) and cut.keys() == times | {
                 'motivo', 'grupo', 'fase', 'recursos', 'bloqueantes', 'payload_started', 'no_payload'}
             and cut['motivo'] == 'espera-candados'
-            and cut['grupo'] in ('suites', 'hasito', 'otros', 'rapidas', 'pesadas', 'jale')
+            and cut['grupo'] in ('suites', 'caja', 'hasito', 'otros', 'rapidas', 'pesadas', 'jale')
             and cut['fase'] in ('espera-recurso', 'espera-lugar') and cut['recursos'] == resources
             and cut['payload_started'] is False and cut['no_payload'] is True
             and all(admission_time(cut[k]) and cut[k] >= 0 for k in times)
@@ -417,7 +417,7 @@ def guard_date(value):
 
 def guard_identity(row):
     if (type(row) is not dict or set(row) != {'at','grupo','id'} or type(row['id']) is not int
-            or not 0 <= row['id'] < 2**64 or row['grupo'] not in ('hasito','jale','jale-verify','otros','pesadas')):
+            or not 0 <= row['id'] < 2**64 or row['grupo'] not in ('caja','hasito','jale','jale-verify','otros','pesadas')):
         raise ValueError('Identidad de admisión inválida')
     guard_date(row['at'])
     return dict(row)
@@ -490,7 +490,7 @@ def validate_guard(value, *, allow_extra=False):
         for row in result['bloqueos']:
             if (not valid_fields(row, fields) or row['causa'] not in GUARD_CAUSES
                     or row['operacion'] not in ('one','resume','unknown')
-                    or row['grupo'] not in (None,'hasito','jale','jale-verify','otros','pesadas','rapidas')):
+                    or row['grupo'] not in (None,'caja','hasito','jale','jale-verify','otros','pesadas','rapidas')):
                 raise ValueError('Bloqueo inválido')
             blockers.append({k: row[k] for k in fields})
         clean['last_result'] = dict(evento=result['evento'], tick_id=result['tick_id'],

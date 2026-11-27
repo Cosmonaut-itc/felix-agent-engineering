@@ -20,9 +20,9 @@ Cuando arranca la distro, systemd de usuario inicia el servicio habilitado con
 linger. Esto no acredita que Windows inicie WSL sin intervención tras Update.
 La entrega no promete reinicio desatendido de Windows.
 
-`control.py` contiene la única tabla de cuotas (día/noche): hasito 1/2,
-jale 5/7, jale-verify 1/1, otros 2/2, pesadas 2/3 y rapidas 3/3.
-Noche: [05:00Z, 14:00Z). La suma es 14/18; Pueue no impone un máximo global.
+`control.py` contiene la única tabla de cuotas (día/noche): caja 1/2,
+hasito 1/2, jale 5/7, jale-verify 1/1, otros 2/2, pesadas 2/3 y rapidas 3/3.
+Noche: [05:00Z, 14:00Z). La suma es 15/20; Pueue no impone un máximo global.
 `rapidas` es el carril rápido que comparten Hasito, Jale y Bodega para la
 prueba dirigida; cada lanzador corta sus tareas a los 600 s. `pesadas` recibe
 las suites de horas (`contract` y `e2e` completas de Jale) para que no ocupen
@@ -30,9 +30,9 @@ todo `jale`, y `jale-verify` las sesiones de verify, que ya eran de una en una.
 El lanzador de Jale las enruta desde SEN-HASO/Jale#705. Los timers
 y el arranque aplican el modo UTC vigente, sin interrumpir tareas vivas.
 Usar sólo esos grupos; `default` y otros grupos quedan fuera de estas cuotas.
-`otros` es de los repositorios sin grupo propio: `remote-run` encola ahí toda
-corrida normal sin `REMOTE_RUN_PROYECTO=hasito`, que sólo fija el lanzador de
-Hasito.
+`remote-run` encola en `otros` las corridas normales de repositorios sin grupo
+propio. El lanzador de Hasito fija `REMOTE_RUN_PROYECTO=hasito`. Caja usa
+`REMOTE_RUN_PROYECTO=caja` para sus suites.
 El instalador conserva `suites`, `pg5434` y otros grupos existentes. Sus pausas
 se registran por separado del perfil. Un retiro explícito y vacío puede hacerse
 con `control.py retirar suites --host desk` (o `pg5434`), bajo el mismo candado,
@@ -376,9 +376,9 @@ persistencia tras una operación guardadora y reconciliación en ambos casos.
 ### Lugares del desk desde el rack (U3.2)
 
 El desk usa el mismo `rack-host-control@1`, recibos SQLite, undo y `control.lock`
-que la Mini. Su tabla vigente tiene **seis** grupos: hasito 1/2, jale 5/7,
-jale-verify 1/1, otros 2/2, pesadas 2/3 y rapidas 3/3 (día/noche).
-Suman **14/18**. `pg5434` fue retirado; `default` queda fuera del reparto y sin ±.
+que la Mini. Su tabla vigente tiene **siete** grupos con las cuotas indicadas
+al inicio de este README.
+Suman **15/20**. `pg5434` fue retirado; `default` queda fuera del reparto y sin ±.
 No se absorben grupos ajenos en el perfil; su propiedad de pausa se conserva
 por separado, incluso cuando el grupo ya no existe.
 Si aparece trabajo no terminal fuera del reparto (incluido `default`), se publica
@@ -455,6 +455,11 @@ Pasos para el operador, **no ejecutados por las pruebas**:
    `withdraw-desk.sh` realiza el mantenimiento ordenado descrito abajo.
 
 ### Cambiar GROUP_LIMITS después de adoptar
+
+Si la tabla incorpora un grupo, créalo vacío en el desk con la cuota del
+horario vigente antes del ensayo del instalador. El preflight valida las
+cuotas de todos los grupos de la tabla nueva. Para `caja`, habilita su lanzador
+después de migrar el controlador y actualizar el rack.
 
 Cambiar la tabla en el checkout revisado y ejecutar primero `install-desk.py --seco`
 y luego `install-desk.py` con el mismo `--pid-file` de los pasos anteriores.
@@ -542,7 +547,7 @@ cualquier instalación que contenga `mini_handoff`.
 
 La cabecera del desk permite elegir Día o Noche por el mismo canal
 `rack-host-control@1` (`op: "mode"`, `change: {"mode": "dia"|"noche"}`).
-Aplica la tabla completa del destino (14/18), retira los ajustes de lugares y
+Aplica la tabla completa del destino (15/20), retira los ajustes de lugares y
 verifica reducciones antes de aumentos. Reducir `parallel` deja seguir las tareas
 vivas. Pedir el modo vigente es `same_mode`, sin restablecer cuotas.
 La Mini conserva `fijo`, perfil 3/1/3, y rechaza `mode` sin mutar Pueue.
@@ -566,7 +571,7 @@ posterior exacta, vector y generación observados y ningún evento cruzado;
 restaura también los vencimientos originales. Si cambió algo devuelve
 `409 undo_conflict`: «El horario o los lugares cambiaron; no se puede deshacer
 este ajuste». Un adelanto o undo que aumente cualquier grupo se rechaza entero
-con `foreign_work` cuando hay trabajo vivo fuera de los seis grupos. Los cambios
+con `foreign_work` cuando hay trabajo vivo fuera de los siete grupos. Los cambios
 que sólo bajan pasan; reconciliar la tabla del evento conserva la excepción de U3.2.
 Un parcial conserva deseo/observado y se recupera por el mismo motor; un resultado
 incierto se consulta con su ID, nunca se repite. `slots.disabled` cubre modo y undo.
@@ -596,7 +601,7 @@ ese procedimiento para cancelar un modo pendiente o desconocido.
 Pruebas dirigidas: `tests/test_mode.py`, `tests/mutate_slots.py --mode-only` y
 `tests/private_slots.py --run-private --host desk --mode`. La última se ejecuta
 sólo mediante `remote-run`: daemon/configuración propios, siete tareas sintéticas
-acotadas, reducción 18→14 sin detenerlas, evento 05Z y undo exacto, con limpieza
+acotadas, reducción 20→15 sin detenerlas, evento 05Z y undo exacto, con limpieza
 por la puerta privada y espera del PID propio.
 
 

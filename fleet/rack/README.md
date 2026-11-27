@@ -907,7 +907,7 @@ sintético del canal sigue probándose por su ruta fija dentro de `/tmp`.
 # ± del desk y expiración (U3.2)
 
 El desk ofrece los mismos controles −/+ y «Deshacer» que la Mini. Cada grupo
-admite 1..8 lugares y el tope es 14 de día / 18 de noche. Con el tope lleno,
+admite 1..8 lugares y el tope es 15 de día / 20 de noche. Con el tope lleno,
 «+» explica que hay que quitar un lugar a otro grupo. Los grupos pausados
 consumen su cuota completa. El `default` del desk queda fuera del reparto.
 Cuando tiene trabajo, su fila explica «Reservado · fuera del reparto». Si hay trabajo no terminal
@@ -916,7 +916,8 @@ El host veta sólo aumentos nuevos de ± y undo; la reconciliación del deseo
 durable sigue aplicando la tabla vigente o un ajuste ya aceptado. El panel
 nombra el trabajo ajeno también con deriva o recuperación pendiente y conserva
 «−». El snapshot publica sólo un conteo saneado, sin identidades ni entornos.
-La tabla de `main` tiene seis grupos (incluido `otros=2`; `pg5434` ya retirado).
+La tabla tiene siete grupos. `caja` tiene 1 lugar de día y 2 de noche.
+`otros` tiene 2 lugares en ambos horarios.
 
 Los ajustes del desk vencen en el próximo evento 05:00/14:00 UTC, aunque se
 pierda el timer. La nota y el toast indican «hasta las HH:mm», en México.

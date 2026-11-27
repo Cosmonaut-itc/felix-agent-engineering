@@ -109,7 +109,7 @@ if(input.check) (async()=>{
  run('SLOT_MESSAGES.clear();h.control.foreign_work=1');
  assert.match(run('modeControls(h)'),/data-mode="noche"[^>]*disabled/);
  assert.match(run('modeControls(h)'),/trabajo fuera del reparto/);
- run('h.control.mode="noche";h.control.slots={hasito:2,jale:7,"jale-verify":1,otros:2,pesadas:3,rapidas:3}');
+ run('h.control.mode="noche";h.control.slots={caja:2,hasito:2,jale:7,"jale-verify":1,otros:2,pesadas:3,rapidas:3}');
  assert(!/data-mode="dia"[^>]*disabled/.test(run('modeControls(h)')),'foreign work permits a mode that only decreases');
  run('h.control.foreign_work=0;h.control.mode_note="Adelantado · vuelve a día a las 08:00";h.control.mode_detail="Ajustes manuales hasta las 23:00"');
  assert.match(run('modeControls(h)'),/Adelantado · vuelve a día a las 08:00/);

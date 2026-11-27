@@ -263,7 +263,7 @@ def mode_scenario(control, pueue, root, emit):
     assert day['status']=='applied' and day['result']['observed']==control.mode_profile('dia'),day
     tasks=pueue.status()['tasks']
     for i in ids:assert tasks[str(i)]['status']=='Running' or 'Running' in tasks[str(i)]['status'],i
-    emit('18_to_14_with_live_tasks',observed=day['result']['observed'],running_jale=len(ids),jale_parallel=5,no_task_stopped=True)
+    emit('20_to_15_with_live_tasks',observed=day['result']['observed'],running_jale=len(ids),jale_parallel=5,no_task_stopped=True)
     undo=apply('mode-private-undo2',undo_of='mode-private-day')
     assert undo['status']=='applied' and engine.view()['mode']=='noche',undo
     emit('undo_live_tasks',observed=undo['result']['observed'],mode=undo['result']['mode'])
@@ -281,7 +281,7 @@ def mode_scenario(control, pueue, root, emit):
     expired=apply('mode-private-expired',undo_of='mode-private-undo2')
     assert expired['error']['code']=='undo_conflict' and expired['effects'] is False,expired
     emit('05Z_event_retires_advance',mode=view['mode'],note=view['mode_note'],expired_undo='undo_conflict')
-    emit('PASS',assertions='destination night table; exact undo; real 18->14 with 7 live tasks unchanged; 05Z clears advance and slots')
+    emit('PASS',assertions='destination night table; exact undo; real 20->15 with 7 live tasks unchanged; 05Z clears advance and slots')
 
 
 if __name__ == '__main__': main()

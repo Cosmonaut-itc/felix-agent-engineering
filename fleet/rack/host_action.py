@@ -5,12 +5,18 @@ import json
 
 OPS = ('host_capabilities', 'slots', 'mode', 'undo', 'reorder')
 GROUPS = {'suites', 'default', 'rapidas'}
-DESK_GROUPS = {'hasito', 'jale', 'jale-verify', 'otros', 'pesadas', 'rapidas'}
+DESK_GROUPS = {'caja', 'hasito', 'jale', 'jale-verify', 'otros', 'pesadas', 'rapidas'}
+DESK_CAPS = (('dia', 15), ('noche', 20))
+PRE_CAJA_DESK_GROUPS = DESK_GROUPS - {'caja'}
+PRE_CAJA_DESK_CAPS = (('dia', 14), ('noche', 18))
 ACTION = re.compile(r'[A-Za-z0-9-]{8,64}')
 
 
-def vector(value, host='mini'):
-    return (type(value) is dict and set(value) == (DESK_GROUPS if host == 'desk' else GROUPS)
+def vector(value, host='mini', *, pre_caja=False):
+    groups = GROUPS
+    if host == 'desk':
+        groups = PRE_CAJA_DESK_GROUPS if pre_caja else DESK_GROUPS
+    return (type(value) is dict and set(value) == groups
             and all(type(n) is int and 1 <= n <= 8 for n in value.values()))
 
 
@@ -121,7 +127,7 @@ def mode_fields(value):
     return result
 
 
-def control(value, host='mini'):
+def control(value, host='mini', *, pre_caja=False):
     """Read view whitelist; never publish arbitrary controller fields or error text."""
     if type(value) is not dict or value.get('schema') != 'rack-host-result@1':
         return unavailable()
@@ -137,12 +143,14 @@ def control(value, host='mini'):
         return answer
     if value.get('status') != 'ok':
         return unavailable()
+    desk_caps = PRE_CAJA_DESK_CAPS if pre_caja else DESK_CAPS
     caps = value.get('capabilities')
     if (type(caps) is not dict or any(type(caps.get(k)) is not bool for k in
             ('slots', 'undo', 'dry_run', 'mode', 'reorder', 'restart_queue'))
-            or not vector(value.get('slots'), host) or not vector(value.get('desired'), host)
+            or not vector(value.get('slots'), host, pre_caja=pre_caja)
+            or not vector(value.get('desired'), host, pre_caja=pre_caja)
             or type(value.get('revision')) is not int or value['revision'] < 1
-            or (value.get('mode'), value.get('cap')) not in ((('dia', 14), ('noche', 18)) if host == 'desk' else (('fijo', 7),))
+            or (value.get('mode'), value.get('cap')) not in (desk_caps if host == 'desk' else (('fijo', 7),))
             or type(value.get('policy_hash')) is not str or len(value['policy_hash']) != 64
             or type(value.get('generation')) is not str or not 1 <= len(value['generation']) <= 160
             or type(value.get('drift')) is not bool or type(value.get('recovery_pending')) is not bool):
@@ -204,8 +212,8 @@ def control(value, host='mini'):
         tables = value.get('tables')
         if tables is not None or caps['mode']:
             if (type(tables) is not dict or set(tables) != {'dia', 'noche'}
-                    or any(not vector(tables[m], 'desk') or sum(tables[m].values()) != cap
-                           for m, cap in (('dia', 14), ('noche', 18)))):
+                    or any(not vector(tables[m], 'desk', pre_caja=pre_caja) or sum(tables[m].values()) != cap
+                           for m, cap in desk_caps)):
                 raise ValueError('Tablas inválidas')
             result['tables'] = tables
     if host == 'mini' and 'slots_note' in value:
@@ -237,6 +245,10 @@ def sanitize(request, response, op):
         return dict(unavailable(),action_id=request['action_id'],effects=False)
     if status not in ('applied', 'applying', 'partial', 'unknown', 'conflict', 'rejected', 'dry_run', 'recovery_error', 'unsupported', 'aborted'):
         raise ValueError('Estado inválido')
+    host = request['host']
+    # The original request identifies the shape of a stored receipt after a table migration.
+    pre_caja = (op == 'status' and host == 'desk' and
+                vector(request.get('expected', {}).get('slots'), host, pre_caja=True))
     answer = dict(schema='rack-host-result@1', action_id=request['action_id'], status=status, error=None)
     if op == 'status' and status in ('conflict', 'rejected', 'aborted'):
         wire = {k: v for k, v in request.items() if k not in ('schema', 'host')}
@@ -250,7 +262,7 @@ def sanitize(request, response, op):
                      and status == 'conflict' and (response.get('error') or {}).get('code') == 'stale_state'
                      and response.get('effects') is True and type(event) in (int, float))
         if scheduled:
-            view = control(response.get('control'), 'desk')
+            view = control(response.get('control'), 'desk', pre_caja=pre_caja)
             scheduled = view['status'] == 'ok' and event == view['schedule_event']
         if response.get('receipt_digest') != digest or status != 'aborted' and response.get('effects') is not False and not scheduled:
             raise ValueError('Rechazo sin recibo vinculado y sin efectos')
@@ -283,7 +295,7 @@ def sanitize(request, response, op):
     if type(response.get('revision')) is int:
         answer['revision'] = response['revision']
     if 'control' in response:
-        answer['control'] = control(response['control'], request['host'])
+        answer['control'] = control(response['control'], host, pre_caja=pre_caja)
     if type(response.get('effects')) is bool:
         answer['effects'] = response['effects']
     payload = response.get('result')
@@ -314,8 +326,10 @@ def sanitize(request, response, op):
         answer['result']['undo_of']=request['action_id'] if status=='applied' else None
         return answer
     if payload is not None:
-        if (type(payload) is not dict or not vector(payload.get('before'), request['host']) or not vector(payload.get('desired'), request['host'])
-                or payload.get('observed') is not None and not vector(payload['observed'], request['host'])):
+        if (type(payload) is not dict
+                or not vector(payload.get('before'), host, pre_caja=pre_caja)
+                or not vector(payload.get('desired'), host, pre_caja=pre_caja)
+                or payload.get('observed') is not None and not vector(payload['observed'], host, pre_caja=pre_caja)):
             raise ValueError('Vector inválido')
         answer['result'] = {k: payload.get(k) for k in ('before', 'desired', 'observed')}
         expires = payload.get('expires_at')
@@ -323,7 +337,7 @@ def sanitize(request, response, op):
             raise ValueError('Vencimiento inválido')
         answer['result'].update(expires_at=expires, undo_of=request['action_id'] if status == 'applied' else None)
         if request['host'] == 'desk' and 'mode' in payload:
-            if (payload['mode'], payload.get('cap')) not in (('dia', 14), ('noche', 18)):
+            if (payload['mode'], payload.get('cap')) not in (PRE_CAJA_DESK_CAPS if pre_caja else DESK_CAPS):
                 raise ValueError('Modo inválido')
             event, nxt = payload.get('schedule_event'), payload.get('next_event')
             if (type(event) not in (int, float) or type(nxt) not in (int, float)
