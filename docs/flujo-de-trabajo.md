@@ -90,14 +90,16 @@ Un pedido de consultar estado o atender comentarios mantiene ese alcance.
 El [procedimiento de merge](../skills/felix-mode/references/merge.md) fija
 los gates, la renovación del APTO, el destino y la verificación posterior.
 También fija los PRs que paran en merge-ready y te esperan, como los que
-tocan CI, dependencias o la gobernanza de agentes.
+tocan CI, dependencias o la gobernanza de agentes. En Jale no te esperan
+los que el tren retiene hasta autorizar su head: los autoriza el APTO de Sol
+y de Opus, como fija el paso 2 de la entrega al tren.
 
 ## Revisión
 
 | Nivel | Cuándo | Cómo |
 |-------|--------|------|
 | Normal | Toda review de cambios. | Un revisor gpt-6.2-sol en `high`, con contexto nuevo y evidencia primaria. |
-| Alto riesgo | Producción o sistemas de cliente, migraciones o borrado de datos, autenticación y permisos, dinero o impuestos, contratos entre servicios, o una ruta de `.agents/high-risk-paths`, que `risk-classify` detecta. | `interrogate` con sol en `high` como Reviewer A y opus-5.5 en `high`. Opus corre sólo en las rondas completas. |
+| Alto riesgo | Producción o sistemas de cliente, migraciones o borrado de datos, autenticación y permisos, dinero o impuestos, contratos entre servicios, o una ruta de `.agents/high-risk-paths`, que `risk-classify` detecta. | `interrogate` con sol en `high` como Reviewer A y opus-5.5 en `high`. Opus corre sólo en las rondas completas y en el Par de Jale de la entrega al tren. |
 | Diseño | Decisiones de forma antes de implementar. | `architect` con un runner opus-5.5 y dos candidatos. Sin juez cruzado. |
 | Diseño disputado | Alto riesgo, o dos candidatos empatados. | `arena` con opus-5.5 y gpt-6.2-sol, juzgado por fable-5.2 en `high`, y dos implementaciones completas. |
 | Consejo | Sólo cuando pides «consejo», para un cambio o una decisión. | [Consejo](../skills/felix-mode/references/consejo.md): gpt-6.2-sol y opus-5.5 en `high`, y fable-5.2 en `high`, con nota por ronda en el PR. |
