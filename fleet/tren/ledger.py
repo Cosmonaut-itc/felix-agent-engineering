@@ -14,7 +14,6 @@ from dominio import Entrada, clave, datos, desde_datos, inicial
 
 EVENTO_ABSOLUCION = "intermitente-absuelto"
 VENTANA_ABSOLUCION_S = 7 * 86400
-EVENTO_RELEVO_BOAT = "relevo-boat-confirmado"
 
 
 def directorio_estado():
@@ -119,8 +118,6 @@ class Ledger:
                 self.db.execute("CREATE TABLE IF NOT EXISTS snapshots_lanzamientos ("
                                 "ruta TEXT NOT NULL REFERENCES snapshots_operador(ruta) ON DELETE CASCADE, "
                                 "tren TEXT NOT NULL, recibo TEXT NOT NULL, PRIMARY KEY(ruta, tren, recibo))")
-                self.db.execute("CREATE INDEX IF NOT EXISTS events_relevo_boat ON events(repo, seq) "
-                                f"WHERE tipo='{EVENTO_RELEVO_BOAT}'")
         except BaseException:
             self.db.close()
             raise
@@ -270,23 +267,20 @@ class Ledger:
             self.evento(estado.repo, "operativo", ahora,
                         {"estado": datos(estado), "efectos": datos(efectos), "consumido": consumido})
 
-    def terminales_hasta(self, repo, instante):
-        from dominio import Terminal
+    def estado_operativo_hasta(self, repo, instante):
         fila = self.db.execute("SELECT payload FROM events WHERE repo=? AND tipo='operativo' "
                                "AND instante<=? ORDER BY seq DESC LIMIT 1", (repo, instante)).fetchone()
-        if fila is None:
-            return set()
-        estado = desde_datos(json.loads(fila[0])["estado"])
-        return {tren.id for tren in estado.trenes if isinstance(tren.fase, Terminal)}
+        return inicial(repo) if fila is None else desde_datos(json.loads(fila[0])["estado"])
 
-    def instante_relevo_boat(self, repo, lote):
-        """Devuelve la última confirmación si corresponde al lote consultado."""
-        fila = self.db.execute("SELECT instante, payload FROM events WHERE repo=? "
-                               f"AND tipo='{EVENTO_RELEVO_BOAT}' ORDER BY seq DESC LIMIT 1",
-                               (repo,)).fetchone()
-        if fila is not None and json.loads(fila["payload"])["lote"] == lote:
-            return fila["instante"]
-        return None
+    def relevos_boat(self, repo):
+        """Vencimiento por lote, o None si su liberación quedó confirmada."""
+        relevos = {}
+        for fila in self.db.execute(
+                "SELECT payload FROM events WHERE repo=? "
+                "AND tipo IN ('relevo-boat', 'relevo-boat-liberado') ORDER BY seq", (repo,)):
+            payload = json.loads(fila[0])
+            relevos[payload["lote"]] = payload.get("hasta")
+        return relevos
 
     def efecto_iniciado(self, repo, clave, evidencia=None):
         """El efecto pasó por iniciar_efecto en algún tick: su IO pudo ocurrir.

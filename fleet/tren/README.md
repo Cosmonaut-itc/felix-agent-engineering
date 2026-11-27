@@ -1369,14 +1369,15 @@ inscribe ni activa repositorios.
 configurados y sólo puede tener claves `contract` y `e2e`.
 Tras confirmar el estado del tick activo y antes de drenar sus efectos,
 `"boat_pool"` (por omisión `~/.local/bin/boat-pool`) reserva por 30 min los
-modos Boat del lote vivo. Al cerrar sin sucesor, acorta la reserva del lote a
-300 s. Tras confirmar el recorte, el tick libera las reservas anteriores que
-sigan vigentes. Los ticks vacíos esperan 300 s desde esa confirmación antes
-de liberar la reserva del último lote cerrado y las anteriores pendientes.
-Si falta la confirmación, cuentan el plazo desde el cierre guardado. Con
-sucesor, el tick reserva primero el lote vivo y luego libera las reservas
-anteriores. En pausa libera las reservas del carril, también al guardar una
-pausa producida por el drenado.
+modos Boat del lote vivo. Al observar el cierre de un lote, el tren fija su
+vencimiento de relevo a 300 s y lo guarda antes de pedir el recorte con
+`reservar --vence`. Cada tick reintenta los recortes vigentes con
+el mismo vencimiento. Boat los vence con su propio reloj. Tras confirmar la
+reserva del sucesor, el tick libera los terminales del relevo. En pausa
+libera también la reserva del vivo, incluida una pausa guardada al drenar.
+Si Boat nunca aplica el recorte a tiempo, la reserva larga vence por su TTL
+original de 1800 s desde la última renovación. Instala primero el pool de
+Boat con soporte para `--vence` y después el tren, que usa el binario instalado.
 `"boat_esperar_s": 180` fija cuánto espera Boat un lugar con prioridad
 `tren` antes de enviar al desk en la misma invocación. Acepta enteros entre
 0 y 7200 y vale 180 por omisión. Las repeticiones filtradas usan el host de

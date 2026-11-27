@@ -85,7 +85,12 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
   Mientras viva la reserva, un turno ajeno al tren entra sólo si deja lugar
   para las clases pendientes. Los arriendos vivos del tren cubren sus clases.
   Si la reserva impide la concesión hasta vencer la espera, `pedir` devuelve `sin_lugar`.
-- `liberar-reserva --repo R --lote ID` quita la reserva al terminar el lote.
+- `reservar --repo R --lote ID --clases C1,C2 --vence EPOCH` usa un instante
+  Unix en segundos, con un máximo de 3600 s desde la primera aplicación.
+  Repetir el mismo instante para una reserva vigente conserva su vencimiento.
+  Un instante alcanzado libera la reserva del lote y devuelve 0. Usa sólo
+  una de las opciones `--vence` y `--ttl`.
+- `liberar-reserva --repo R --lote ID` quita la reserva del lote.
   Se puede repetir. Si el tren omite la liberación, la reserva vence sola.
 - `estado [--json]` muestra VMs, arriendos, lugares, puertas de arranque y reservas vivas.
 - `encender NOMBRE|--todas` y `apagar NOMBRE|--todas` actúan sobre VMs
