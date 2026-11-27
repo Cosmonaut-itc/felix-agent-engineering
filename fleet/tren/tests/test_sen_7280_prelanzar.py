@@ -517,11 +517,11 @@ class TickActivoTests(Productor, unittest.TestCase):
             self.esperar_archivo(registro / 'listo')
             self.assertEqual(json.loads((registro / 'predecesoras-activas.json').read_text()), [])
 
-    def test_partido_cancela_y_suelta_antes_de_prelanzar_sucesor(self):
+    def test_rearme_cancela_y_suelta_antes_de_prelanzar_sucesor(self):
         tren, registros = self.lote_con_prelanzadas()
         self.ci = 'rojo'
         self.tick()
-        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
         self.assert_canceladas(registros)
         self.assert_avisos_cancelacion(tren, 2, True)
         adaptador = Jale(self.lanzador, prelanzar=True)
@@ -531,13 +531,13 @@ class TickActivoTests(Productor, unittest.TestCase):
         (self.raiz / 'predecesor.json').write_text(json.dumps(list(map(str, registros))))
         self.assert_sucesor_sin_candados(self.esperar_sucesor_ci(tren))
 
-    def test_partido_aplaza_con_candado_y_prelanza_en_el_tick_siguiente_a_la_salida(self):
+    def test_rearme_aplaza_con_candado_y_prelanza_en_el_tick_siguiente_a_la_salida(self):
         tren, registros = self.lote_con_prelanzadas()
         (self.raiz / 'retener-cancelacion').touch()
         self.ci = 'rojo'
         with patch('adaptadores.jale.PLAZO_CANCELACION_S', .5):
             self.tick()
-        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
         self.assert_avisos_cancelacion(tren, 2, False)
         for registro in registros:
             self.esperar_archivo(registro / 'term')
@@ -583,10 +583,10 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.abortar_con_head_cambiado(tren)
         self.comprobar_cierre_con_confirmadas(tren, registros, efecto, 'ABORTADO')
 
-    def test_partido_cancela_confirmadas_antes_de_prelanzar_sucesor(self):
+    def test_rearme_cancela_confirmadas_antes_de_prelanzar_sucesor(self):
         tren, registros, efecto = self.lote_con_confirmadas()
         self.ci = 'rojo'
-        self.comprobar_cierre_con_confirmadas(tren, registros, efecto, 'PARTIDO')
+        self.comprobar_cierre_con_confirmadas(tren, registros, efecto, 'REARMAR')
 
     def test_aborto_aplaza_por_candados_de_suite_reanudada(self):
         tren, registros, efecto = self.lote_con_confirmadas(intento=1)
@@ -706,7 +706,7 @@ class TickActivoTests(Productor, unittest.TestCase):
             segundos += duracion
 
         def ci(repo, commit, rama=None):
-            if commit == tren.fase.candidato.C:
+            if commit == tren.fase.candidato.C and rama is None:
                 if segundos == 80:
                     dormir(11)  # El cuarto sondeo devuelve rojo a los 91 s.
                 if segundos >= 91:
@@ -728,7 +728,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertTrue(all(codigo == 0 for codigo, _ in pasos), pasos)
         self.assertLess(segundos, 120, f'el tick terminó a los {segundos:g} s')
         predecesor, sucesor = self.estado().trenes
-        self.assertEqual(predecesor.fase, Terminal('PARTIDO'))
+        self.assertEqual(predecesor.fase, Terminal('REARMAR'))
         self.assertIsInstance(sucesor.fase, EsperandoCI)
         self.assert_avisos_cancelacion(tren, 2, False)
         for registro in registros:
@@ -869,7 +869,7 @@ class TickActivoTests(Productor, unittest.TestCase):
             (registro / 'codigo.json').rename(registro / 'codigo-anterior.json')
         self.ci = 'rojo'
         self.tick()
-        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
         avisos = self.eventos('suite-prelanzada-sin-leer')
         self.assertEqual([a['error_cancelacion'] for a in avisos], ['coordinador-ausente'] * 2)
         self.assertTrue(all((r / 'cancelar.json').exists() for r in registros))
@@ -887,7 +887,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         with patch('adaptadores.jale.guardar', side_effect=guardar_sin_permiso), \
                 patch('adaptadores.jale.PLAZO_CANCELACION_S', .5):
             self.tick()
-        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
         avisos = {a['modo']: a for a in self.eventos('suite-prelanzada-sin-leer')}
         self.assertEqual(avisos['contract']['error_cancelacion'], 'PermissionError')
         self.assertFalse(avisos['contract']['cancelacion_pedida'])
