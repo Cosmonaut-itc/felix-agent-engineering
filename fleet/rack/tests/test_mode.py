@@ -50,7 +50,7 @@ class ModeChannelTests(unittest.TestCase):
         code,answer=self.actions.post(r)
         self.assertEqual((code,answer['status']),(200,'applied'))
         result=answer['result']
-        self.assertEqual(result['mode'],'dia');self.assertEqual(result['cap'],14)
+        self.assertEqual(result['mode'],'dia');self.assertEqual(result['cap'],15)
         self.assertEqual(result['observed'],control.mode_profile('dia'))
         self.assertEqual(result['mode_note'],'Adelantado · vuelve a noche a las 23:00')
         self.assertNotIn('before_mode_override',json.dumps(answer))
@@ -85,7 +85,7 @@ class ModeChannelTests(unittest.TestCase):
                     accion.host_channel.control(bad, 'desk')
         for mode, text in (('dia','día'), ('noche','noche')):
             for prefix in ('Automático · cambia a ', 'Adelantado · vuelve a '):
-                bad = dict(view, mode=mode, cap=14 if mode=='dia' else 18, mode_note=prefix+text+' a las 08:00')
+                bad = dict(view, mode=mode, cap=15 if mode=='dia' else 20, mode_note=prefix+text+' a las 08:00')
                 with self.assertRaises(ValueError):accion.host_channel.control(bad, 'desk')
         for tables in (None, {}, dict(dia=control.mode_profile('dia')), dict(dia=control.mode_profile('noche'),noche=control.mode_profile('dia')),
                        dict(dia=dict(control.mode_profile('dia'), hasito=True), noche=control.mode_profile('noche'))):

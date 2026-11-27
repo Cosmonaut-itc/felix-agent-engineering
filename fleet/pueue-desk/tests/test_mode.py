@@ -25,7 +25,7 @@ class ModeTests(DeskFixture):
         payload = result['result']
         self.assertEqual(result['revision'], self.state()['revision'])
         self.assertEqual((payload['mode'], payload['cap'], payload['desired'], payload['observed']),
-            ('dia', 14, control.mode_profile('dia'), control.mode_profile('dia')))
+            ('dia', 15, control.mode_profile('dia'), control.mode_profile('dia')))
         self.assertEqual(payload['mode_note'], 'Automático · cambia a noche a las 23:00')
         for key in ('mode_detail','slots_note','expires_at','undo_of'):
             self.assertIsNone(payload[key], key)
@@ -115,7 +115,7 @@ class ModeTests(DeskFixture):
         night = self.apply_mode('noche')
         self.assertEqual(night['status'], 'applied')
         self.assertEqual(night['result']['desired'], control.mode_profile('noche'))
-        self.assertEqual((night['result']['mode'], night['result']['cap']), ('noche',18))
+        self.assertEqual((night['result']['mode'], night['result']['cap']), ('noche',20))
         self.assertEqual(self.state()['overrides'], {})
         # Redistribute at night so the day transition has both decreases/increases.
         target = dict(control.mode_profile('noche'), otros=1)
@@ -125,9 +125,9 @@ class ModeTests(DeskFixture):
         day = self.apply_mode('dia', 'mode-day-00001')
         self.assertEqual(day['status'], 'applied')
         self.assertEqual(day['result']['observed'], control.mode_profile('dia'))
-        self.assertEqual(self.p.calls, [('parallel','hasito',1), ('parallel','jale',5),
+        self.assertEqual(self.p.calls, [('parallel','caja',1), ('parallel','hasito',1), ('parallel','jale',5),
                                        ('parallel','pesadas',2), ('parallel','otros',2)])
-        self.assertEqual((self.engine.view()['mode'], self.engine.view()['cap']), ('dia',14))
+        self.assertEqual((self.engine.view()['mode'], self.engine.view()['cap']), ('dia',15))
         self.assertIsNone(self.state()['mode_override'])
         self.assertEqual(self.state()['overrides'], {})
 
@@ -329,7 +329,7 @@ class ModeTests(DeskFixture):
             self.assertEqual(self.engine.view()['slots'],control.desk_profile(self.now))
             self.assertIsNone(self.state()['mode_override'])
 
-    def test_mode_never_starts_or_stops_tasks_when_reducing_18_to_14(self):
+    def test_mode_never_starts_or_stops_tasks_when_reducing_20_to_15(self):
         original = self.p.status
         def status():
             s=original();s['tasks']={str(i):dict(group='jale',status={'Running':{}}) for i in range(7)};return s
@@ -349,7 +349,7 @@ class ModeTests(DeskFixture):
             with self.assertRaises((ValueError,KeyError,ArithmeticError)):
                 self.engine.guard(dict(io=90,cpu=90,memory=1024**3))
             self.assertEqual([a for a in self.p.calls if a[0]=='start'],[])
-            self.assertEqual(len([a for a in self.p.calls if a[0]=='pause']),6)
+            self.assertCountEqual([a[-1] for a in self.p.calls if a[0]=='pause'], control.GROUP_LIMITS.keys())
         with self.engine.connect(write=True) as db:self.engine.store(db,original)
         self.p.calls.clear()
         # All emergency pauses are fenced; a later healthy guard cannot claim them.

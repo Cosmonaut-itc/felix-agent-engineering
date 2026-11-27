@@ -48,6 +48,27 @@ class DeskChannelTests(unittest.TestCase):
         self.assertEqual(self.actions.post(undo)[1]['status'],'applied')
         self.assertEqual(self.p.calls,[('jale',6),('jale',7)])
 
+    def test_status_preserves_pre_caja_receipt_for_original_request(self):
+        request = self.request()
+        wire = {k: v for k, v in request.items() if k not in ('schema', 'host')}
+        wire['schema'] = control.HOST_SCHEMA
+        receipt = self.engine.handle(wire)
+        self.assertEqual(receipt['status'], 'applied')
+
+        old_request = copy.deepcopy(request)
+        del old_request['expected']['slots']['caja']
+        for field in ('before', 'desired', 'observed'):
+            receipt['result'][field] = {g: n for g, n in receipt['result'][field].items() if g != 'caja'}
+        receipt['result']['cap'] = 18
+        safe = accion.host_channel.sanitize(old_request, receipt, 'status')
+        self.assertEqual(safe['status'], 'applied')
+        self.assertEqual(safe['result']['cap'], 18)
+        self.assertEqual(safe['result']['applied'], ['jale'])
+        with self.assertRaises(ValueError):
+            accion.host_channel.sanitize(request, receipt, 'status')
+        with self.assertRaises(ValueError):
+            accion.host_channel.validate(old_request)
+
     def test_linux_generation_token_roundtrips_and_legacy_expected_is_stale(self):
         _, caps=self.actions.post(dict(schema=accion.SCHEMA,op='host_capabilities',host='desk'))
         token=caps['generation']
@@ -183,7 +204,7 @@ class DeskChannelTests(unittest.TestCase):
 
     def test_desk_host_capabilities_snapshots_and_ui(self):
         v=self.engine.view();safe=accion.host_channel.control(v,'desk')
-        self.assertEqual((safe['cap'],safe['mode']),(18,'noche'))
+        self.assertEqual((safe['cap'],safe['mode']),(20,'noche'))
         self.assertEqual(safe['next_event'],1794664800)
         for key,value in (('cap',7),('mode','fijo'),('expires_at',True),('next_event',True)):
             with self.assertRaises(ValueError):accion.host_channel.control(dict(v,**{key:value}),'desk')
@@ -330,7 +351,7 @@ class DeskForcedChannelTests(unittest.TestCase):
 
     def test_end_to_end_forced_slots_undo_receipts_and_ensayo(self):
         caps=self.capabilities()
-        self.assertEqual((caps.get('status'),caps.get('slots'),caps.get('cap')),('ok',self.table,18))
+        self.assertEqual((caps.get('status'),caps.get('slots'),caps.get('cap')),('ok',self.table,20))
         self.assertTrue(caps['capabilities']['slots'])
         r=self.request()
         self.assertEqual(self.actions.post(dict(r,action_id='forced-trial-001',dry_run=True))[1]['status'],'dry_run')

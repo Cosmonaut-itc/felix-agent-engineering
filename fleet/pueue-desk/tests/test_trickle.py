@@ -577,7 +577,7 @@ class TrickleTests(DeskFixture):
         with control.locked(self.engine.directory),patch.object(self.p,'call',side_effect=failing):
             with self.assertRaises(subprocess.SubprocessError):self.engine.guard(high)
         self.assertEqual(sorted(g for g in control.GROUP_LIMITS if self.p.groups[g]['status']=='Paused' and g!='rapidas'),
-                         ['jale','jale-verify','otros','pesadas'])
+                         ['caja','jale','jale-verify','otros','pesadas'])
 
     def test_unreconciled_authority_never_opens_or_admits(self):
         for sample in (self.mid,self.low):

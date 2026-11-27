@@ -480,7 +480,7 @@ MODE_CASES += [
   'ModeChannelTests.test_host_tables_and_mode_notes_reject_opposite_mode_and_invalid_hours'),
  ('rack', 'host_action.py', 'sum(tables[m].values()) != cap', 'False',
   'ModeChannelTests.test_host_tables_and_mode_notes_reject_opposite_mode_and_invalid_hours'),
- ('rack', 'host_action.py', "not vector(tables[m], 'desk')", 'False',
+ ('rack', 'host_action.py', "not vector(tables[m], 'desk', pre_caja=pre_caja)", 'False',
   'ModeChannelTests.test_host_tables_and_mode_notes_reject_opposite_mode_and_invalid_hours'),
 ]
 

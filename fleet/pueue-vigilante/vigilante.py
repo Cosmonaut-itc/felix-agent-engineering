@@ -18,7 +18,7 @@ import subprocess
 import time
 from typing import Callable, Optional, Union
 
-TOPE_GRUPO_MIN = {'rapidas': 10, 'suites': 45, 'hasito': 45, 'otros': 45,
+TOPE_GRUPO_MIN = {'rapidas': 10, 'suites': 45, 'caja': 45, 'hasito': 45, 'otros': 45,
                  'jale': 45, 'pesadas': 150}
 TOPE_DESCONOCIDO_MIN = 45
 SILENCIO_MIN = 15

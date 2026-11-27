@@ -57,6 +57,14 @@ class SnapshotTrickleTests(unittest.TestCase):
         self.assertEqual(guard['status'],'incomplete')
         self.assertIsNone(self.read_guard(NOW+121)['last_result'])
 
+    def test_caja_admission_and_blocker_are_published(self):
+        guard = self.guard()
+        guard['last_admission'] = dict(at=AT, grupo='caja', id=7)
+        guard['last_result']['bloqueos'] = [dict(grupo='caja', operacion='resume', causa='quota')]
+        data = sample()
+        data.update(host='desk', guard=guard)
+        self.assertEqual(serve.validate_snapshot(data, 'desk')['guard'], guard)
+
     def test_bool_pressure_is_rejected(self):
         data=sample()
         data['guard']=dict(action='mantener',pressure=dict(at=AT,cpu=True,io=0,memory=1))

@@ -144,7 +144,7 @@ class ControlTests(Fixture):
         self.metrics(io_value=41)
         self.guard()
         owned = json.loads((self.directory / "guardia-state.json").read_text())
-        self.assertEqual(set(owned), {"hasito", "jale-verify", "otros", "pesadas"})
+        self.assertEqual(set(owned), {"caja", "hasito", "jale-verify", "otros", "pesadas"})
         self.metrics(io_value=30, cpu=20, memory=5)
         before = self.calls()
         self.guard()
@@ -170,9 +170,9 @@ class ControlTests(Fixture):
                 self.assertEqual([r["accion"] for r in records if r["evento"] == "decision"][-1], expected)
 
     def test_quotas_per_mode(self):
-        expected = {"dia": {"hasito": 1, "jale": 5, "jale-verify": 1, "otros": 2, "pesadas": 2,
+        expected = {"dia": {"caja": 1, "hasito": 1, "jale": 5, "jale-verify": 1, "otros": 2, "pesadas": 2,
                             "rapidas": 3},
-                    "noche": {"hasito": 2, "jale": 7, "jale-verify": 1, "otros": 2, "pesadas": 3,
+                    "noche": {"caja": 2, "hasito": 2, "jale": 7, "jale-verify": 1, "otros": 2, "pesadas": 3,
                               "rapidas": 3}}
         self.write_state({"groups": {}, "tasks": {}})
         for hour, mode in ((15, "dia"), (6, "noche")):
@@ -188,7 +188,7 @@ class ControlTests(Fixture):
             decision = [r for r in records if r["evento"] == "decision"][-1]
             self.assertEqual((decision["accion"], decision["accion_rapidas"]), (normal, rapid))
             self.assertEqual(set(json.loads((self.directory / "guardia-state.json").read_text())), owned)
-        busy = {"hasito", "jale", "jale-verify", "otros", "pesadas"}
+        busy = {"caja", "hasito", "jale", "jale-verify", "otros", "pesadas"}
         step(8, "pausar", "reanudar", busy, io_value=41, cpu=31)
         self.assertEqual(self.pueue.status()["groups"]["rapidas"]["status"], "Running")
         step(3, "pausar", "pausar", busy | {"rapidas"}, io_value=41)
@@ -205,7 +205,7 @@ class ControlTests(Fixture):
         self.metrics(memory=3)
         self.guard()
         self.assertEqual(set(json.loads((self.directory / "guardia-state.json").read_text())),
-                         {"hasito", "jale", "jale-verify", "otros", "pesadas"})
+                         {"caja", "hasito", "jale", "jale-verify", "otros", "pesadas"})
         self.assertNotIn("rapidas", self.pueue.status()["groups"])
 
     def test_manual_takeover_of_guard_pause(self):
@@ -282,7 +282,7 @@ class DeploymentTests(Fixture):
         self.assertIn('suites',self.pueue.status()['groups'])
         self.assertEqual(self.pueue.status()['groups']['jale']['status'],'Paused')
         self.assertEqual(json.loads((self.directory/'guardia-state.json').read_text()),
-                         sorted(['suites','hasito','jale','jale-verify','otros','pesadas']))
+                         sorted(['suites','caja','hasito','jale','jale-verify','otros','pesadas']))
 
     def test_service_prepares_offline_and_restarts_without_startlimit_cutoff(self):
         unit=(ROOT/'units/pueued.service').read_text()

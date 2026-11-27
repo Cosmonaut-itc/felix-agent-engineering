@@ -54,11 +54,15 @@ DESKTOP, como diga el `AGENTS.md` del repositorio. Si no lo dice, depende de
 si el repositorio tiene grupo propio en el Pueue del desk. En ambos casos
 corre en la Mini lo que exige macOS o nunca ha pasado en Linux.
 
-- **Con grupo propio (Hasito y Jale).** Una suite completa o una corrida de
-  15 minutos o más va a Felix DESKTOP por el lanzador con admisión del
-  repositorio (`scripts/mini/run.sh --entorno desk` en Hasito,
+- **Con grupo propio (Hasito, Jale y caja).** En Hasito y Jale, una suite
+  completa o una corrida de 15 minutos o más va al desk por el lanzador con
+  admisión del repositorio (`scripts/mini/run.sh --entorno desk` en Hasito,
   `run-remote.sh desktop` en Jale). Si la admisión sale con 75, va a la Mac
   Mini. Lo demás corre en la Mini.
+
+  Para caja, lanza la suite según su `AGENTS.md` con
+  `REMOTE_RUN_PROYECTO=caja REMOTE_RUN_HOST=desk remote-run start ... --script scripts/suite.sh`.
+  Si el desk no responde, usa la Mini.
 - **Pool de Boat (Jale).** La `contract` o la `e2e` completa de Jale es la
   excepción, salvo las que su `docs/agents/test-hosts.md` deja en otro host
   (la del tren y la base e2e de main de una e2e del desk). Va al pool con

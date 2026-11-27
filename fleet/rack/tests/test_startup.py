@@ -173,7 +173,7 @@ class StartupPipelineTests(unittest.TestCase):
         self.assertEqual([t['id'] for t in self.fixture()['hosts'][0]['snapshot']['tasks']],[1])
         self.render('startup-default')
 
-    def test_a_w5_pipeline_six_waits_one_hold_and_no_redundant_ssh(self):
+    def test_a_w5_pipeline_group_waits_one_hold_and_no_redundant_ssh(self):
         self.render('startup-waits')
 
     def test_ambiguous_pause_without_group_hold_explains_in_its_cell(self):
