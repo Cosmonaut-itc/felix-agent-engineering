@@ -283,8 +283,8 @@ class RemoteRunTests(unittest.TestCase):
         self.actions.save(record, self.actions.reservation(request))
         self.engine.reconcile_clients()
         reservation = self.actions.reservation(request)
-        self.assertEqual(reservation['reconcile_reason'], 'evidence_missing')
         self.assertTrue(reservation['open'])
+        self.assertEqual(reservation.get('reconcile_reason'), 'evidence_missing')
 
     def test_running_worker_can_predate_acceptance(self):
         f = self.fixture
