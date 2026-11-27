@@ -236,6 +236,9 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None, *, l
                         return impedimento
                 candidato_ci = leer_ci(estado) if leer_ci is not None else None
                 if candidato_ci is None or candidato_ci[0] != tren or candidato_ci[1].estado != "verde":
+                    if requiere_previa:
+                        # El próximo verde abre otro plazo para el gancho.
+                        previo.resolver(estado, tren, None)
                     return EsperaPrevia(cert.B, cert.C)
                 if requiere_previa:
                     # La consulta de CI toma tiempo. Verificar de nuevo la ventana local.
@@ -246,7 +249,10 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None, *, l
                 return None
 
             if lectura_ci(tren, observacion) != "verde":
-                lectura = EsperaPrevia(cert.B, cert.C)
+                if isinstance(lectura, EnBase):
+                    if previo is not None:
+                        previo.resolver(estado, tren, lectura)
+                    lectura = EsperaPrevia(cert.B, cert.C)
             elif requiere_previa and isinstance(lectura, Incierto):
                 if (previo.operador is not None and previo.operador.checkout is not None
                         and "pre_aterrizaje" in previo.config):

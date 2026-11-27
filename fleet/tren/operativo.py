@@ -384,6 +384,8 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     if not bloqueo or not isinstance(lectura, (EnBase, Incierto)):
                         recibida["main"] = datos(lectura)
                     if isinstance(lectura, Incierto) and not bloqueo:
+                        observacion = replace(observacion, main=lectura, tren_id=tren.id,
+                                              intento_promocion=tren.fase.intentos)
                         ledger.registrar_efecto(repo, efecto, ahora,
                             {"error": "reconciliacion-incierta", "observacion": recibida})
                         intentados.add(efecto.clave)
@@ -393,18 +395,16 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 consumido = fila["clave"]
                 break
     if (not estado.pausa and activo is not None and isinstance(activo.fase, Promoviendo)
-            and observacion.main is None and observacion.base != activo.fase.certificado.B
+            and observacion.main is None
             and lectura_ci(activo, observacion) != "verde"):
         # Un push anterior pudo aterrizar antes de perder el ACK.
         cert = activo.fase.certificado
         heads = tuple(e.entrega.head for e in estado.entradas
                       if e.entrega.recibo in activo.recibos)
         lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
-        if isinstance(lectura, (Aterrizado, EscritorExterno)):
+        if isinstance(lectura, (Aterrizado, EscritorExterno, Incierto)):
             observacion = replace(observacion, main=lectura, tren_id=activo.id,
                                   intento_promocion=activo.fase.intentos)
-        elif isinstance(lectura, Incierto):
-            observacion = replace(observacion, ci_candidato="pendiente", ci_rojos=())
     nuevo, efectos = paso(estado, observacion)
     nuevo = limpiar(nuevo)
     guardar_paso(nuevo, efectos, consumido, fallo)

@@ -953,15 +953,19 @@ El ejecutor reconcilia intentos anteriores y consulta de nuevo el CI del
 mismo candidato justo antes del push CAS, también cuando el repo no usa
 gancho. Si hay gancho, la lectura de CI ocurre después de que éste autorice
 seguir. Si el CI deja de estar verde en esa lectura, el efecto espera otro
-tick sin empujar ni gastar un intento CAS.
+tick sin empujar ni gastar un intento CAS. Si había una preparación del
+gancho, registra su cancelación y abre un plazo nuevo para el gancho cuando
+el CI vuelva a verde y se confirme la cancelación.
 
 `GitHubGit.ci` devuelve `ResultadoCI(estado, rojos)`: tres valores y los
 nombres de checks/statuses rojos, ordenados y sin duplicados. La admisión
 sigue exigiendo verde en cada head. La solicitud 0 consulta el CI por SHA de
-C y usa `ci_recibo=github:<C>`. Las solicitudes positivas, tanto al rearmar
-como al reanudar, filtran los checks por la ref propia y añaden
+C y usa `ci_recibo=github:<C>`. Las solicitudes positivas filtran los
+checks por la ref propia y añaden
 `:tren/<id>-ci-<n>` al recibo. El reductor exige el ID del tren y el recibo
-vigentes.
+vigentes. Las entregas liberadas por el aborto de un tren que pudo probar C,
+y las de una absolución que conserva C, piden una ref nueva. Esa marca no
+cuenta como un rearme por rojo.
 
 | Fuente | Conclusión / estado | Lectura |
 |---|---|---|

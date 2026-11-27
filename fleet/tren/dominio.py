@@ -76,6 +76,7 @@ class Entrada:
     rearmada: bool = False
     particion: Optional[str] = None
     rearme_ci: Optional[str] = None
+    ci_ref_nueva: bool = False
 
 
 @dataclass(frozen=True)
@@ -546,7 +547,7 @@ def aterrizaje(estado, tren, observacion):
             efectos = efectos_status(tren, "avisar-aterrizaje")
             miembros = tuple(e for e in estado.entradas if e.entrega.recibo in tren.recibos)
             estado = replace(estado, entradas=tuple(
-                replace(e, rearme_ci=None) if e.rearme_ci and e in miembros
+                replace(e, rearme_ci=None, ci_ref_nueva=False) if e in miembros
                 else e for e in estado.entradas))
             estado = cambiar_fase(estado, tren, fase)
             return liberar_particiones(estado, miembros), efectos
@@ -677,7 +678,8 @@ def cerrar_por_ci_rojo(estado, tren, B, C, rojos):
                     (tren.id, entrega.recibo, payload))
     estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
     estado = replace(estado, entradas=tuple(
-        replace(e, terminal=Terminal("DEVUELTO"), rearme_ci=None) if e == entrada else e
+        replace(e, terminal=Terminal("DEVUELTO"), rearme_ci=None, ci_ref_nueva=False)
+        if e == entrada else e
         for e in estado.entradas))
     return liberar_particiones(estado, (entrada,)), (efecto,)
 
@@ -812,7 +814,8 @@ def separar_devueltos(estado, tren, base, culpables, efectos):
     estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
     nuevo_id = clave("sobrevivientes", tren.id, sobrevivientes)
     estado = replace(estado, entradas=tuple(
-        replace(e, terminal=Terminal("DEVUELTO"), rearme_ci=None) if e.entrega.recibo in tren.recibos and
+        replace(e, terminal=Terminal("DEVUELTO"), rearme_ci=None, ci_ref_nueva=False)
+        if e.entrega.recibo in tren.recibos and
         e.entrega.pr in culpables else replace(e, tren=nuevo_id) if
         e.entrega.recibo in sobrevivientes else e for e in estado.entradas))
     if sobrevivientes:
@@ -999,6 +1002,12 @@ def paso(estado, observacion):
         from juicios import resolver
         return resolver(estado, observacion)
     activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
+    cert_vencido = None
+    if not estado.pausa and activos:
+        tren = activos[0]
+        if (isinstance(tren.fase, Certificado) and tren.fase.B and observacion.base and
+                observacion.base != tren.fase.B and lectura_ci(tren, observacion) != "verde"):
+            cert_vencido = tren.id
     if not estado.pausa and activos and isinstance(activos[0].fase, Promoviendo):
         tren = activos[0]
         fase = tren.fase
@@ -1041,7 +1050,8 @@ def paso(estado, observacion):
             continue
         decision = admision_entrada(entrada, vistas, observacion)
         if decision == Rechazado(Motivo.HEAD):
-            entrada = replace(entrada, admision=Rechazado(Motivo.HEAD), rearme_ci=None)
+            entrada = replace(entrada, admision=Rechazado(Motivo.HEAD), rearme_ci=None,
+                              ci_ref_nueva=False)
             efectos.append(Efecto(clave("caduca", entrega.recibo),
                                   "avisar-caducidad", (entrega.recibo,)))
         else:
@@ -1053,13 +1063,15 @@ def paso(estado, observacion):
                             else observacion.ahora)
             elif (decision == Retenido(Motivo.INCIERTO) or entrada.partida or
                   entrada.rearmada or entrada.tren in esperando_ci or
+                  (cert_vencido is not None and entrada.tren == cert_vencido) or
                   (entrada.rearme_ci and entrada.tren in antes_de_ci)):
                 # No perder FIFO al retener antes o después de una partición.
                 admitida = entrada.admitida
             else:
                 admitida = None
-            entrada = replace(entrada, admision=decision, admitida=admitida,
-                              rearme_ci=None if isinstance(decision, Rechazado) else entrada.rearme_ci)
+            entrada = replace(entrada, admision=decision, admitida=admitida)
+            if isinstance(decision, Rechazado):
+                entrada = replace(entrada, rearme_ci=None, ci_ref_nueva=False)
             solo_vistas[entrega.recibo] = solo_por_vista(vista)
         if isinstance(decision, Rechazado):
             rechazadas.append(entrada)
@@ -1078,7 +1090,7 @@ def paso(estado, observacion):
         if observacion.tren_id and observacion.tren_id != tren.id:
             return estado, tuple(efectos)
         # Un merge por fuera deja a C sin poder aterrizar: no gastar CI ni suite.
-        if base_vieja(fase, observacion):
+        if tren.id == cert_vencido or base_vieja(fase, observacion):
             return rearmar(estado, tren, temprano=True), tuple(efectos)
         ocupada = observacion.rama_ocupada
         if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
@@ -1150,7 +1162,7 @@ def paso(estado, observacion):
             efectos.append(efecto_promover(tren.id, fase.intentos))
         elif isinstance(fase, Armado):
             # C puede ser idéntico al del tren anterior. Pedir evidencia de esta ref.
-            solicitud = int(any(e.rearme_ci for e in miembros))
+            solicitud = int(any(e.rearme_ci or e.ci_ref_nueva for e in miembros))
             fase = EsperandoCI(fase.candidato, observacion.ahora, solicitud)
             clave_ci = clave("ci", tren.id, solicitud) if solicitud else clave("ci", tren.id)
             efectos.append(Efecto(clave_ci, "solicitar-ci", (tren.id,)))
@@ -1204,7 +1216,7 @@ def datos(valor):
                     **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)
                        # Conservar payloads históricos de sombra/custodia.
                        if not (isinstance(valor, Entrada) and f.name in (
-                                   "partida", "rearmada", "particion", "rearme_ci")
+                                   "partida", "rearmada", "particion", "rearme_ci", "ci_ref_nueva")
                                and not getattr(valor, f.name))
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
                                 and valor.ventana is None)

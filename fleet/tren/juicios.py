@@ -170,9 +170,14 @@ def resolver(estado, observacion):
     estado = replace(estado, pausa=None)
     efectos = ()
     if operacion == "abortar":
+        # Un candidato ya publicado pudo terminar su CI después de este juicio.
+        pudo_probarse = isinstance(tren.fase, (EsperandoCI, Corriendo, Diagnosticando)) or (
+            certificado_de(tren.fase) is not None)
         estado = cambiar_fase(estado, tren, Terminal("ABORTADO"))
         estado = replace(estado, entradas=tuple(
-            replace(e, tren=None) if e.entrega.recibo in tren.recibos else e
+            replace(e, tren=None, ci_ref_nueva=(e.ci_ref_nueva or pudo_probarse)
+                    and not isinstance(e.admision, Rechazado))
+            if e.entrega.recibo in tren.recibos else e
             for e in estado.entradas))
     elif operacion == "suite-nueva":
         # Otro espacio de recibos evita que el adaptador reutilice el rojo.
@@ -181,7 +186,8 @@ def resolver(estado, observacion):
         nuevo = Tren(clave("juicio-suite", tren.id, decision.id), tren.recibos,
                      Armado(candidato_de(tren)))
         estado = replace(estado, trenes=estado.trenes + (nuevo,), entradas=tuple(
-            replace(e, tren=nuevo.id) if e.entrega.recibo in tren.recibos else e
+            replace(e, tren=nuevo.id, ci_ref_nueva=not isinstance(e.admision, Rechazado))
+            if e.entrega.recibo in tren.recibos else e
             for e in estado.entradas))
         efectos = efectos_status(nuevo, "avisar-en-tren")
     elif operacion == "devolver":
