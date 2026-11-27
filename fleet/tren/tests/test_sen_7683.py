@@ -14,7 +14,8 @@ from test_tren import Aislado, BASE, HEAD, REPO, cli, entrega, observacion
 from adaptadores import seleccionar
 from adaptadores.jale import Jale
 from dominio import (Admitido, Aterrizado, Candidato, Certificado, Corriendo, Entrada, EsperandoCI,
-                     Estado, Incierto, Pausa, Promoviendo, Terminal, Tren, datos, recibo_ci)
+                     Estado, Incierto, Pausa, Promoviendo, Terminal, Tren, datos, recibo_ci,
+                     separar_devueltos)
 from observador import Falso
 from operador import FalloSnapshot
 
@@ -73,6 +74,13 @@ with open({str(self.log)!r}, 'a') as log:
                          for i, e in enumerate(entregas, 1))
         self.registro.guardar_paso(Estado(REPO, entradas, (tren,), pausa), (), 1)
         return tren
+
+    def guardar_lote_doble(self):
+        segunda = entrega(2)
+        self.registro.entregar(segunda, 2)
+        candidato = replace(CANDIDATO, eslabones=CANDIDATO.eslabones + ((2, HEAD, 'f' * 40),))
+        self.observador.observacion = observacion(2)
+        return self.guardar(EsperandoCI(candidato, 1), entregas=(self.entrega, segunda))
 
     def estado(self):
         return self.registro.estado(REPO, operativo=True)
@@ -139,7 +147,7 @@ with open({str(self.log)!r}, 'a') as log:
         self.tick(220)
         self.assert_llamadas(self.reserva(lote, 100, 'e2e'), self.reserva(lote, 220, 'contract'))
 
-    def test_aterrizado_acorta_la_reserva_solo_en_el_tick_terminal(self):
+    def test_aterrizado_acorta_la_reserva_y_la_libera_al_vencer_el_relevo(self):
         B, C, arbol = CANDIDATO.B, CANDIDATO.C, CANDIDATO.arbol
         tren = self.guardar(Promoviendo(Certificado(C, arbol, 'suite.json', 'verde', B)))
         self.observador.observacion = observacion(
@@ -147,9 +155,12 @@ with open({str(self.log)!r}, 'a') as log:
         self.tick()
         self.assertEqual(self.estado().trenes[0].fase, Terminal('ATERRIZADO'))
         self.assert_ultimo_estado_guardado()
-        self.tick(220)
-        self.tick(460)
+        self.tick(399)
         self.assert_llamadas(self.reserva(tren.id, 100, ttl='300'))
+        self.tick(400)
+        self.tick(520)
+        self.assert_llamadas(self.reserva(tren.id, 100, ttl='300'),
+                             self.liberacion(tren.id, 400), self.liberacion(tren.id, 520))
 
     def test_devuelto_por_ci_rojo_acorta_la_reserva(self):
         tren = self.guardar(EsperandoCI(CANDIDATO, 1))
@@ -234,7 +245,7 @@ with open({str(self.log)!r}, 'a') as log:
         self.assert_llamadas(self.reserva(viejo, 100), self.reserva(viejo, 220, ttl='300'),
                              self.reserva(nuevo, 340), self.liberacion(viejo, 340))
 
-    def test_partido_protege_el_relevo_frente_a_una_corrida_en_espera(self):
+    def preparar_pool(self):
         pruebas_pool = Path(__file__).resolve().parents[2] / 'boat-pool/tests'
         with patch.object(sys, 'path', [str(pruebas_pool), *sys.path]):
             import test_pool
@@ -247,15 +258,31 @@ with open({str(self.log)!r}, 'a') as log:
         with patch.dict(os.environ):
             pool.setUp()
         pool.reservation_vms()
-        entorno_tren = {clave: os.environ[clave] for clave in pool.env}
+        return pool, test_pool.NOW
 
-        def comando_pool(*args):
-            with patch.dict(os.environ, pool.env):
-                return pool.run_cli(*args)
+    def comando_pool(self, pool, *args):
+        with patch.dict(os.environ, pool.env):
+            return pool.run_cli(*args)
 
+    def proceso_pool(self, pool, rechazar=None):
         def ejecutar_pool(argv, **_):
-            codigo, _, error = comando_pool(*argv[1:])
+            if argv[1:] == rechazar:
+                raise subprocess.CalledProcessError(1, argv)
+            codigo, _, error = self.comando_pool(pool, *argv[1:])
             self.assertEqual(codigo, 0, error)
+
+        return SimpleNamespace(
+            run=ejecutar_pool, DEVNULL=subprocess.DEVNULL, SubprocessError=subprocess.SubprocessError,
+            CalledProcessError=subprocess.CalledProcessError, TimeoutExpired=subprocess.TimeoutExpired)
+
+    def reservas_pool(self, pool):
+        codigo, salida, error = self.comando_pool(pool, 'estado', '--json')
+        self.assertEqual(codigo, 0, error)
+        return {r['lote'] for r in json.loads(salida)['reservas']}
+
+    def test_partido_protege_el_relevo_frente_a_una_corrida_en_espera(self):
+        pool, inicio = self.preparar_pool()
+        entorno_tren = {clave: os.environ[clave] for clave in pool.env}
 
         def cerrar_lote():
             with patch.dict(os.environ, entorno_tren):
@@ -264,29 +291,30 @@ with open({str(self.log)!r}, 'a') as log:
             self.assertEqual([t.fase for t in self.estado().trenes], [Terminal('PARTIDO')])
             # En main la prueba suelta los arriendos que SEN-7709 liberará al cancelar.
             for arriendo in arriendos:
-                self.assertEqual(comando_pool('soltar', arriendo)[0], 0)
+                self.assertEqual(self.comando_pool(pool, 'soltar', arriendo)[0], 0)
 
-        segunda = entrega(2)
-        self.registro.entregar(segunda, 2)
-        candidato = replace(CANDIDATO, eslabones=CANDIDATO.eslabones + ((2, HEAD, 'f' * 40),))
-        tren = self.guardar(EsperandoCI(candidato, 1), entregas=(self.entrega, segunda))
-        self.observador.observacion = observacion(2)
-        proceso = SimpleNamespace(
-            run=ejecutar_pool, DEVNULL=subprocess.DEVNULL, SubprocessError=subprocess.SubprocessError,
-            CalledProcessError=subprocess.CalledProcessError, TimeoutExpired=subprocess.TimeoutExpired)
-        with patch('operativo.subprocess', proceso):
+        tren = self.guardar_lote_doble()
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
             self.tick()
             with patch.dict(os.environ, pool.env):
                 arriendos = [pool.get_lease('anterior-' + modo, modo, '--prioridad', 'tren')
                              for modo in ('contract', 'e2e')]
-            pool.api.now = test_pool.NOW + 119.75
+            pool.api.now = inicio + 119.75
             with pool.resume_clock({120: cerrar_lote}):
-                en_hueco, _, razon = comando_pool(*pool.args(
+                en_hueco, _, razon = self.comando_pool(pool, *pool.args(
                     'ajena-e2e', 'e2e', '--prioridad', 'suite', '--esperar', '0.5'))
 
-            self.observador.observacion = observacion(2)
-            pool.api.now = test_pool.NOW + 240
+            # La observación aún carece de base en el primer tick del relevo.
+            self.observador.observacion = replace(observacion(2), base='')
+            pool.api.now = inicio + 240
             self.tick(340)
+            self.assertEqual(len(self.estado().trenes), 1)
+            en_tick_vacio, _, razon_tick_vacio = self.comando_pool(
+                pool, *pool.args('ajena-tick-vacio', 'e2e', '--prioridad', 'suite'))
+
+            self.observador.observacion = observacion(2)
+            pool.api.now = inicio + 360
+            self.tick(460)
             anterior, sucesor = self.estado().trenes
             self.assertEqual(anterior.id, tren.id)
             self.assertNotIsInstance(sucesor.fase, Terminal)
@@ -298,9 +326,103 @@ with open({str(self.log)!r}, 'a') as log:
         self.assertEqual(dict(EN_HUECO=en_hueco, PEDIR_SUCESOR=pedir_sucesor),
                          dict(EN_HUECO=75, PEDIR_SUCESOR=0), (razon, error))
         self.assertIn('reserva del tren', razon)
-        codigo, salida, error = comando_pool('estado', '--json')
-        self.assertEqual(codigo, 0, error)
-        self.assertEqual([r['lote'] for r in json.loads(salida)['reservas']], [sucesor.id])
+        self.assertEqual(en_tick_vacio, 75, razon_tick_vacio)
+        self.assertIn('reserva del tren', razon_tick_vacio)
+        self.assertEqual(self.reservas_pool(pool), {sucesor.id})
+
+    def test_fallo_al_acortar_libera_despues_del_plazo_de_relevo(self):
+        pool, inicio = self.preparar_pool()
+        tren = self.guardar(EsperandoCI(CANDIDATO, 1))
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
+            self.tick()
+            self.assertEqual(self.reservas_pool(pool), {tren.id})
+            pool.api.now = inicio + 120
+            self.ver_ci(tren, 'rojo')
+            recorte, _ = self.reserva(tren.id, 220, ttl='300')
+            with patch('operativo.subprocess', self.proceso_pool(pool, recorte)):
+                self.tick(220)
+            self.assertEqual(self.estado().trenes[0].fase, Terminal('DEVUELTO'))
+            self.assertEqual(self.fallos(), [dict(lote=tren.id, comando='reservar',
+                                                  clase='CalledProcessError', codigo=1)])
+
+            for ahora in (340, 460):
+                pool.api.now = inicio + ahora - 100
+                self.tick(ahora)
+                self.assertEqual(self.reservas_pool(pool), {tren.id})
+            pool.api.now = inicio + 480
+            self.tick(580)
+        self.assertIsNone(self.estado().pausa)
+        codigo, _, error = self.comando_pool(pool, *pool.args('ajena-cierre', 'e2e',
+                                                             '--prioridad', 'suite'))
+        self.assertEqual((self.reservas_pool(pool), codigo), (set(), 0), error)
+
+    def relevo_devueltos_con_fallo(self, pool, inicio, comando):
+        anterior = self.guardar_lote_doble()
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
+            self.tick()
+        self.assertEqual(self.reservas_pool(pool), {anterior.id})
+
+        # Inyecta la salida de D5 en el tick que persiste y aplica el relevo.
+        relevo, efectos = separar_devueltos(self.estado(), anterior, BASE, {2}, ())
+        sucesor = relevo.trenes[-1]
+        if comando == 'reservar':
+            argv, _ = self.reserva(sucesor.id, 220)
+            lote = sucesor
+        else:
+            argv, _ = self.liberacion(anterior.id, 220)
+            lote = anterior
+        pool.api.now = inicio + 120
+        with patch('operativo.paso', return_value=(relevo, efectos)), \
+                patch('operativo.subprocess', self.proceso_pool(pool, argv)):
+            self.tick(220)
+        self.assertEqual(self.estado().trenes, relevo.trenes)
+        self.assertEqual(relevo.trenes[0].fase, Terminal('DEVUELTO'))
+        self.assertEqual(self.fallos(), [dict(lote=lote.id, comando=comando,
+                                              clase='CalledProcessError', codigo=1)])
+        return anterior.id, sucesor.id
+
+    def test_fallo_al_liberar_devuelto_se_reintenta_con_el_sucesor_vivo(self):
+        pool, inicio = self.preparar_pool()
+        anterior, sucesor = self.relevo_devueltos_con_fallo(pool, inicio, 'liberar-reserva')
+        self.assertEqual(self.reservas_pool(pool), {anterior, sucesor})
+        pool.api.now = inicio + 240
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
+            self.tick(340)
+        self.assertEqual(self.reservas_pool(pool), {sucesor})
+
+    def test_pausa_libera_el_sucesor_y_el_devuelto_tras_un_fallo(self):
+        pool, inicio = self.preparar_pool()
+        anterior, sucesor = self.relevo_devueltos_con_fallo(pool, inicio, 'liberar-reserva')
+        self.assertEqual(self.reservas_pool(pool), {anterior, sucesor})
+        self.cli('pausa', '--motivo', 'prueba', ahora=221)
+        pool.api.now = inicio + 240
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
+            self.tick(340)
+        self.assertEqual(self.estado().pausa, Pausa('manual', detalle='prueba'))
+        codigo, _, error = self.comando_pool(pool, *pool.args('ajena-pausa', 'e2e',
+                                                             '--prioridad', 'suite'))
+        self.assertEqual((self.reservas_pool(pool), codigo), (set(), 0), error)
+
+    def test_fallo_al_reservar_sobrevivientes_reintenta_y_libera_el_devuelto(self):
+        pool, inicio = self.preparar_pool()
+        anterior, sucesor = self.relevo_devueltos_con_fallo(pool, inicio, 'reservar')
+        self.assertEqual(self.reservas_pool(pool), {anterior})
+        pool.api.now = inicio + 240
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
+            self.tick(340)
+        self.assertEqual(self.reservas_pool(pool), {sucesor})
+
+    def test_rearmar_el_sucesor_no_olvida_el_devuelto_aun_reservado(self):
+        pool, inicio = self.preparar_pool()
+        anterior, sucesor = self.relevo_devueltos_con_fallo(pool, inicio, 'liberar-reserva')
+        self.assertEqual(self.reservas_pool(pool), {anterior, sucesor})
+        self.observador.observacion = replace(observacion(2), base='f' * 40)
+        pool.api.now = inicio + 240
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
+            self.tick(340)
+        self.assertEqual([t.fase for t in self.estado().trenes],
+                         [Terminal('DEVUELTO'), Terminal('REARMAR')])
+        self.assertEqual(self.reservas_pool(pool), {sucesor})
 
     def test_absolver_reserva_y_libera_en_el_mismo_tick(self):
         viejo = self.guardar(Corriendo(CANDIDATO, 'suite.json'),
@@ -336,6 +458,8 @@ with open({str(self.log)!r}, 'a') as log:
         lanzar.assert_called_once()
         self.assertEqual(lanzar.call_args.args[0][1:], self.reserva(nuevo, 100)[0])
         self.assertEqual(self.fallos(), [dict(lote=viejo, comando='liberar-reserva', clase='TimeoutExpired')])
+        self.tick(220)
+        self.assert_llamadas(self.reserva(nuevo, 220), self.liberacion(viejo, 220))
 
     def test_host_sin_boat_no_llama_al_pool(self):
         lote = self.guardar(EsperandoCI(CANDIDATO, 1)).id

@@ -63,6 +63,8 @@ def resumen_outbox(ledger, repo):
 
 
 PLAZO_RESERVA_BOAT_S = 10
+PLAZO_RELEVO_BOAT_S = 300
+PLAZO_LOTE_BOAT_S = 1800
 
 
 def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
@@ -70,17 +72,27 @@ def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
     if not clases:
         return
     activo = next((t for t in estado.trenes if not isinstance(t.fase, Terminal)), None)
+    terminales = [t.id for t in reversed(estado.trenes) if isinstance(t.fase, Terminal)]
     acciones = []
     titular = activo or anterior
     if titular is not None and not estado.pausa:
-        ttl = "1800" if activo is not None else "300"
-        acciones.append(("reservar", titular.id, ("--clases", ",".join(clases), "--ttl", ttl)))
-    if activo is not None or estado.pausa:
-        # Después de un tick sin lote vivo, el último terminal puede cubrir el relevo.
-        anterior = anterior or next((t for t in reversed(estado.trenes)
-                                     if isinstance(t.fase, Terminal)), None)
-        if anterior is not None and (estado.pausa or activo.id != anterior.id):
-            acciones.append(("liberar-reserva", anterior.id, ()))
+        ttl = PLAZO_LOTE_BOAT_S if activo is not None else PLAZO_RELEVO_BOAT_S
+        acciones.append(("reservar", titular.id, ("--clases", ",".join(clases), "--ttl", str(ttl))))
+    elif estado.pausa and activo is not None:
+        acciones.append(("liberar-reserva", activo.id, ()))
+    # Un tick vacío puede seguir esperando admisión. El cierre persistido
+    # permite liberar al vencer el relevo aunque haya fallado el recorte.
+    if terminales:
+        predecesor, *anteriores = terminales
+        if (estado.pausa or activo is not None or
+                (anterior is None and predecesor in ledger.terminales_hasta(
+                    estado.repo, ahora - PLAZO_RELEVO_BOAT_S))):
+            acciones.append(("liberar-reserva", predecesor, ()))
+        if anteriores:
+            # Un segundo cierre puede desplazar una liberación pendiente.
+            vencidos = ledger.terminales_hasta(estado.repo, ahora - PLAZO_LOTE_BOAT_S)
+            acciones.extend(("liberar-reserva", lote, ()) for lote in anteriores
+                            if lote not in vencidos)
     limite = time.monotonic() + PLAZO_RESERVA_BOAT_S
     for comando, lote, opciones in acciones:
         try:
