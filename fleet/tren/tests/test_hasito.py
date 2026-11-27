@@ -814,8 +814,8 @@ class IntegracionGitTests(git_fixtures.AterrizajeTests):
         self.assertEqual(Path(self.comando(wt, "rev-parse", "--git-common-dir")).resolve(),
                          self.git.ruta.resolve())
         self.assertTrue(self.git.worktree(candidato.B).is_dir())
-        estado, efectos = paso(estado, obs)
-        llegada = ejecutar(efectos[0], estado, obs, self.git)
+        estado, efectos = paso(estado, self.ci_verde(estado, obs))
+        llegada = self.promover(efectos[0], estado, obs)
         final, _ = paso(estado, llegada.observacion)
         self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
         self.assertEqual(self.remoto(), candidato.C)
