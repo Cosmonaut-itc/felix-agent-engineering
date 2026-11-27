@@ -44,11 +44,14 @@ En sombra no edites `heads_autorizados`.
                  {"modelo":"opus-5.5","esfuerzo":"high","veredicto":"APTO","head":"<SHA40>"}]}
    ```
 
-   Los dos veredictos son sobre el head que entregas, también cuando ese
-   head sólo incorporó `main`. La ronda que da ese APTO, también una delta,
-   una de sincronización o una de nivel normal, sigue el **Par de Jale** de
-   la sección Revisión de `SKILL.md`. Si el par no da APTO sobre ese head,
-   sigue la vía manual de abajo.
+   Antes de entregar uno de esos PRs en Jale, mira el APTO que tienes. Si
+   no trae los dos veredictos sobre el SHA que vas a entregar, corre sobre
+   ese SHA una ronda delta con Sol y Opus en `high`, como fija el **Par de
+   Jale** de `SKILL.md`. Pasa así si la última ronda tuvo un solo revisor,
+   o si el head cambió después, también por una sincronización con `APTO
+   vigente`. Decide la categoría por el diff (CI, gobierno, lockfiles o
+   alto riesgo), no por el motivo con que el tren retiene el head. Si el
+   par no da APTO, sigue la vía manual de abajo.
    `local.tren.ventanas-auto` añade el head a `heads_autorizados` en unos
    2 min y deja la procedencia en su `state.json`. El tren sigue exigiendo
    CI verde y, con migración, el journal sincronizado con `main`. No edites

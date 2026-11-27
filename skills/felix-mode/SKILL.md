@@ -336,18 +336,12 @@ que demuestra:
   completa no vio. Un head nuevo que sólo incorpora la rama destino conserva
   su APTO sin ronda cuando lo permite el paso 3 del
   [procedimiento de merge](references/merge.md).
-- **Par de Jale.** Rige sólo para un PR de Jale que entra al tren en modo
-  activo y queda en merge-ready hasta que su head esté en
-  `heads_autorizados`: CI, gobierno, lockfiles o alto riesgo, como fija el
-  paso 2 de [Entrega al tren](references/merge.md#entrega-al-tren). La ronda
-  que da su APTO final, completa o delta y de nivel normal o alto, la hacen
-  dos revisores, gpt-6.2-sol en `high` y opus-5.5 en `high`, con el mismo
-  brief, la misma evidencia y el mismo head. Un head que sólo incorpora la
-  rama destino conserva su APTO para el merge, pero la autorización pide el
-  par sobre ese SHA: corre con los dos la ronda de sincronización del paso 3
-  del [procedimiento de merge](references/merge.md). Es la única excepción al
-  revisor único de **Normal** y de **Ronda delta**. Los demás PRs de Jale
-  siguen el revisor único.
+- **Par de Jale.** El paso 2 de
+  [Entrega al tren](references/merge.md#entrega-al-tren) puede pedir, justo
+  antes de entregar, una ronda delta con dos revisores, gpt-6.2-sol en `high`
+  y opus-5.5 en `high`, sobre el SHA que entregas. Es la única excepción al
+  revisor único de **Normal** y de **Ronda delta**, y la única ronda que
+  corre aunque `apto-vigente` imprima `APTO vigente`.
 - **Hallazgos.** El brief de todo revisor pide critical y warning. En nivel
   normal pide también los nits de gravedad alta, que son riesgos asumidos.
   Pide cerrar el reporte con `Nits descartados: <n>`, la cuenta de los
