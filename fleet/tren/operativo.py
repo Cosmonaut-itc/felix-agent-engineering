@@ -71,10 +71,16 @@ def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
         return
     activo = next((t for t in estado.trenes if not isinstance(t.fase, Terminal)), None)
     acciones = []
-    if anterior is not None and (estado.pausa or activo is None or activo.id != anterior.id):
-        acciones.append(("liberar-reserva", anterior.id, ()))
-    if activo is not None and not estado.pausa:
-        acciones.append(("reservar", activo.id, ("--clases", ",".join(clases), "--ttl", "1800")))
+    titular = activo or anterior
+    if titular is not None and not estado.pausa:
+        ttl = "1800" if activo is not None else "300"
+        acciones.append(("reservar", titular.id, ("--clases", ",".join(clases), "--ttl", ttl)))
+    if activo is not None or estado.pausa:
+        # Después de un tick sin lote vivo, el último terminal puede cubrir el relevo.
+        anterior = anterior or next((t for t in reversed(estado.trenes)
+                                     if isinstance(t.fase, Terminal)), None)
+        if anterior is not None and (estado.pausa or activo.id != anterior.id):
+            acciones.append(("liberar-reserva", anterior.id, ()))
     limite = time.monotonic() + PLAZO_RESERVA_BOAT_S
     for comando, lote, opciones in acciones:
         try:
@@ -90,6 +96,7 @@ def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
             if isinstance(exc, subprocess.CalledProcessError):
                 fallo["codigo"] = exc.returncode
             ledger.evento(estado.repo, "fallo-reserva-boat", ahora, fallo)
+            break  # Soltar la reserva anterior requiere confirmar primero la del sucesor.
 
 
 def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
