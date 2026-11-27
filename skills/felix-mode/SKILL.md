@@ -226,7 +226,7 @@ que demuestra:
 - **Alto riesgo.** Corre `interrogate` con dos revisores independientes:
   gpt-6.2-sol en `high` por Transporte, siempre como Reviewer A, y opus-5.5
   en `high`, el asiento Claude que trae la hoja. Ese asiento corre sólo en
-  las rondas completas de alto riesgo. Vetas sus hallazgos con **Prueba**.
+  las rondas completas de alto riesgo y en el **Par de Jale**. Vetas sus hallazgos con **Prueba**.
   Cuentan como señales: escrituras a producción o a un sistema de cliente
   (ICG, ERP, pagos, CFDI, nómina), migraciones o borrado de datos,
   autenticación y permisos, cálculos de dinero o impuestos, contratos entre
@@ -336,6 +336,12 @@ que demuestra:
   completa no vio. Un head nuevo que sólo incorpora la rama destino conserva
   su APTO sin ronda cuando lo permite el paso 3 del
   [procedimiento de merge](references/merge.md).
+- **Par de Jale.** Para entregar un PR al tren de Jale, la ronda que da
+  el APTO final, completa o delta y de nivel normal o alto, la hacen dos
+  revisores: gpt-6.2-sol en `high` y opus-5.5 en `high`, con el mismo brief,
+  la misma evidencia y el mismo head. El APTO vale cuando los dos lo dan, como
+  fija [Entrega al tren](references/merge.md#entrega-al-tren). Es la única
+  excepción al revisor único de **Normal** y de **Ronda delta**.
 - **Hallazgos.** El brief de todo revisor pide critical y warning. En nivel
   normal pide también los nits de gravedad alta, que son riesgos asumidos.
   Pide cerrar el reporte con `Nits descartados: <n>`, la cuenta de los

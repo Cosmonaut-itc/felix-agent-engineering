@@ -44,11 +44,10 @@ En sombra no edites `heads_autorizados`.
                  {"modelo":"opus-5.5","esfuerzo":"high","veredicto":"APTO","head":"<SHA40>"}]}
    ```
 
-   Los dos veredictos son sobre el head que entregas. Si un head nuevo
-   recibió APTO en una ronda delta de Sol, o si el PR es sensible de nivel
-   normal, pide además a Opus 5.5 en `high` la misma ronda sobre ese head,
-   con el mismo brief y evidencia, y anota los dos. Sin el par, sigue la vía
-   manual de abajo.
+   Los dos veredictos son sobre el head que entregas. La ronda que da ese
+   APTO, también una delta o una de nivel normal, sigue el **Par de Jale**
+   de la sección Revisión de `SKILL.md`. Sin el par, sigue la vía manual de
+   abajo.
    `local.tren.ventanas-auto` añade el head a `heads_autorizados` en unos
    2 min y deja la procedencia en su `state.json`. El tren sigue exigiendo
    CI verde y, con migración, el journal sincronizado con `main`. No edites
