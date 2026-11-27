@@ -30,6 +30,7 @@ PLAZO_PRELANZAMIENTO_S = 5
 PLAZO_CANCELACION_S = 30
 SIN_IMPEDIMENTO = object()
 EN_CURSO = object()
+FIN_PUEUE_75 = object()
 
 
 def especulativa(registro):
@@ -73,6 +74,14 @@ def leer_pendiente_boat(log):
     return pendiente
 
 
+def fin_75_pueue(lineas):
+    # El sondeo de Jale agrega el estado y la salida de Pueue al final de la carga.
+    for i in range(len(lineas) - 1, -1, -1):
+        if lineas[i].startswith('PUEUE_STATE='):
+            return lineas[i:i + 2] == ['PUEUE_STATE=Done', 'PUEUE_EXIT=75']
+    return False
+
+
 def identidad_boat_pendiente(registro):
     codigo = registro / 'codigo.json'
     if not codigo.exists() or leer_json(codigo) != 75:
@@ -98,7 +107,8 @@ def identidad_boat_pendiente(registro):
     if log.exists():
         lineas = log.read_text(encoding='utf-8', errors='replace').splitlines()
         if (any(linea.startswith('HOST=desktop fallback=') for linea in lineas) and
-                not any(linea.startswith(('RECIBO ', 'RESULT ')) for linea in lineas)):
+                not any(linea.startswith(('RECIBO ', 'RESULT ')) for linea in lineas) and
+                not fin_75_pueue(lineas)):
             return identidad
     return None
 
@@ -129,6 +139,10 @@ def leer_recibo(log, codigo, commit, modo, filtros, *, host):
     recibos = [linea for linea in lineas if linea.startswith('RECIBO')]
     if not recibos:
         if codigo == 75:
+            desk = (host in ('desktop', 'auto') or host == 'boat' and
+                    any(linea.startswith('HOST=desktop fallback=') for linea in lineas))
+            if desk and fin_75_pueue(lineas):
+                return FIN_PUEUE_75
             return None
         coordinador = str(Path(log).with_name('coordinador.log'))
         if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas:
@@ -210,6 +224,8 @@ def corrida_puede_seguir_viva(registro, commit, modo, filtros, registro_absuelto
     log = registro / 'corrida.log'
     try:
         resultado = leer_salida(registro, log, codigo, commit, modo, filtros)
+        if resultado is FIN_PUEUE_75:
+            return False
         if resultado is None:
             return leer_pendiente_boat(log) is None or identidad_boat_pendiente(registro) is not None
     except ResultadoInvalido:
@@ -611,7 +627,9 @@ class Jale:
         if proceso is not None and proceso.poll() is None and not codigo.exists():
             return EN_CURSO
         exigir(codigo.exists(), 'corrida-interrumpida')
-        return leer_salida(registro, log, codigo, commit, modo, filtros)
+        resultado = leer_salida(registro, log, codigo, commit, modo, filtros)
+        # El fin de Pueue autoriza otra clave. La suite todavía carece de recibo.
+        return None if resultado is FIN_PUEUE_75 else resultado
 
     def lanzar_corrida(self, raiz, commit, modo, filtros, intento, permitir_lanzar, tren_id,
                        reenganche, *, reenganche_individual=False):
@@ -764,10 +782,9 @@ class Jale:
         existente = (not ronda and previo == registro and not any(raiz.glob('efecto-*.json')))
         if previo is not None and not existente:
             log_previo = str(previo / 'coordinador.log')
-            if suite and reenganche:
+            if suite and reenganche and reenganche[1] == log_previo:
                 # En la suite el reenganche explícito vuelve a consultar el modo de la pausa.
-                if reenganche[1] == log_previo:
-                    marca = str(ronda) if previo == registro else f'{intento}-{ronda}'
+                marca = str(ronda) if previo == registro else f'{intento}-{ronda}'
                 registro = previo
             elif (reenganche and previo == registro and reenganche[1] == log_previo and
                     (previo / f'codigo-reenganche-{ronda}.json').exists()):

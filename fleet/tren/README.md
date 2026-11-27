@@ -845,9 +845,15 @@ el límite y el detalle, por ejemplo «relanzado automáticamente 1/2 por
 salida-sin-recibo».
 
 Cada modo de una suite y cada intento de una repetición paralela conserva su
-registro y clave mientras pueda seguir vivo. Esto incluye un 75 sin recibo,
-salvo que Boat indique una causa sin resultado recuperable. Una corrida con
-fin confirmado abre otro registro y clave si hace falta volver a correrla.
+registro y clave mientras pueda seguir vivo. Un 75 sin recibo conserva su
+clave si Pueue no confirmó el fin y Boat no indicó una causa sin resultado
+recuperable. Para el desk, incluso si llegó por fallback de Boat,
+`PUEUE_STATE=Done` seguido de `PUEUE_EXIT=75` confirma el fin de la corrida
+y la siguiente reanudación abre otro registro y clave. Un 75 tras perder el
+contacto con el desk conserva su clave para recuperar el mismo trabajo.
+En un reenganche de la suite, el modo señalado por la pausa recupera su
+registro y clave. Los demás aplican la regla a su propia corrida y abren
+otro registro y clave si su fin está confirmado y hace falta volver a correrla.
 Los recibos válidos con código distinto de 75 se reutilizan desde la caché.
 La regla se aplica a los relanzamientos automáticos y a las decisiones de la
 tabla, incluso al reanudar una pausa guardada con la versión anterior.
@@ -1630,7 +1636,7 @@ válido se recupera de la caché.
 `abortar` libera las entregas sin rojo.
 Si Boat devuelve 75 con un resultado recuperable, una suite o repetición
 paralela reengancha el registro con el host y la clave guardados. Esto también
-recupera un envío del fallback cuyo desk devolvió 75 sin resultado. En una
+recupera un envío del fallback cuyo desk devolvió 75 sin confirmar el fin. En una
 repetición en serie, el siguiente intento usa un log nuevo y conserva la
 identidad si el modo sigue configurado en Boat. Si el host cambia, el nuevo
 intento usa el host y la clave que le corresponden. Una causa de interrupción,
