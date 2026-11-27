@@ -203,6 +203,32 @@ def admite_relanzamiento(rechazo):
     return rechazo.relanzable and rechazo.detalle in RECHAZOS_RELANZABLES
 
 
+def salida_repeticion_incierta(registro, commit, modo, filtros):
+    codigo = registro / 'codigo.json'
+    if not codigo.exists():
+        return True
+    try:
+        resultado = leer_salida(registro, registro / 'corrida.log', codigo, commit, modo, filtros)
+    except ResultadoInvalido:
+        return True
+    return (resultado is None or isinstance(resultado, RechazoLanzador) and
+            resultado.detalle == 'salida-sin-recibo')
+
+
+def leer_seleccion_repeticion(raiz, intento, ronda):
+    archivo = raiz / f'efecto-{intento}-{ronda}.json'
+    if not archivo.exists():
+        return raiz / str(intento), None
+    seleccion = leer_json(archivo)
+    exigir(isinstance(seleccion, list) and len(seleccion) == 2 and
+           type(seleccion[0]) is int and seleccion[0] >= 0 and
+           (seleccion[1] is None or isinstance(seleccion[1], str) and
+            re.fullmatch(r'[0-9]+(?:-[0-9]+)?', seleccion[1])), 'seleccion-de-intento-invalida')
+    registro = raiz / str(seleccion[0])
+    marca = seleccion[1]
+    return registro, (marca, str(registro / 'coordinador.log')) if marca is not None else None
+
+
 class Jale:
     firma_distingue_fallo = False
 
@@ -416,12 +442,15 @@ class Jale:
             raiz = self.estado / clave('repetir', tren_id, efecto.datos[1])
             corridas = ('1', '2')
             intento = efecto.datos[2]
+            ronda = efecto.datos[3] if len(efecto.datos) > 3 else 0
         else:
             raiz = self.estado / clave('suite', tren_id)
             corridas = MODOS
             intento = efecto.datos[1] if efecto.tipo == 'reanudar-suite' else '0'
         for corrida in corridas:
             registro = raiz / corrida / intento
+            if efecto.tipo == 'repetir':
+                registro, _ = leer_seleccion_repeticion(registro.parent, intento, ronda)
             if especulativa(registro) or (registro.parent / 'completo.json').exists():
                 continue
             viva = lanzamiento_activo(registro / 'candado')
@@ -455,7 +484,7 @@ class Jale:
                              'cancelacion_confirmada': False}
 
     def lanzar(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None,
-               reenganche=None, *, prelanzamiento=False):
+               reenganche=None, *, prelanzamiento=False, repeticion_paralela=False):
         """Devuelve el coordinador, EN_CURSO, None si hay salida o False si no se autorizó."""
         sin_confirmar = especulativa(registro)
         if (registro / CANCELAR).exists():
@@ -514,13 +543,21 @@ class Jale:
             if reenganchar:
                 anterior = registro / ('codigo-reenganche-' + str(reenganche[0]) + '.json')
                 # El archivo conservado también marca el reenganche ya iniciado.
-                if codigo.exists() and not anterior.exists():
-                    resultado = leer_salida(registro, log, codigo, commit, modo, filtros)
-                    if (isinstance(resultado, RechazoLanzador) and
-                            resultado.detalle == 'salida-sin-recibo'):
+                if not anterior.exists():
+                    if repeticion_paralela:
+                        renovar = salida_repeticion_incierta(registro, commit, modo, filtros)
+                    else:
+                        resultado = (leer_salida(registro, log, codigo, commit, modo, filtros)
+                                     if codigo.exists() else None)
+                        renovar = (isinstance(resultado, RechazoLanzador) and
+                                   resultado.detalle == 'salida-sin-recibo')
+                    if renovar:
                         if not permitir_lanzar:
                             return False
-                        codigo.rename(anterior)
+                        if codigo.exists():
+                            codigo.rename(anterior)
+                        else:
+                            guardar(anterior, None)
                 if not codigo.exists():
                     if not permitir_lanzar:
                         return False
@@ -575,7 +612,7 @@ class Jale:
         return leer_salida(registro, log, codigo, commit, modo, filtros)
 
     def lanzar_corrida(self, raiz, commit, modo, filtros, intento, permitir_lanzar, tren_id,
-                       reenganche):
+                       reenganche, *, repeticion_paralela=False):
         cache = raiz / 'completo.json'
         if cache.exists():
             guardado = leer_json(cache)
@@ -584,7 +621,7 @@ class Jale:
             return registro, self.lanzar(registro, commit, modo, filtros, False)
         registro = raiz / str(intento)
         return registro, self.lanzar(registro, commit, modo, filtros, permitir_lanzar,
-                                     tren_id, reenganche)
+                                     tren_id, reenganche, repeticion_paralela=repeticion_paralela)
 
     def recoger_corrida(self, registro, proceso, commit, modo, filtros):
         cache = registro.parent / 'completo.json'
@@ -651,7 +688,7 @@ class Jale:
             sum(u['duracion_s'] for r in recibos for u in r['unidades']), restantes)
 
     def preparar_repeticion(self, candidato, suite, solicitud, commit, tren_id, reanudar='',
-                            permitir_lanzar=True, *, intento=0):
+                            permitir_lanzar=True, *, intento=0, ronda=0):
         fallo = solicitud.fallo
         exigir(fallo.parte == 'jale' and fallo.check in self.modos, 'seleccion-no-corresponde')
         raiz = self.estado / clave('repetir', tren_id, solicitud.id)
@@ -664,7 +701,8 @@ class Jale:
                     u.get('unidad') == fallo.unidad for u in r['unidades'])
                 for r in origen), 'origen-no-corresponde')
         if permitir_lanzar and commit not in (candidato.B, candidato.C) and not any(
-                (raiz / n / str(intento) / 'solicitud.json').exists() for n in ('1', '2')):
+                (leer_seleccion_repeticion(raiz / n, intento, ronda)[0]
+                 / 'solicitud.json').exists() for n in ('1', '2')):
             exigir(self.git is not None, 'subconjunto-sin-git')
             publicado = self.git.publicar('subconjunto-' + clave(tren_id, commit), commit)
             exigir(isinstance(publicado, Publicado), 'subconjunto-no-publicado')
@@ -703,14 +741,43 @@ class Jale:
         finally:
             self.esperar_prelanzadas(lanzadas)
 
+    def registro_repeticion_paralela(self, raiz, intento, ronda, reenganche, commit, modo, filtros,
+                                     permitir_lanzar):
+        archivo = raiz / f'efecto-{intento}-{ronda}.json'
+        if archivo.exists():
+            return leer_seleccion_repeticion(raiz, intento, ronda)
+        registro = raiz / str(intento)
+        marca = None
+        previo = max((p.parent for p in raiz.glob('*/solicitud.json') if p.parent.name.isdecimal()),
+                     key=lambda p: int(p.name), default=None)
+        existente = (not ronda and previo == registro and not any(raiz.glob('efecto-*.json')))
+        if previo is not None and not existente:
+            log_previo = str(previo / 'coordinador.log')
+            if (reenganche and previo == registro and reenganche[1] == log_previo and
+                    (previo / f'codigo-reenganche-{ronda}.json').exists()):
+                # El efecto ya pudo haber reenganchado con la versión anterior.
+                marca = str(ronda)
+            elif salida_repeticion_incierta(previo, commit, modo, filtros):
+                registro, marca = previo, f'{intento}-{ronda}'
+            else:
+                registro = raiz / str(max(intento, int(previo.name) + 1))
+        # Fija la selección antes del lanzamiento. Otro tick del mismo efecto
+        # debe leer su salida, aun si esa corrida ya confirmó su fin.
+        if permitir_lanzar:
+            raiz.mkdir(parents=True, exist_ok=True, mode=0o700)
+            guardar(archivo, (int(registro.name), marca))
+        return registro, (marca, str(registro / 'coordinador.log')) if marca is not None else None
+
     def repetir(self, candidato, suite, solicitud, commit, tren_id, intento=0, reanudar='',
                 permitir_lanzar=True, *, reenganche=None):
+        ronda = reenganche[0] if reenganche else 0
         raiz, base = self.preparar_repeticion(candidato, suite, solicitud, commit, tren_id,
-                                              reanudar, permitir_lanzar, intento=intento)
+                                              reanudar, permitir_lanzar, intento=intento, ronda=ronda)
         fallo = solicitud.fallo
         filtros = (fallo.unidad,)
         fallo_al_lanzar = None
         paralelo = self.repeticiones_paralelas > 1
+        conserva_claves = paralelo or any(raiz.glob('*/efecto-*.json'))
 
         def lanzar_intentos():
             nonlocal fallo_al_lanzar
@@ -718,10 +785,17 @@ class Jale:
                 cache = base / str(n) / 'registro.json' if base is not None else None
                 cache_disponible = cache is not None and cache.exists()
                 raiz_corrida = raiz / str(n)
-                log = raiz_corrida / str(intento) / 'coordinador.log'
-                # Otro tren pudo completar el caché mientras éste estaba pausado.
-                desde_base = cache_disponible and not (reenganche and reenganche[1] == str(log))
+                registro = raiz_corrida / str(intento)
+                reenganche_local = reenganche
                 try:
+                    if conserva_claves and not (raiz_corrida / 'completo.json').exists():
+                        registro, reenganche_local = self.registro_repeticion_paralela(
+                            raiz_corrida, intento, ronda, reenganche, commit, fallo.check, filtros,
+                            permitir_lanzar)
+                    # Otro tren pudo completar el caché mientras éste estaba pausado.
+                    desde_base = cache_disponible and not (
+                        reenganche_local and reenganche_local[1] == str(registro / 'coordinador.log') or
+                        conserva_claves and corrida_en_curso(registro))
                     if desde_base:
                         puntero = leer_json(cache)
                         exigir(isinstance(puntero, str) and re.fullmatch(
@@ -730,7 +804,8 @@ class Jale:
                         proceso = self.lanzar(registro, commit, fallo.check, filtros, False)
                     else:
                         registro, proceso = self.lanzar_corrida(raiz_corrida, commit, fallo.check,
-                            filtros, intento, permitir_lanzar, tren_id, reenganche)
+                            filtros, int(registro.name), permitir_lanzar, tren_id, reenganche_local,
+                            repeticion_paralela=conserva_claves)
                 except ResultadoInvalido as exc:
                     fallo_al_lanzar = fallo_al_lanzar or exc
                     if not paralelo:
@@ -750,7 +825,6 @@ class Jale:
         impedimento = SIN_IMPEDIMENTO
         en_curso = False
         rechazos = []
-        sin_confirmar = False
         for n, cache, cache_disponible, desde_base, ultimo, proceso in lanzadas:
             try:
                 if desde_base:
@@ -772,8 +846,6 @@ class Jale:
                 if not paralelo:
                     break
                 continue
-            # Un 75 no confirma que su trabajo terminó: relanzar podría duplicarlo.
-            sin_confirmar = sin_confirmar or r is None or isinstance(r, dict) and r['codigo'] == 75
             if impedimento is not SIN_IMPEDIMENTO:
                 continue
             if isinstance(r, dict) and r['codigo'] != 75:
@@ -786,7 +858,8 @@ class Jale:
             if not paralelo:
                 break
         # Un impedimento puede cortar el recorrido antes de un intento ya lanzado.
-        if en_curso or any(corrida_en_curso(raiz / str(n) / str(intento)) for n in (1, 2)):
+        if en_curso or any(corrida_en_curso(leer_seleccion_repeticion(raiz / n, intento, ronda)[0])
+                           for n in ('1', '2')):
             return EN_CURSO
         if fallo_al_lanzar is not None and (not paralelo or not lanzadas or lanzadas[0][0] == 2):
             raise fallo_al_lanzar
@@ -796,17 +869,12 @@ class Jale:
             raise impedimento
         if impedimento is False:
             return None
-        if isinstance(impedimento, RechazoLanzador):
-            # Como en la suite: el envío incierto primero, para reengancharlo con su clave.
-            elegido = next((r for r in rechazos if r.detalle == 'salida-sin-recibo'), impedimento)
-            if sin_confirmar or any(not admite_relanzamiento(r)
-                                    for r in rechazos if r is not elegido):
-                return replace(elegido, relanzable=False)
-            return elegido
         if impedimento is not SIN_IMPEDIMENTO:
             for rechazo in rechazos:
                 if not admite_relanzamiento(rechazo):
                     return rechazo
+            if rechazos:
+                return rechazos[0]
             return Incompleto(75, str(raiz))
         if fallo_al_lanzar is not None:
             raise fallo_al_lanzar

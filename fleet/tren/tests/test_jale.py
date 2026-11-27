@@ -89,6 +89,9 @@ if trabajo['conexiones'] <= f.get('transportes', 0):
     elif host != 'boat':
         log.write_text('')
     sys.exit(codigo)
+if trabajo['conexiones'] <= f.get('transportes', 0) + f.get('consultas_75', 0):
+    log.write_text('')
+    sys.exit(75)
 if 'pendiente' in f and (f.get('pendiente_fijo') or
         trabajo['conexiones'] <= f.get('transportes', 0) + f.get('pendientes', 1)):
     sidecar.write_text(json.dumps(dict(run_id=run_id, cause=f['pendiente'], status='pending')))
@@ -1249,49 +1252,139 @@ class JaleTests(Aislado):
     def test_repeticiones_paralelas_sin_recibo_y_64_pausan_sin_relanzar(self):
         self.verificar_repeticiones_paralelas_sin_relanzar(
             {'transportes': 3, 'codigo_transporte': 127}, {'codigo': 64, 'sin_linea': True},
-            'salida-sin-recibo')
+            'lanzador-rechazo')
 
     def test_repeticiones_paralelas_75_y_64_pausan_por_rechazo(self):
         self.verificar_repeticiones_paralelas_sin_relanzar(
             {'codigo': 75, 'sin_linea': True}, {'codigo': 64, 'sin_linea': True},
             'lanzador-rechazo')
 
-    def test_repeticiones_paralelas_interrumpida_y_75_pausan_sin_relanzar(self):
-        self.verificar_repeticiones_paralelas_sin_relanzar(
-            {'codigo': 125, 'sin_linea': True, 'interrumpida': True},
-            {'codigo': 75, 'sin_linea': True}, 'corrida-interrumpida')
-
-    def test_repeticiones_paralelas_interrumpida_y_sin_recibo_reenganchan_el_incierto(self):
-        self.adaptador = self.Jale(self.lanzador, host='desktop', repeticiones_paralelas=2)
-        parte = {'por_intento': {'1': {'codigo': 125, 'sin_linea': True, 'interrumpida': True},
-                                 '2': {'transportes': 3, 'codigo_transporte': 127}}}
-        self.plan({'contract': [{'estados': ['falla']}, parte, parte]})
+    def preparar_repeticiones_de_prueba(self, planes, paralelo=True):
+        self.adaptador = self.Jale(self.lanzador, host='desktop',
+                                   repeticiones_paralelas=2 if paralelo else 1)
+        self.adaptador.adelantar_repeticiones = None
+        self.plan({'contract': [{'estados': ['falla']}, *planes]})
         inicial, obs, efecto = self.preparar_suite_de_prueba(
-            costo_suite_sana_s=10000, repeticiones_en_paralelo=True)
-        llegada = esperar_resultado(ejecutar, efecto, inicial, obs, object(), self.adaptador)
-        diagnostico, (repetir,) = paso(inicial, llegada.observacion)
-        llegada = esperar_resultado(ejecutar, repetir, diagnostico, obs, object(), self.adaptador)
-        siguiente, efectos = paso(diagnostico, llegada.observacion)
-        self.assertIsNone(siguiente.pausa)
-        self.assertEqual([e.tipo for e in efectos],
-                         ['registrar-relanzamiento-automatico', 'repetir'])
-        self.assertEqual(efectos[0].datos[3], 'salida-sin-recibo')
-        fase = siguiente.trenes[0].fase
-        self.assertEqual(fase.reenganches, 1)
-        # Se reengancha el intento sin recibo, no el interrumpido.
-        self.assertEqual(Path(fase.registro_reenganche).parent.parent.name, '2')
-
-    def verificar_repeticiones_paralelas_sin_relanzar(self, primera, segunda, detalle):
-        self.adaptador = self.Jale(self.lanzador, host='desktop', repeticiones_paralelas=2)
-        parte = {'por_intento': {'1': primera, '2': segunda}}
-        self.plan({'contract': [{'estados': ['falla']}, parte, parte]})
-        inicial, obs, efecto = self.preparar_suite_de_prueba(
-            costo_suite_sana_s=10000, repeticiones_en_paralelo=True)
+            costo_suite_sana_s=10000, repeticiones_en_paralelo=paralelo)
         llegada = esperar_resultado(ejecutar, efecto, inicial, obs, object(), self.adaptador)
         diagnostico, (repetir,) = paso(inicial, llegada.observacion)
         self.assertIsInstance(diagnostico.trenes[0].fase, Diagnosticando)
-        llegada = esperar_resultado(ejecutar, repetir, diagnostico, obs, object(), self.adaptador)
-        pausado, efectos = paso(diagnostico, llegada.observacion)
+        return diagnostico, obs, repetir
+
+    def llegada_repeticion(self, efecto, diagnostico, obs):
+        llegada = esperar_resultado(ejecutar, efecto, diagnostico, obs, object(), self.adaptador)
+        self.assertTrue(llegada.completo)
+        return llegada.observacion
+
+    def trabajos_y_claves_por_intento(self):
+        return tuple((sum(Path(log).parent.parent.name == n
+                          for _, log, _, _, *filtros in self.lanzamientos() if filtros),
+                      len({i['clave'] for i in self.invocaciones()
+                           if Path(i['log']).parent.parent.name == n})) for n in ('1', '2'))
+
+    def comprobar_relanza_interrumpida_y_reengancha_incierta(self, incierta, *, manual=False):
+        interrumpida = {'codigo': 125, 'sin_linea': True, 'interrumpida': True}
+        parte = {'por_intento': {'1': interrumpida, '2': incierta}}
+        diagnostico, obs, repetir = self.preparar_repeticiones_de_prueba([parte, parte, {}])
+        if manual:
+            tren, = diagnostico.trenes
+            diagnostico = replace(diagnostico, trenes=(replace(tren, relanzamientos_automaticos=2),))
+        llegada = self.llegada_repeticion(repetir, diagnostico, obs)
+        siguiente, efectos = paso(diagnostico, llegada)
+        self.assertEqual(self.trabajos_y_claves_por_intento(), ((1, 1), (1, 1)))
+        if manual:
+            self.assertEqual(siguiente.pausa.detalle, 'corrida-interrumpida')
+            self.assertEqual(efectos, ())
+            # Simula el registro de una instalación anterior a la selección por intento.
+            raiz = self.adaptador.estado / clave('repetir', *repetir.datos[:2])
+            for seleccion in raiz.glob('*/efecto-*.json'):
+                seleccion.unlink()
+            siguiente = desde_datos(datos(siguiente))
+            decision = Decision('reanudar-repeticion', siguiente.repo, siguiente.trenes[0].id,
+                'reanudar', None, 'consultar de nuevo', obs.ahora, 'pausa-1', siguiente.pausa)
+            siguiente, efectos = paso(siguiente, replace(obs, decision=decision, pausa_id='pausa-1'))
+            self.assertEqual([e.tipo for e in efectos], ['resolver-juicio', 'repetir'])
+        else:
+            self.assertEqual([e.tipo for e in efectos], ['registrar-relanzamiento-automatico', 'repetir'])
+        self.assertIsNone(siguiente.pausa)
+        llegada = self.llegada_repeticion(efectos[-1], siguiente, obs)
+        self.assertEqual(self.trabajos_y_claves_por_intento(), ((2, 2), (1, 1)))
+        self.assertIsInstance(llegada.repeticion, Repeticion)
+
+    def test_repeticiones_paralelas_interrumpida_y_75_relanzan_sin_duplicar(self):
+        self.comprobar_relanza_interrumpida_y_reengancha_incierta({'consultas_75': 1})
+
+    def test_repeticiones_paralelas_interrumpida_y_75_reanudan_sin_duplicar(self):
+        self.comprobar_relanza_interrumpida_y_reengancha_incierta({'consultas_75': 1}, manual=True)
+
+    def test_repeticiones_paralelas_interrumpida_y_sin_recibo_reenganchan_el_incierto(self):
+        self.comprobar_relanza_interrumpida_y_reengancha_incierta(
+            {'transportes': 3, 'codigo_transporte': 127})
+
+    def test_repeticiones_paralelas_el_reenganche_agregado_renueva_solo_la_interrumpida(self):
+        interrumpida = {'codigo': 125, 'sin_linea': True, 'interrumpida': True}
+        parte = {'por_intento': {'1': {'transportes': 3, 'codigo_transporte': 127},
+                                 '2': interrumpida}}
+        diagnostico, obs, repetir = self.preparar_repeticiones_de_prueba([parte, parte, interrumpida, {}])
+        llegada = self.llegada_repeticion(repetir, diagnostico, obs)
+        siguiente, (registro, repetir) = paso(diagnostico, llegada)
+        self.assertEqual(registro.datos[3], 'salida-sin-recibo')
+        self.assertEqual(intento_suite(siguiente.trenes[0].fase), 0)
+        llegada = self.llegada_repeticion(repetir, siguiente, obs)
+        self.assertEqual(llegada.repeticion.detalle, 'corrida-interrumpida')
+        releida = self.llegada_repeticion(repetir, siguiente, obs)
+        self.assertEqual(releida.repeticion, llegada.repeticion)
+        self.assertEqual(self.trabajos_y_claves_por_intento(), ((1, 1), (2, 2)))
+        siguiente, (_, repetir) = paso(siguiente, releida)
+        self.assertIsInstance(self.llegada_repeticion(repetir, siguiente, obs).repeticion, Repeticion)
+        self.assertEqual(self.trabajos_y_claves_por_intento(), ((1, 1), (3, 3)))
+
+    def test_repeticiones_paralelas_dos_75_sin_recibo_reanudan_ambas_claves(self):
+        diagnostico, obs, repetir = self.preparar_repeticiones_de_prueba([{'consultas_75': 1}] * 2)
+        llegada = self.llegada_repeticion(repetir, diagnostico, obs)
+        self.assertIsInstance(llegada.repeticion, Incompleto)
+        self.assertEqual(llegada.repeticion.codigo, 75)
+        esperando, efectos = paso(diagnostico, llegada)
+        self.assertEqual(efectos, ())
+        obs = replace(obs, ahora=esperando.trenes[0].fase.esperar_hasta)
+        siguiente, (repetir,) = paso(esperando, obs)
+        llegada = self.llegada_repeticion(repetir, siguiente, obs)
+        self.assertEqual(self.trabajos_y_claves_por_intento(), ((1, 1), (1, 1)))
+        self.assertIsInstance(llegada.repeticion, Repeticion)
+
+    def test_repeticiones_paralelas_dos_interrumpidas_gastan_un_relanzamiento_por_senal(self):
+        interrumpida = {'codigo': 125, 'sin_linea': True, 'interrumpida': True}
+        diagnostico, obs, repetir = self.preparar_repeticiones_de_prueba([interrumpida] * 6)
+        for numero in (1, 2):
+            llegada = self.llegada_repeticion(repetir, diagnostico, obs)
+            diagnostico, (registro, repetir) = paso(diagnostico, llegada)
+            self.assertEqual(registro.datos[3], 'corrida-interrumpida')
+            self.assertEqual(diagnostico.trenes[0].relanzamientos_automaticos, numero)
+            self.assertEqual(self.trabajos_y_claves_por_intento(), ((numero, numero),) * 2)
+        llegada = self.llegada_repeticion(repetir, diagnostico, obs)
+        pausado, efectos = paso(diagnostico, llegada)
+        self.assertEqual(pausado.pausa.detalle, 'corrida-interrumpida')
+        self.assertEqual(pausado.trenes[0].relanzamientos_automaticos, 2)
+        self.assertEqual(efectos, ())
+        self.assertEqual(self.trabajos_y_claves_por_intento(), ((3, 3), (3, 3)))
+
+    def test_repeticion_en_serie_75_conserva_la_reanudacion(self):
+        diagnostico, obs, repetir = self.preparar_repeticiones_de_prueba(
+            [{'codigo': 75, 'sin_linea': True}, {}, {}], paralelo=False)
+        llegada = self.llegada_repeticion(repetir, diagnostico, obs)
+        self.assertIsInstance(llegada.repeticion, Incompleto)
+        self.assertEqual(llegada.repeticion.codigo, 75)
+        esperando, efectos = paso(diagnostico, llegada)
+        self.assertEqual(efectos, ())
+        obs = replace(obs, ahora=esperando.trenes[0].fase.esperar_hasta)
+        siguiente, (repetir,) = paso(esperando, obs)
+        self.assertIsInstance(self.llegada_repeticion(repetir, siguiente, obs).repeticion, Repeticion)
+        self.assertEqual(self.trabajos_y_claves_por_intento(), ((2, 2), (1, 1)))
+
+    def verificar_repeticiones_paralelas_sin_relanzar(self, primera, segunda, detalle):
+        parte = {'por_intento': {'1': primera, '2': segunda}}
+        diagnostico, obs, repetir = self.preparar_repeticiones_de_prueba([parte, parte])
+        pausado, efectos = paso(diagnostico, self.llegada_repeticion(repetir, diagnostico, obs))
         self.assertEqual(efectos, ())
         self.assertEqual(pausado.pausa.detalle, detalle)
         self.assertEqual(pausado.trenes[0].relanzamientos_automaticos, 0)

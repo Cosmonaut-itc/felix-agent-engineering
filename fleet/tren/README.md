@@ -834,15 +834,23 @@ el feedback conserva B y deja C vacío; no inventa una unidad de prueba.
 rojo, y las readmite por las reglas normales desde el tick siguiente.
 
 El tren relanza automáticamente una suite o repetición ante `salida-sin-recibo`,
-`corrida-interrumpida` o `cobertura-parcial-boat`. Con `salida-sin-recibo`
-reengancha el mismo registro y clave. Los otros dos detalles abren un registro
-y una clave nuevos. Un rechazo no relanzable en otro modo o intento impide
-el relanzamiento automático.
+`corrida-interrumpida` o `cobertura-parcial-boat`. En una suite o repetición
+en serie, `salida-sin-recibo` reengancha el mismo registro y clave. Los otros
+dos detalles abren un registro y una clave nuevos. Un rechazo no relanzable
+en otro modo o intento impide el relanzamiento automático.
 Tiene dos relanzamientos por lote, compartidos entre suite y diagnóstico. La
 tercera señal pausa el tren y permite las decisiones de la tabla. En
 `pao-tren estado`, el evento `relanzamiento-automatico` muestra el número,
 el límite y el detalle, por ejemplo «relanzado automáticamente 1/2 por
 salida-sin-recibo».
+
+En una repetición paralela, cada intento conserva su registro y clave mientras
+pueda seguir vivo, incluso tras un 75 sin recibo. Un intento con fin confirmado
+abre otro registro y clave si hace falta volver a correrlo. Los recibos válidos
+con código distinto de 75 se reutilizan desde la caché. La regla se aplica a
+los relanzamientos automáticos y a las decisiones de la tabla, incluso al
+reanudar una pausa guardada con la versión anterior.
+
 Para cortar una corrida del tren a propósito, pausa el tren antes de cortarla
 o la relanzará hasta dos veces.
 
@@ -1608,8 +1616,9 @@ detalle es `corrida-interrumpida`. Las demás salidas enteras sin recibo
 llevan el detalle `salida-sin-recibo`, también en Boat y en su caída al desk.
 `lanzador-rechazo`, `corrida-interrumpida` y `salida-sin-recibo` conservan la ruta de
 `coordinador.log`. La política de relanzamientos y pausas también se aplica al
-recuperar un efecto ya fallido. En pausa por `lanzador-rechazo` o `corrida-interrumpida`,
-`reanudar` lanza otro intento con registro y clave nuevos. Con
+recuperar un efecto ya fallido. En las suites y las repeticiones en serie,
+`reanudar` en pausa por `lanzador-rechazo` o `corrida-interrumpida` lanza otro
+intento con registro y clave nuevos. Con
 `salida-sin-recibo`, `reanudar` reengancha el mismo registro con la misma
 clave y conserva la salida anterior. Si hay un checkout del operador, usa su
 lanzador vigente. Consulta `coordinador.log` y, si existe, el `corrida.log`
@@ -1617,7 +1626,7 @@ del mismo registro. Cuando el log muestra que la corrida terminó y
 reenganchar repetiría la misma salida, `absolver` abre un registro con una
 clave nueva. El modo con recibo válido se recupera de la caché.
 `abortar` libera las entregas sin rojo.
-Cuando Boat devuelve 75 pendiente, el siguiente intento usa la misma
+En una suite o repetición en serie, si Boat devuelve 75 pendiente, el siguiente intento usa la misma
 identidad con un log nuevo si el modo sigue configurado en Boat. Esto también
 recupera un envío del fallback cuyo desk devolvió 75 sin resultado. Si cambia
 el host del modo a `auto` o `desktop`, el intento nuevo usa ese host y su clave
