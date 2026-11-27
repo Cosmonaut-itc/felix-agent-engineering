@@ -97,6 +97,38 @@ class CasosCI(ContextoCI):
         self.guardar_ci(datos)
 
 
+class RearmeCIRefTests(CasosCI):
+    def test_rearmado_filtra_rojo_anterior_aunque_c_sea_el_mismo(self):
+        estado = self.hasta_fase(EsperandoCI)
+        anterior = estado.trenes[0]
+        c = anterior.fase.candidato.C
+        viejo = dict(check('failure'), head_sha=c)
+        datos = {'head': c, 'checks': [viejo], 'suites': [
+            {'id': 1, 'head_sha': c, 'head_branch': 'tren/' + anterior.id}],
+            'statuses': [{'context': 'legacy', 'state': 'failure'}]}
+        self.guardar_ci(datos)
+        self.contexto = ContextoR1(self.ruta_contexto)
+        self.contexto.tick(1000)
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
+        estado = self.siguiente_hasta(lambda e: isinstance(e.trenes[-1].fase, EsperandoCI), 1001)
+        nuevo = estado.trenes[-1]
+        self.assertNotEqual(nuevo.id, anterior.id)
+        self.assertEqual(nuevo.fase.candidato.C, c)
+        self.assertEqual(nuevo.fase.solicitud, 1)
+        self.assertEqual(self.remoto('refs/heads/tren/' + nuevo.id + '-ci-1'), c)
+        self.contexto.tick(1020)
+        self.assertEqual(self.estado().trenes[-1], nuevo)
+        self.assertEqual(self.lineas('trabajos.log'), [])
+
+        self.nueva(datos, nuevo, 'success')
+        certificado = self.siguiente_hasta(lambda e: isinstance(e.trenes[-1].fase, Certificado), 1021)
+        self.assertTrue(all(e.rearme_ci == anterior.id for e in certificado.entradas))
+        self.assertEqual(certificado.trenes[-1].fase.ci, 'github:' + c + ':tren/' + nuevo.id + '-ci-1')
+        aterrizado = self.siguiente_hasta(lambda e: e.trenes[-1].fase == Terminal('ATERRIZADO'), 1030)
+        self.assertTrue(all(e.rearme_ci is None for e in aterrizado.entradas))
+        self.assertEqual(len(self.lineas('trabajos.log')), 1)
+
+
 class RegresionesTests(CasosCI):
     def test_rojo_anterior_no_devuelve_y_rojo_vigente_si(self):
         antes, datos, ahora = self.anterior('failure')

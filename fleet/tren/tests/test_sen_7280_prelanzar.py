@@ -2,6 +2,7 @@
 from dataclasses import replace
 from itertools import count
 import json
+from pathlib import Path
 import shlex
 import sqlite3
 import subprocess
@@ -281,12 +282,12 @@ class TickActivoTests(Productor, unittest.TestCase):
     def tick(self, frontera=None):
         return self.cli('tick', '--config', str(self.privada), frontera=frontera)
 
-    def hasta(self, fase):
+    def hasta(self, fase, indice=0):
         for _ in range(8):
             resultado = self.tick()
             trenes = self.estado().trenes
-            if trenes and isinstance(trenes[0].fase, fase):
-                return trenes[0], resultado
+            if trenes and isinstance(trenes[indice].fase, fase):
+                return trenes[indice], resultado
         self.fail('fase no alcanzada: ' + fase.__name__)
 
     def eventos(self, tipo):
@@ -382,7 +383,7 @@ class TickActivoTests(Productor, unittest.TestCase):
                                       (REPO, 'suite-prelanzada-sin-leer'))
             self.assertCountEqual([json.loads(fila[0]) for fila in filas], esperado)
 
-    def test_ci_rojo_registra_los_modos_sin_leer(self):
+    def test_ci_rojo_rearma_y_no_acredita_suites_prelanzadas_sin_verde(self):
         tren, _ = self.hasta(EsperandoCI)
         self.ci = 'verde'
 
@@ -394,6 +395,26 @@ class TickActivoTests(Productor, unittest.TestCase):
             self.tick(detener)
         self.ci = 'rojo'
         self.assert_sin_leer_por_modo(tren)
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
+        self.ci = 'pendiente'
+        nuevo, _ = self.hasta(EsperandoCI, -1)
+        self.assertNotEqual(nuevo.id, tren.id)
+        self.assertEqual(nuevo.fase.candidato.C, tren.fase.candidato.C)
+        self.assertEqual(nuevo.fase.solicitud, 1)
+        raiz = Jale(self.lanzador).estado
+        for modo in ('contract', 'e2e'):
+            self.esperar_archivo(raiz / clave('suite', nuevo.id) / modo / '0' / 'codigo.json')
+        resultado = self.tick()
+        self.assertEqual(self.estado().trenes[-1], nuevo)
+        self.assertFalse(any(f['efecto']['tipo'] == 'iniciar-suite' for f in resultado['outbox']))
+        for id_tren in (tren.id, nuevo.id):
+            for modo in ('contract', 'e2e'):
+                self.assertFalse((raiz / clave('suite', id_tren) / modo / '0' / 'confirmada.json').exists())
+        self.ci = 'verde'
+        certificado, _ = self.hasta(Certificado, -1)
+        self.assertEqual(certificado.fase.ci, 'github:' + nuevo.fase.candidato.C +
+                         ':tren/' + nuevo.id + '-ci-1')
+        self.assertEqual(Path(certificado.fase.suite).parent, raiz / clave('suite', nuevo.id))
 
     def abortar(self, tren):
         self.cli('juicio', '--tren', tren.id, '--decision', 'abortar', '--motivo', 'prueba')

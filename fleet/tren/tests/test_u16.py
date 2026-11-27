@@ -80,6 +80,13 @@ class ContextoCI(unittest.TestCase):
                 return estado
         self.fail('no convergió: ' + str(datos(estado)))
 
+    def ci_del_lote_rearmado(self, ahora):
+        # Los injertos también se ejecutan sobre versiones que partían al primer rojo.
+        if self.estado().trenes[0].fase == Terminal('REARMAR'):
+            self.siguiente_hasta(lambda e: isinstance(e.trenes[-1].fase, EsperandoCI),
+                                 inicio=ahora - 10, limite=10)
+        return ahora
+
     def devolver_uno(self):
         antes = self.individual()
         candidato = antes.trenes[0].fase.candidato
@@ -118,28 +125,29 @@ class RegresionesTests(ContextoCI):
             return 'failure' if contiene else 'success'
         self.ci_en(conclusion)
         self.contexto.tick(1000)
+        self.contexto.tick(self.ci_del_lote_rearmado(1020))
         partido = self.estado()
-        self.assertEqual(partido.trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(partido.trenes[-1].fase, Terminal('PARTIDO'))
         self.assertTrue(all(e.tren is None and e.solo for e in partido.entradas))
         self.assertEqual([(e.entrega, e.recibida, e.admitida) for e in partido.entradas],
                          [(e.entrega, e.recibida, e.admitida) for e in antes.entradas])
         self.assertEqual(self.posts('/comments'), [])
         self.assertFalse(any(p['payload']['state'] == 'failure' for p in self.posts('/statuses/')))
         self.assertEqual(self.remoto(), self.B)
-        final = self.siguiente_hasta(lambda e: len(e.trenes) == 4 and
-                                    all(isinstance(t.fase, Terminal) for t in e.trenes))
-        self.assertEqual([t.recibos for t in final.trenes[1:]],
+        final = self.siguiente_hasta(lambda e: len(e.trenes) == 5 and
+                                    all(isinstance(t.fase, Terminal) for t in e.trenes), 1030)
+        self.assertEqual([t.recibos for t in final.trenes[2:]],
                          [(e.entrega.recibo,) for e in antes.entradas])
         self.assertEqual([t.fase.resultado for t in final.trenes],
-                         ['PARTIDO', 'ATERRIZADO', 'DEVUELTO', 'ATERRIZADO'])
+                         ['REARMAR', 'PARTIDO', 'ATERRIZADO', 'DEVUELTO', 'ATERRIZADO'])
         self.assertEqual(len(self.lineas('trabajos.log')), 2)
         self.assertEqual(len(self.posts('/comments')), 1)
         self.assertEqual(sum(p['payload']['state'] == 'failure' for p in self.posts('/statuses/')), 1)
         self.assertEqual(sum(p.endswith(':refs/heads/main') for p in self.lineas('pushes.log')), 2)
         ramas = self.comando(self.origen, 'for-each-ref', '--format=%(refname)', 'refs/heads/tren/').splitlines()
-        self.assertEqual(len(ramas), 4)
-        for tren in final.trenes[1:]:
-            c = self.remoto('refs/heads/tren/' + tren.id)
+        self.assertEqual(len(ramas), 5)
+        for tren in final.trenes[2:]:
+            c = self.remoto('refs/heads/tren/' + tren.id + '-ci-1')
             self.assertNotEqual(c, candidato.C)
             self.assertTrue(any('/commits/' + c + '/check-runs' in p for p in self.lineas('github.log')))
         with self.ledger() as ledger:
@@ -263,8 +271,13 @@ class InvariantesTests(ContextoCI):
         self.ci_en(lambda head: 'failure' if head == candidato else
                    'pending' if head == primero else None)
         self.contexto.tick(500)
+        self.ci_en(lambda head: 'failure' if head == candidato else None)
+        self.ci_del_lote_rearmado(520)
+        self.ci_en(lambda head: 'failure' if head == candidato else
+                   'pending' if head == primero else None)
+        self.contexto.tick(520)
         partido = self.estado()
-        self.assertEqual(partido.trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(partido.trenes[-1].fase, Terminal('PARTIDO'))
         self.assertEqual([e.admitida for e in partido.entradas],
                          [e.admitida for e in antes.entradas])
         self.ci_en(lambda head: 'success')
@@ -285,8 +298,9 @@ class InvariantesTests(ContextoCI):
         c = antes.trenes[0].fase.candidato.C
         self.ci_en(lambda head: 'failure' if head == c else None)
         self.contexto.tick(1000)
+        self.contexto.tick(self.ci_del_lote_rearmado(1020))
         partido = self.estado()
-        self.assertEqual(partido.trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(partido.trenes[-1].fase, Terminal('PARTIDO'))
         # Retención transitoria no pierde marca ni instante FIFO.
         pr, head = self.miembros[0]
         (self.raiz / 'apto-1.json').write_text('{}')
@@ -358,6 +372,13 @@ class RecuperacionTests(ContextoCI):
     def morir(self, punto, individual):
         antes = self.individual() if individual else self.hasta_fase(EsperandoCI)
         candidato = antes.trenes[0].fase.candidato
+        ahora = 1000
+        if not individual:
+            self.ci_en(lambda head: 'failure' if head == candidato.C else None)
+            self.contexto.tick(ahora)
+            ahora = self.ci_del_lote_rearmado(1020)
+            # El proceso padre vuelve a la lectura verde para recuperar la fila.
+            self.ci_en(lambda head: 'success')
         codigo = '''
 from test_u16 import ContextoCI
 import os
@@ -367,14 +388,13 @@ c.ci_en(lambda head: 'failure' if head == sys.argv[4] else None)
 def frontera(nombre, efecto):
     if nombre == sys.argv[5] and (efecto is None or efecto.tipo == 'devolver'):
         os._exit(77)
-c.contexto.tick(1000, frontera)
+c.contexto.tick(int(sys.argv[6]), frontera)
 '''
-        hijo = self.hijo(codigo, candidato.C, punto)
+        hijo = self.hijo(codigo, candidato.C, punto, str(ahora))
         salida, error = hijo.communicate(timeout=60)
         self.assertEqual(hijo.returncode, 77, salida + error)
         guardado = self.estado()
-        self.assertIsInstance(guardado.trenes[0].fase, Terminal)
-        self.assertEqual(guardado.trenes[0].fase.resultado, 'DEVUELTO' if individual else 'PARTIDO')
+        self.assertEqual(guardado.trenes[-1].fase, Terminal('DEVUELTO' if individual else 'PARTIDO'))
         self.contexto.tick(1100)
         self.contexto.tick(1200)
         if individual:
