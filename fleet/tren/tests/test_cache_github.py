@@ -290,8 +290,8 @@ class TickLimiteTests(unittest.TestCase):
         fase = antes.trenes[0].fase
         objetivo = f"/commits/{fase.candidato.C}/check-runs?"
         ci = self.contexto.observador.ci
-        self.contexto.observador.ci = lambda repo, head, rama=None: (
-            ResultadoCI("pendiente") if head == fase.candidato.C else ci(repo, head, rama))
+        self.contexto.observador.ci = lambda repo, head, rama=None, **kwargs: (
+            ResultadoCI("pendiente") if head == fase.candidato.C else ci(repo, head, rama, **kwargs))
         self.contexto.tick(fase.desde + 1)
         antes = self.estado()
         fase = antes.trenes[0].fase

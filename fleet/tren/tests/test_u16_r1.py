@@ -1,5 +1,6 @@
 """R1 U16: solicitud vigente y preparación de runner; sólo host remoto."""
 from dataclasses import replace
+from datetime import datetime, timezone
 import json
 import subprocess
 import unittest
@@ -19,6 +20,11 @@ def check(conclusion, suite=1, identidad=90, actions=False):
         valor.update(app={'slug': 'github-actions'}, details_url=
             'https://github.com/' + REPO + '/actions/runs/10/job/20')
     return valor
+
+
+def status(estado, instante):
+    return {'context': 'Vercel', 'state': estado,
+            'created_at': datetime.fromtimestamp(instante, timezone.utc).isoformat()}
 
 
 def job(head='a' * 40):
@@ -133,7 +139,31 @@ class RearmeCIRefTests(CasosCI):
         self.assertTrue(all(e.rearme_ci is None for e in aterrizado.entradas))
         self.assertEqual(len(self.lineas('trabajos.log')), 1)
 
-    def test_suite_recuperada_de_la_solicitud_uno_no_tapa_el_rojo_de_la_dos(self):
+    def test_status_pendiente_vigente_bloquea_la_suite_y_el_rojo_parte(self):
+        _, nuevo, datos = self.rearmar_con_rojo()
+        datos['statuses'] = [status('pending', 1019)]
+        self.nueva(datos, nuevo, 'success')
+        self.contexto.tick(1020)
+        self.assertEqual(self.estado().trenes[-1], nuevo)
+        self.assertEqual(self.lineas('trabajos.log'), [])
+        datos['statuses'].insert(0, status('failure', 1021))
+        self.guardar_ci(datos)
+        self.contexto.tick(1021)
+        self.assertEqual(self.estado().trenes[-1].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.remoto(), self.B)
+
+    def test_rojo_vigente_gana_al_verde_guardado_con_la_suite(self):
+        _, nuevo, datos = self.rearmar_con_rojo()
+        self.nueva(datos, nuevo, 'success')
+        self.contexto.tick(1020)
+        self.assertEqual(len(self.lineas('trabajos.log')), 1)
+        datos['statuses'] = [status('failure', 1021)]
+        self.guardar_ci(datos)
+        self.contexto.tick(1021)
+        self.assertEqual(self.estado().trenes[-1].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.remoto(), self.B)
+
+    def perder_ack_suite(self):
         class Corte(Exception):
             pass
 
@@ -148,9 +178,24 @@ class RearmeCIRefTests(CasosCI):
         self.assertEqual(len(self.lineas('trabajos.log')), 1)
         datos['checks'][1].update(status='in_progress', conclusion=None)
         self.guardar_ci(datos)
-        vencimiento = nuevo.fase.desde + 3600
+        return nuevo, datos, nuevo.fase.desde + 3600
+
+    def test_fallo_transitorio_al_leer_recibo_se_recupera_sin_juicio(self):
+        _, _, vencimiento = self.perder_ack_suite()
         with patch.object(self.contexto.hasito, 'suite',
                           side_effect=ResultadoInvalido('resultado-ilegible')):
+            self.contexto.tick(vencimiento)
+        self.assertIsNone(self.estado().pausa)
+        self.contexto.tick(vencimiento + 120)
+        self.assertIsInstance(self.estado().trenes[-1].fase, Certificado)
+        self.assertIsNone(self.estado().pausa)
+        self.assertEqual(len(self.lineas('trabajos.log')), 1)
+
+    def test_suite_recuperada_de_la_solicitud_uno_no_tapa_el_rojo_de_la_dos(self):
+        nuevo, datos, vencimiento = self.perder_ack_suite()
+        with patch.object(self.contexto.hasito, 'suite',
+                          side_effect=ResultadoInvalido('resultado-ilegible')):
+            self.contexto.tick(vencimiento - 1)
             self.contexto.tick(vencimiento)
         self.assertEqual(self.estado().pausa, Pausa('infraestructura', detalle='ci-sin-resultado'))
         self.juicio('reanudar')
@@ -231,6 +276,17 @@ ContextoR1(sys.argv[3]).tick(int(sys.argv[4]), frontera)
 
 
 class ContratoTests(CasosCI):
+    def test_status_anterior_a_la_solicitud_no_devuelve_el_individual(self):
+        anterior, datos, ahora = self.anterior('success')
+        datos['statuses'] = [status('failure', ahora - 1)]
+        self.guardar_ci(datos)
+        self.contexto.tick(ahora)
+        self.nueva(datos, anterior.trenes[0], 'success')
+        self.contexto.tick(ahora + 1)
+        self.contexto.tick(ahora + 2)
+        self.assertEqual(self.posts('/comments'), [])
+        self.assertIsInstance(self.estado().trenes[-1].fase, Certificado)
+
     def test_recibo_antiguo_no_autoriza_verde_en_reductor_ni_ejecutor(self):
         from efectos import ejecutar
         from dominio import Efecto, clave
@@ -291,8 +347,9 @@ class LecturaActionsTests(unittest.TestCase):
                 lector.api = lambda endpoint, paginado=False: (
                     [{'check_runs': []}] if '/check-runs?' in endpoint else
                     [{'check_suites': []}] if '/check-suites?' in endpoint else
-                    [[{'context': 'legacy', 'state': estado}]])
-                self.assertEqual(lector.ci(REPO, 'a' * 40, 'tren/actual-ci-1').estado, 'pendiente')
+                    [[status(estado, 101)]])
+                self.assertEqual(lector.ci(REPO, 'a' * 40, 'tren/actual-ci-1',
+                                           desde=100).estado, 'pendiente')
 
     def test_status_negativo_veta_check_verde_de_la_ref_vigente(self):
         rama = 'tren/actual-ci-1'
@@ -300,20 +357,23 @@ class LecturaActionsTests(unittest.TestCase):
         lector = GitHubGit({}, activo=True)
         for estado, por_sha, por_ref in (
                 ('failure', 'rojo', 'rojo'), ('error', 'pendiente', 'rojo'),
-                ('success', 'verde', 'verde'), ('pending', 'pendiente', 'verde')):
+                ('success', 'verde', 'verde'), ('pending', 'pendiente', 'pendiente')):
             with self.subTest(estado=estado):
                 def api(endpoint, paginado=False):
                     if '/check-runs?' in endpoint:
                         return [{'check_runs': [check('success')]}]
                     if '/check-suites?' in endpoint:
                         return [{'check_suites': [{'id': 1, 'head_sha': head, 'head_branch': rama}]}]
-                    return [[{'context': 'Vercel', 'state': estado},
-                             {'context': 'Vercel', 'state': 'failure'}]]
+                    return [[status(estado, 102), status('failure', 101),
+                             dict(status('failure', 99), context='viejo')]]
                 lector.api = api
-                self.assertEqual(lector.ci(REPO, head).estado, por_sha)
-                resultado = lector.ci(REPO, head, rama)
+                resultado = lector.ci(REPO, head, rama, desde=100)
                 self.assertEqual(resultado.estado, por_ref)
                 self.assertEqual(resultado.rojos, ('Vercel',) if por_ref == 'rojo' else ())
+                self.assertEqual(lector.ci(REPO, head, rama, desde=102).estado, 'verde')
+                lector.api = lambda endpoint, paginado=False: (
+                    [[status(estado, 102)]] if '/statuses?' in endpoint else api(endpoint, paginado))
+                self.assertEqual(lector.ci(REPO, head).estado, por_sha)
 
     def leer(self, checks, datos=None, error=None):
         llamadas = []

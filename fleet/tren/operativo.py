@@ -346,11 +346,13 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         frontera("paso-guardado", None)
         return terminar(nuevo, efectos)
     # La limpieza no crea pausas: sólo retiene el push, incluso al reanudar.
+    clave_suite = clave("suite", activo.id) if activo is not None else None
+    fallo_previo = observacion.suite_de_ci_vigente and any(
+        f["clave"] == clave_suite and f["estado"] == "fallido" for f in ledger.outbox(repo))
     estado, fallo = drenar(estado, observacion, recuperacion=True)
     filas = ledger.outbox(repo)
-    if activo is not None and observacion.suite_de_ci_vigente and any(
-            f["clave"] == clave("suite", activo.id) and f["estado"] == "fallido" for f in filas):
-        # Un recibo ilegible no mantiene el plazo suspendido como una suite en curso.
+    if fallo_previo and any(f["clave"] == clave_suite and f["estado"] == "fallido" for f in filas):
+        # Tras reintentar la fila fallida, un recibo aún ilegible deja correr el plazo.
         observacion = replace(observacion, suite_de_ci_vigente=False)
     consumido = None
     if not estado.pausa:
@@ -361,6 +363,10 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 if efecto.tipo == "iniciar-suite":
                     tren = next((t for t in estado.trenes if t.id == efecto.datos[0]), None)
                     if tren is None:
+                        continue
+                    if (isinstance(tren.fase, EsperandoCI) and tren.fase.solicitud and
+                            observacion.tren_id == tren.id and observacion.ci_candidato == "rojo" and
+                            observacion.ci_recibo == recibo_ci(tren)):
                         continue
                     if suite_de_ci_anterior(tren):
                         if (observacion.tren_id != tren.id or observacion.ci_candidato != "verde" or

@@ -546,7 +546,8 @@ def aterrizaje(estado, tren, observacion):
             estado = replace(estado, entradas=tuple(
                 replace(e, rearme_ci=None) if e.rearme_ci and e in miembros
                 else e for e in estado.entradas))
-            estado = liberar_particiones(estado, miembros)
+            estado = cambiar_fase(estado, tren, fase)
+            return liberar_particiones(estado, miembros), efectos
         elif isinstance(lectura, BloqueoPrevia):
             return pausar_previa(estado, lectura.motivo), ()
         elif isinstance(lectura, EnBase):
@@ -618,9 +619,10 @@ def liberar_particiones(estado, resueltas):
     particiones = {e.particion for e in resueltas if e.particion is not None}
     if not particiones:
         return estado
+    terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
     return replace(estado, entradas=tuple(
         replace(e, partida=False, particion=None, rearmada=True)
-        if e.particion in particiones and e.tren is None and e.terminal is None
+        if e.particion in particiones and e.tren not in terminales and e.terminal is None
         and not isinstance(e.admision, Rechazado) else e
         for e in estado.entradas))
 

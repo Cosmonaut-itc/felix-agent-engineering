@@ -302,10 +302,10 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         ci = self.contexto.observador.ci
         ci_vigente = 'pendiente'
 
-        def leer_ci(repo, sha, ref=None):
+        def leer_ci(repo, sha, ref=None, **kwargs):
             if sha == tren.fase.candidato.C:
                 return ResultadoCI(ci_vigente if ref == rama else 'pendiente')
-            return ci(repo, sha, ref)
+            return ci(repo, sha, ref, **kwargs)
 
         lector = patch.object(self.contexto.observador, 'ci', side_effect=leer_ci)
         lector.start()
@@ -367,8 +367,8 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
 
         ci = self.contexto.observador.ci
 
-        def leer_ci(repo, sha, ref=None):
-            return ResultadoCI('pendiente') if sha == fase.candidato.C else ci(repo, sha, ref)
+        def leer_ci(repo, sha, ref=None, **kwargs):
+            return ResultadoCI('pendiente') if sha == fase.candidato.C else ci(repo, sha, ref, **kwargs)
 
         (self.raiz / 'seguir').touch()
         self.esperar(registro / 'codigo.json')
@@ -389,10 +389,10 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         ci = self.contexto.observador.ci
         lectura = {'valor': 'pendiente'}
 
-        def leer_ci(repo, sha, ref=None):
+        def leer_ci(repo, sha, ref=None, **kwargs):
             if sha == tren.fase.candidato.C:
                 return ResultadoCI(lectura['valor'] if ref == rama else 'pendiente')
-            return ci(repo, sha, ref)
+            return ci(repo, sha, ref, **kwargs)
 
         lector = patch.object(self.contexto.observador, 'ci', side_effect=leer_ci)
         lector.start()
