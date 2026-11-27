@@ -1112,7 +1112,8 @@ class JaleTests(Aislado):
         self.adaptador = self.Jale(self.lanzador, host='boat')
         self.plan({'e2e': [plan, {}]})
         inicial = estado()
-        tren = Tren('lote', (inicial.entradas[0].entrega.recibo,), EsperandoCI(CANDIDATO))
+        tren = Tren('lote', (inicial.entradas[0].entrega.recibo,), EsperandoCI(CANDIDATO),
+                    relanzamientos_automaticos=2)
         inicial = replace(inicial, trenes=(tren,))
         obs = observacion(ci_candidato='verde')
         git = object()
@@ -1239,7 +1240,7 @@ class JaleTests(Aislado):
         self.assertEqual(self.suite(), (raiz, resultado))
         self.assertEqual(self.invocaciones(), [primera])
 
-    def test_boat_cobertura_parcial_pausa_el_tren_y_reanuda_en_otro_intento(self):
+    def test_boat_cobertura_parcial_relanzada_en_otro_intento(self):
         self.adaptador = self.Jale(self.lanzador, host='boat')
         self.plan({'contract': [
             {'cobertura': 'PARTIAL: boat types-omitted=2\nPARTIAL: boat omitted=1\n'}, {}]})
@@ -1251,16 +1252,11 @@ class JaleTests(Aislado):
         efecto = Efecto(clave('suite', tren.id), 'iniciar-suite', (tren.id,))
         llegada = esperar_resultado(ejecutar, efecto, inicial, obs, git, self.adaptador)
         self.assertTrue(llegada.completo)
-        pausado, efectos = paso(inicial, llegada.observacion)
+        reanudado, (registro, reanudar) = paso(inicial, llegada.observacion)
         primera = next(i for i in self.invocaciones() if i['modo'] == 'contract')
-        self.assertEqual(pausado.pausa, Pausa('infraestructura', detalle='cobertura-parcial-boat',
-                                             archivos=(primera['log'],)))
-        self.assertEqual(efectos, ())
+        self.assertEqual(registro.datos, (tren.id, '1', '2', 'cobertura-parcial-boat',
+                                         primera['log']))
         self.assertIn('PARTIAL: boat omitted=1', Path(primera['log']).read_text())
-
-        decision = Decision('reanudar-cobertura', inicial.repo, tren.id, 'reanudar', None,
-                            'cobertura corregida', obs.ahora, 'pausa-1', pausado.pausa)
-        reanudado, (_, reanudar) = paso(pausado, replace(obs, decision=decision, pausa_id='pausa-1'))
         self.assertIsNone(reanudado.pausa)
         self.assertEqual(reanudar.tipo, 'reanudar-suite')
         fase = reanudado.trenes[0].fase

@@ -6,7 +6,8 @@ import shlex
 from dominio import (Armado, Congelado, Corriendo, Diagnosticando,
                      Efecto, EsperandoCI, Pausa, Promoviendo, Rechazado, Terminal, Tren,
                      argv_reproduccion, cambiar_fase, clave, datos, efecto_diagnostico,
-                     efecto_promover, efecto_reanudar_suite, efectos_status, separar_devueltos)
+                     efecto_promover, efecto_reanudar_suite, efectos_status, nuevo_intento_lanzador,
+                     separar_devueltos)
 
 
 # Motivo/detalle -> decisión -> operación. Los prefijos terminan en ':' y
@@ -208,8 +209,7 @@ def resolver(estado, observacion):
             fase = replace(tren.fase, reenganches=tren.fase.reenganches + 1,
                            registro_reenganche=decision.pausa.archivos[0])
         else:
-            fase = replace(tren.fase, reintentos_lanzador=tren.fase.reintentos_lanzador + 1,
-                           reenganches=0, registro_reenganche="")
+            fase = nuevo_intento_lanzador(tren.fase)
         estado = cambiar_fase(estado, tren, fase)
         efectos = ((efecto_reanudar_suite(tren, fase),) if isinstance(fase, Corriendo)
                    else (efecto_diagnostico(tren, fase),))

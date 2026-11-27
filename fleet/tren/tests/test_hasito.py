@@ -130,6 +130,9 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
     anterior = actual.trenes[0].fase
     if detalle is None:
         detalle = "lanzador-rechazo" if codigo == 64 else "salida-sin-recibo"
+    if codigo != 64:
+        # Estos casos ejercitan el juicio humano al agotar los relanzamientos.
+        actual = replace(actual, trenes=(replace(actual.trenes[0], relanzamientos_automaticos=2),))
     reengancha = detalle == "salida-sin-recibo" and decision == "reanudar"
     configurar(str(codigo))
     ledger = Ledger(caso.raiz / ("ledger-" + tipo))
