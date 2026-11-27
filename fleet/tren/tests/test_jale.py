@@ -1122,6 +1122,21 @@ class JaleTests(Aislado):
         self.assertEqual(decisiones[0], decisiones[1])
         self.assertEqual(decisiones[0]['motivo'], 'carga-alta')
 
+    def test_boat_75_pendiente_sin_sonda_usa_la_espera_vigente(self):
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',),
+                                   boat_esperar_s=180)
+        self.plan([{'pendiente': 'intento desconocido'}, {}])
+        raiz, incompleto = self.suite()
+        self.assertEqual(incompleto, Incompleto(75, raiz))
+
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',),
+                                   boat_esperar_s=42)
+        self.assertEqual(self.suite(intento=1, reanudar=incompleto.reanudar)[1].veredicto, 'verde')
+        primera, segunda = self.invocaciones()
+        self.assertEqual(primera['boat']['SEN_RUN_ID'], segunda['boat']['SEN_RUN_ID'])
+        self.assertEqual([i['boat']['SEN_BOAT_ESPERAR'] for i in (primera, segunda)],
+                         ['180', '42'])
+
     def test_boat_dos_modos_comparten_una_sonda_con_plazo_total(self):
         ssh = self.raiz / 'ssh'
         ssh.write_text('#!/bin/sh\nexec sleep 60\n')

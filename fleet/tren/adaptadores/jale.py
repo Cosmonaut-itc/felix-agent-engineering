@@ -493,7 +493,9 @@ class Jale:
                 decision = previo / 'salud-desk.json'
                 if decision.exists():
                     guardar(registro / decision.name, leer_json(decision))
-                return leer_json(previo / 'entorno.json')
+                # Sin sonda previa, la espera sigue la configuración vigente.
+                return dict(leer_json(previo / 'entorno.json'),
+                            SEN_BOAT_ESPERAR=str(self.espera_boat(registro)))
         return {
             'REMOTE_RUN_CLAVE': None,
             'SEN_E2E_FRAGMENTO': None,
