@@ -386,6 +386,7 @@ class RemoteRunTests(unittest.TestCase):
                            dict(schema='remote-run-client-binding@1', identity=None, reason='identity'))
         self.p.status = lambda: self.fail('legacy original reached daemon')
         self.assertEqual(self.act(self.cap)['reason'], 'unsupported')
+        self.assertEqual(self.act(self.hold)['reason'], 'unsupported')
 
     def test_unaccredited_producer_is_unsupported(self):
         self.active()
@@ -528,10 +529,9 @@ class RemoteRunTests(unittest.TestCase):
         original = os.fdopen
 
         def fdopen(fd, *args, **kwargs):
-            stream = original(fd, *args, **kwargs)
             if os.fstat(fd).st_size > c.MAX_BYTES:
-                stream.read = lambda *_: self.fail('oversized original reached read')
-            return stream
+                self.fail('oversized original reached read')
+            return original(fd, *args, **kwargs)
 
         with patch.object(os, 'fdopen', fdopen):
             self.assertEqual(self.act(self.hold)['reason'], 'evidence_missing')
