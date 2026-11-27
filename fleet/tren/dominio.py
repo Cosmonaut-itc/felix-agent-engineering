@@ -548,6 +548,8 @@ def aterrizaje(estado, tren, observacion):
     if isinstance(fase, Certificado):
         if not fase.B:
             return replace(estado, pausa=Pausa("certificado-sin-base")), ()
+        if estado.promocion_retenida(observacion.ahora):
+            return estado, ()
         fase = Promoviendo(fase)
         efectos = (efecto_promover(tren.id, fase.intentos),)
     else:
@@ -1102,13 +1104,9 @@ def paso(estado, observacion):
         if isinstance(tren.fase, Congelado) and isinstance(fase, Armado):
             return estado, tuple(efectos)
         if isinstance(fase, Certificado):
-            if estado.promocion_retenida(observacion.ahora):
-                return estado, tuple(efectos)
             nuevo, promocion = aterrizaje(estado, tren, observacion)
             return nuevo, tuple(efectos) + promocion
         if isinstance(fase, Promoviendo) and fase.reintento_pendiente:
-            if estado.promocion_retenida(observacion.ahora):
-                return estado, tuple(efectos)
             if fase.intentos >= LIMITE_PROMOCION:
                 return replace(estado, pausa=Pausa("promocion-rechazada")), tuple(efectos)
             fase = replace(fase, intentos=fase.intentos + 1, reintento_pendiente=False)

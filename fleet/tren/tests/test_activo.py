@@ -141,8 +141,7 @@ class Contexto:
             self.git_texto(self.config["remoto"], "update-ref", "refs/heads/main",
                            (self.raiz / "escritor").read_text())
         if main_push and (self.raiz / "rechazar-push").exists():
-            return subprocess.CompletedProcess(argv, 1,
-                "!\t" + argv[-1] + "\t[remote rejected] (pre-receive hook declined)\n", "")
+            return subprocess.CompletedProcess(argv, 1, "", "rechazado")
         resultado = subprocess.run(argv, **kwargs)
         if "push" in argv:
             self.log("pushes.log", argv[-1])

@@ -85,12 +85,12 @@ def base_y_commit(tren):
     return getattr(evidencia, "B", ""), getattr(evidencia, "C", "")
 
 
-def error_decision(estado, decision, pausa_id, ahora=None, *, push_en_curso=False):
+def error_decision(estado, decision, pausa_id):
     """También valida el CLI; el reductor repite la validación al consumir."""
     if decision.repo != estado.repo or not decision.motivo.strip():
         return "repo-o-motivo-invalido"
     accion = decision.decision
-    ahora = decision.instante if ahora is None else ahora
+    ahora = decision.instante
     if accion in ("pausar", "abrir-hueco"):
         minutos = decision.minutos
         if minutos is not None and (type(minutos) is not int or not 1 <= minutos <= MAX_MINUTOS_PAUSA):
@@ -100,7 +100,7 @@ def error_decision(estado, decision, pausa_id, ahora=None, *, push_en_curso=Fals
             return "alcance-invalido"
         vigente = estado.promocion_retenida(ahora)
         if accion == "abrir-hueco":
-            if push_en_curso:
+            if any(isinstance(t.fase, Promoviendo) for t in estado.trenes):
                 return "push-a-main-en-curso"
             return "hueco-ya-abierto" if vigente else ""
         return "" if vigente else "hueco-no-vigente"
@@ -172,9 +172,9 @@ def error_decision(estado, decision, pausa_id, ahora=None, *, push_en_curso=Fals
     return ""
 
 
-def resolver(estado, observacion, *, push_en_curso=False):
+def resolver(estado, observacion):
     decision = observacion.decision
-    error = error_decision(estado, decision, observacion.pausa_id, push_en_curso=push_en_curso)
+    error = error_decision(estado, decision, observacion.pausa_id)
     resultado = Efecto(clave("resolver-juicio", decision.id), "resolver-juicio",
         (decision.id, "rechazada" if error else "aplicada", error))
     if error:

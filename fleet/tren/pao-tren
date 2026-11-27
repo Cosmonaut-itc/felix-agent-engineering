@@ -87,13 +87,18 @@ def parser():
     juicio.add_argument("--pr", type=positivo)
     juicio.add_argument("--motivo", required=True, type=motivo)
     for nombre, cierre in (("pausa", "--levantar"), ("hueco", "--cerrar")):
-        control = comandos.add_parser(nombre)
+        descripcion = ("Retiene nuevas promociones. Abrir mientras un tren está en "
+                       "Promoviendo devuelve push-a-main-en-curso." if nombre == "hueco"
+                       else "Pausa manual con vencimiento automático.")
+        control = comandos.add_parser(nombre, description=descripcion)
         control.add_argument("--repo", required=True, type=repositorio)
         control.add_argument("--motivo", required=True, type=motivo)
         opciones = control.add_mutually_exclusive_group()
         opciones.add_argument(cierre, dest="cerrar", action="store_true")
-        opciones.add_argument("--minutos", type=minutos,
-                              help="duración desde el tick que aplica la orden")
+        defecto = 60 if nombre == "hueco" else MAX_MINUTOS_PAUSA
+        opciones.add_argument("--minutos", type=minutos, help=(
+            f"duración desde el tick que aplica la orden (1 a {MAX_MINUTOS_PAUSA}, "
+            f"{defecto} por omisión)"))
     tick = comandos.add_parser("tick")
     tick.add_argument("--repo", required=True, type=repositorio)
     tick.add_argument("--seco", action="store_true")
@@ -174,8 +179,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                     getattr(args, "tren", None), accion, getattr(args, "pr", None),
                     args.motivo, ahora, ledger.pausa_id(args.repo, estado), estado.pausa,
                     getattr(args, "minutos", None))
-                error = error_decision(estado, decision, decision.pausa_id,
-                    push_en_curso=accion == "abrir-hueco" and ledger.push_en_curso(args.repo))
+                error = error_decision(estado, decision, decision.pausa_id)
                 if error:
                     return 2, {"error": error}
                 if ledger.siguiente_decision(args.repo) is not None:

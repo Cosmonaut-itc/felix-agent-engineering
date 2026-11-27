@@ -22,8 +22,6 @@ from preaterrizaje import Previo
 EJECUTABLES = frozenset(("armar-candidato", "solicitar-ci", "iniciar-suite",
                         "reanudar-suite", "repetir", "armar-subconjunto", "promover")) | FEEDBACK
 EFECTOS_SUITE = ("iniciar-suite", "reanudar-suite", "repetir")
-# El transporte Git tiene un timeout de 120 s; el remoto puede terminar después.
-PLAZO_PUSH_S = 10 * 60
 CAMPOS_RESULTADO = ("candidato", "suite", "conflicto_cadena", "main", "tren_id",
                     "intento_promocion", "rama_ocupada", "resultado_suite",
                     "suite_intento", "repeticion", "reproduccion_id")
@@ -74,13 +72,12 @@ def actualizar_plazos(ledger, estado, ahora, decision=None):
         elif ahora >= pausa.hasta and accion != "levantar":
             nuevo = replace(nuevo, pausa=None)
             vencimientos.append(("pausa-manual-vencida", pausa.detalle, pausa.hasta))
-    liberar_hueco = (estado.hueco is not None and not estado.promocion_retenida(ahora)
-                     and accion != "cerrar-hueco")
-    if liberar_hueco:
+    if (estado.hueco is not None and not estado.promocion_retenida(ahora)
+            and accion != "cerrar-hueco"):
         nuevo = replace(nuevo, hueco=None)
         vencimientos.append(("hueco-vencido", estado.hueco.motivo, estado.hueco.hasta))
     if nuevo is not estado:
-        ledger.guardar_paso(nuevo, (), ahora, vencimientos=vencimientos, liberar_hueco=liberar_hueco)
+        ledger.guardar_paso(nuevo, (), ahora, vencimientos=vencimientos)
     return nuevo
 
 
@@ -160,8 +157,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         prelanzadas = cancelar(terminales, confirmadas) if terminales and cancelar is not None else ()
         ledger.guardar_paso(nuevo, efectos, instante, consumido, fallo_operador=fallo,
                             prelanzadas=prelanzadas,
-                            suites_sin_leer=(aviso for _, aviso in confirmadas),
-                            liberar_hueco=estado.hueco is not None and nuevo.hueco is None)
+                            suites_sin_leer=(aviso for _, aviso in confirmadas))
 
     def corridas_sin_leer(cerrados, consumido):
         consultar = getattr(adaptador, "corridas_sin_leer", None)
@@ -190,10 +186,8 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 continue
             # Los fallos de suite pueden tener una salida durable del lanzador.
             # Incorporarla antes del paso permite recuperar instalaciones viejas.
-            promover = efecto.tipo == "promover"
-            hueco = promover and estado.promocion_retenida(ahora)
             if recuperacion and fila["estado"] != "ejecutando" and not (
-                    fila["estado"] == "fallido" and (efecto.tipo in EFECTOS_SUITE or hueco)):
+                    fila["estado"] == "fallido" and efecto.tipo in EFECTOS_SUITE):
                 continue
             if efecto.tipo not in EJECUTABLES:
                 continue
@@ -205,9 +199,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 continue
             # La obligación es durable y de todo el repo. No gastar un intento
             # ni reabrir verificar mientras otra operación exige cancelación.
-            push_previo = promover and fila["estado"] == "ejecutando"
-            solo_lectura = promover and (hueco or previo.bloqueado(repo))
-            if solo_lectura and not (push_previo or hueco and fila["estado"] == "fallido"):
+            if efecto.tipo == "promover" and previo.bloqueado(repo):
                 continue
             # Recuperar, levantar una pausa o reanudar no publica el CI ni lanza
             # la suite de una B que main dejó atrás: el paso la rearma.
@@ -228,16 +220,8 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     not suite_autorizada(estado, tren, observacion)):
                 continue
             intentados.add(efecto.clave)
-            reiniciar_push = None
-            if push_previo and not solo_lectura:
-                inicio = ledger.ultimo_inicio(repo, efecto.clave)
-                if inicio is not None and ahora >= inicio + PLAZO_PUSH_S:
-                    reiniciar_push = lambda: ledger.iniciar_efecto(
-                        repo, efecto, reloj() if reloj is not None else ahora)
-            if not (solo_lectura or push_previo) and (fila["estado"] != "ejecutando" or
-                                     efecto.tipo not in EFECTOS_SUITE):
-                inicio = reloj() if promover and reloj is not None else ahora
-                ledger.iniciar_efecto(repo, efecto, inicio, limpiar_resultado=(
+            if fila["estado"] != "ejecutando" or efecto.tipo not in EFECTOS_SUITE:
+                ledger.iniciar_efecto(repo, efecto, ahora, limpiar_resultado=(
                     fila["estado"] == "fallido" and efecto.tipo in EFECTOS_SUITE))
             frontera("antes-ejecutar", efecto)
             try:
@@ -245,9 +229,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     resultado = escritor.ejecutar_feedback(efecto, estado, frontera)
                     completo = True
                 else:
-                    ejecucion = ejecutar(efecto, estado, observacion, git, adaptador, previo,
-                                         solo_lectura=solo_lectura, push_previo=push_previo,
-                                         reiniciar_push=reiniciar_push)
+                    ejecucion = ejecutar(efecto, estado, observacion, git, adaptador, previo)
                     if ejecucion.aviso is not None:
                         ledger.evento(repo, "prelanzamiento-fallido", ahora, ejecucion.aviso)
                     if ejecucion.en_curso:
@@ -263,8 +245,6 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             except EfectoFallido as exc:
                 resultado, completo = {"error": datos(exc.resultado)}, False
             except FalloSnapshot as exc:
-                if push_previo:
-                    continue
                 detalle = str(exc)
                 if estado.pausa is None:
                     estado = replace(estado, pausa=Pausa(
@@ -275,8 +255,6 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             except (FalloGit, OSError, ValueError, KeyError, TypeError,
                     StopIteration, subprocess.SubprocessError) as exc:
                 # Nada de argv, stderr, tokens ni rutas privadas en los errores.
-                if push_previo:
-                    continue
                 resultado, completo = {"error": {"clase": type(exc).__name__}}, False
             frontera("antes-registrar", efecto)
             ledger.registrar_efecto(repo, efecto, ahora, resultado, completo,
@@ -325,7 +303,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                               pausa_id=ledger.pausa_id(repo, estado))
         frontera("decision-observada", None)
         recuperados = ()
-        from juicios import error_decision, resolver
+        from juicios import error_decision
         tren = next((t for t in estado.trenes if t.id == decision.tren), None)
         if (decision.decision == "abortar" and tren is not None and
                 isinstance(tren.fase, Promoviendo) and
@@ -335,8 +313,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                           if e.entrega.recibo in tren.recibos)
             # Sólo lectura: un aborto no puede esconder un CAS sin ACK.
             lectura = previo.reconciliar(cert.B, cert.C, cert.arbol, heads)
-            if isinstance(lectura, Incierto) or (isinstance(lectura, EnBase) and
-                                                  ledger.push_en_curso(repo)):
+            if isinstance(lectura, Incierto):
                 # Sigue pendiente; otro tick vuelve a acreditar sin empujar.
                 return terminar(estado, ())
             if isinstance(lectura, Aterrizado):
@@ -345,8 +322,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                             intento_promocion=tren.fase.intentos))
                 # El juicio queda rechazado por pausa ya resuelta; el éxito y
                 # su feedback se guardan atómicamente con ese rechazo.
-        nuevo, efectos = resolver(estado, observacion, push_en_curso=(
-            decision.decision == "abrir-hueco" and ledger.push_en_curso(repo)))
+        nuevo, efectos = paso(estado, observacion)
         aplicada = efectos[0].datos[1] == "aplicada"
         efectos = recuperados + efectos
         frontera("decision-reducida", None)
@@ -398,8 +374,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                                   if e.entrega.recibo in tren.recibos)
                     # main es mutable: el ACK guardado no sustituye la lectura
                     # actual, aunque ningún efecto nuevo vaya a ejecutarse.
-                    leer = previo.reconciliar if estado.promocion_retenida(ahora) else git.reconciliar
-                    lectura = leer(cert.B, cert.C, cert.arbol, heads)
+                    lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
                     bloqueo = isinstance(desde_datos(recibida.get("main")), BloqueoPrevia)
                     if not bloqueo or not isinstance(lectura, (EnBase, Incierto)):
                         recibida["main"] = datos(lectura)

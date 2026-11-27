@@ -58,10 +58,6 @@ class FalloGit(Exception):
     """Sólo lleva un código público, nunca comandos o credenciales."""
 
 
-class GitSinRespuesta(FalloGit):
-    """Git no devolvió un estado de salida utilizable."""
-
-
 def sha(valor):
     return isinstance(valor, str) and re.fullmatch(r"[0-9a-f]{40}", valor) is not None
 
@@ -110,7 +106,7 @@ class GitTren:
             return self.ejecutar(comando, capture_output=True, text=text,
                                  timeout=timeout, check=False, input=input, env=env)
         except (OSError, subprocess.SubprocessError):
-            raise GitSinRespuesta("git-no-disponible") from None
+            raise FalloGit("git-no-disponible") from None
 
     def texto(self, *args, aislado=True, **kwargs):
         resultado = self.git(*args, aislado=aislado, **kwargs)
@@ -342,21 +338,11 @@ class GitTren:
             impedimento = antes_push()
             if impedimento is not None:
                 return impedimento
-        sin_confirmar = False
         try:
-            push = self.git("push", "--porcelain", "--no-verify", "--no-follow-tags",
+            self.git("push", "--porcelain", "--no-verify", "--no-follow-tags",
                 "--recurse-submodules=no", "--force-with-lease=refs/heads/main:" + B,
                 self.remoto, C + ":refs/heads/main")
-            rechazo = "!\t" + C + ":refs/heads/main\t"
-            sin_confirmar = push.returncode != 0 and not any(
-                linea.startswith((rechazo + "[rejected]", rechazo + "[remote rejected]"))
-                for linea in push.stdout.splitlines())
-        except GitSinRespuesta:
-            sin_confirmar = True
         except FalloGit:
             pass
         # Never infer success/failure from push's exit/ACK. Always read the remote.
-        lectura = self.reconciliar(B, C, arbol, heads)
-        if sin_confirmar and isinstance(lectura, (EnBase, Incierto)):
-            return Incierto(B, C, "push-sin-confirmar")
-        return lectura
+        return self.reconciliar(B, C, arbol, heads)

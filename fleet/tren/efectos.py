@@ -92,8 +92,7 @@ def pedidos_adelantados(fase, git, adaptador, tren):
         yield solicitud, commit
 
 
-def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None, *,
-             solo_lectura=False, push_previo=False, reiniciar_push=None):
+def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
     """Repetible sobre la misma instantánea; los leases hacen converger el IO.
 
     Devuelve Ejecucion; sólo completo=True permite cerrar el efecto del outbox.
@@ -214,20 +213,18 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None, *,
         cert = fase.certificado
         entradas = {e.entrega.recibo: e for e in estado.entradas}
         heads = tuple(entradas[r].entrega.head for r in tren.recibos)
-        limpia = replace(limpia, intento_promocion=fase.intentos)
-        # Antes de repetir IO, reconciliar: un proceso muerto pudo aterrizar C.
-        leer = previo.reconciliar if solo_lectura and previo is not None else git.reconciliar
-        lectura = leer(cert.B, cert.C, cert.arbol, heads)
-        if (isinstance(lectura, (EnBase, Incierto)) and
-                (solo_lectura or push_previo and
-                 (reiniciar_push is None or isinstance(lectura, Incierto)))):
-            return Ejecucion(replace(limpia, main=lectura), False, en_curso=True)
-        if solo_lectura or not lote_admitido(estado, tren, observacion):
-            # Los PR pueden haberse cerrado por nuestro push antes del ACK.
-            return Ejecucion(replace(limpia, main=lectura),
+        vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+        if any(not isinstance(admision_entrada(entradas[r], vistas, observacion), Admitido)
+               for r in tren.recibos):
+            # Puede haber aterrizado antes de perder el ACK: leer sin empujar.
+            lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
+            return Ejecucion(replace(limpia, main=lectura,
+                                    intento_promocion=fase.intentos),
                              not isinstance(lectura, Incierto))
+        # Antes de repetir IO, reconciliar: un proceso muerto pudo aterrizar C.
         # Una lectura incierta conserva el contrato U2: intentar el CAS sigue
         # siendo seguro por el lease, y su lectura posterior decide el resultado.
+        lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
         if isinstance(lectura, (EnBase, Incierto)):
             if previo is not None and previo.necesario(tren, observacion):
                 if isinstance(lectura, Incierto):
@@ -236,22 +233,12 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None, *,
                         raise FalloSnapshot("main-no-disponible")
                     lectura = BloqueoPrevia(cert.B, cert.C, "base-incierta")
                 else:
-                    def antes_push():
-                        impedimento = previo.verificar(estado, tren, observacion, efecto)
-                        if impedimento is None and reiniciar_push is not None:
-                            reiniciar_push()
-                        return impedimento
-
                     lectura = git.promover(cert.B, cert.C, cert.arbol, heads,
-                                           antes_push=antes_push)
-            elif reiniciar_push is not None:
-                lectura = git.promover(cert.B, cert.C, cert.arbol, heads, antes_push=reiniciar_push)
+                        antes_push=lambda: previo.verificar(estado, tren, observacion, efecto))
             else:
                 lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
-        if isinstance(lectura, Incierto) and lectura.motivo == "push-sin-confirmar":
-            return Ejecucion(replace(limpia, main=lectura), False, en_curso=True)
         if previo is not None:
             lectura = previo.resolver(estado, tren, lectura)
-        return Ejecucion(replace(limpia, main=lectura),
+        return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),
                          not isinstance(lectura, (Incierto, EsperaPrevia)))
     raise ValueError("efecto o fase no soportados")

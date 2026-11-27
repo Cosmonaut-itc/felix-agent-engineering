@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import test_activo as activo
-from dominio import Admitido, Certificado, Corriendo, Decision, Hueco, Pausa, Promoviendo, Terminal, datos
+from dominio import Certificado, Corriendo, Decision, Pausa, Promoviendo, Terminal, datos
 from test_u18 import AHORA
 from test_u18_injerto import ContextoInjerto
 
@@ -69,26 +69,18 @@ class HuecosTests(unittest.TestCase):
         self.assertEqual(self.vencimientos("hueco-vencido"),
                          [(hasta, {"motivo": "merge externo", "hasta": hasta})])
 
-    def test_hueco_retiene_el_push_ya_en_outbox_y_cerrar_lo_libera(self):
-        self.hasta_fase(Certificado)
-        cert = self.estado().trenes[0].fase
-
-        def detener(nombre, efecto):
-            if nombre == "paso-guardado":
-                raise RuntimeError("interrupción")
-
-        with self.assertRaisesRegex(RuntimeError, "interrupción"):
-            self.contexto.tick(2000, detener)
-        with self.ledger() as ledger:
-            self.assertEqual(ledger.outbox(REPO)[0]["estado"], "pendiente")
-        self.orden("hueco", 2001, "--motivo", "preparar pool")
+    def test_hueco_registrado_en_certificado_retiene_y_cerrar_libera(self):
+        cert = self.hasta_fase(Certificado).trenes[0].fase
+        self.orden("hueco", 2000, "--motivo", "preparar pool")
+        self.contexto.tick(2001)
         self.contexto.tick(2002)
-        self.contexto.tick(2003)
-        self.assertIsInstance(self.estado().trenes[0].fase, Promoviendo)
+        self.assertEqual(self.estado().trenes[0].fase, cert)
+        self.assertEqual(self.pushes_main(), [])
         self.assertEqual(self.remoto(), self.B)
         self.orden("hueco", 2004, "--cerrar", "--motivo", "pool listo")
         self.contexto.tick(2005)
         self.assertIsNone(self.estado().hueco)
+        self.contexto.tick(2006)
         self.assertEqual(self.remoto(), cert.C)
         self.assertEqual(self.vencimientos("hueco-vencido"), [])
         with self.ledger() as ledger:
@@ -110,21 +102,23 @@ class HuecosTests(unittest.TestCase):
         self.assertEqual(self.vencimientos("pausa-manual-vencida"),
                          [(3801, {"motivo": "mantenimiento", "hasta": 3801})])
 
-    def test_tick_muerto_durante_el_push_reintenta_al_vencer_el_plazo(self):
+    def test_tick_muerto_durante_el_push_rechaza_el_hueco_y_reintenta(self):
         cert = self.hasta_fase(Certificado).trenes[0].fase
         with self.hijo("from test_activo import Contexto\n"
                        "Contexto(sys.argv[3], 'antes-push').tick(2000)") as hijo:
             _, error = hijo.communicate(timeout=45)
             self.assertEqual(hijo.returncode, 77, error)
-        self.contexto.tick(2200)
-        self.contexto.tick(2599)
+        self.assertIsInstance(self.estado().trenes[0].fase, Promoviendo)
         self.assertEqual(self.remoto(), self.B)
-        self.assertEqual(self.pushes_main(), [])
-        self.assertEqual(self.ejecutar_cli("hueco", 2599, "--motivo", "reserva"),
+        self.assertEqual(self.ejecutar_cli("hueco", 2001, "--motivo", "reserva"),
                          (2, {"error": "push-a-main-en-curso"}))
-        self.contexto.tick(2600)
+        with patch.object(self.contexto.git, "ejecutar", wraps=self.contexto.git.ejecutar) as git:
+            self.contexto.tick(2002)
+        pushes = [c.args[0] for c in git.call_args_list
+                  if "push" in c.args[0] and c.args[0][-1].endswith(":refs/heads/main")]
+        self.assertEqual(len(pushes), 1)
+        self.assertIn("--force-with-lease=refs/heads/main:" + self.B, pushes[0])
         self.assertEqual(self.remoto(), cert.C)
-        self.assertEqual(self.pushes_main(), [cert.C + ":refs/heads/main"])
         self.assertEqual(self.estado().trenes[0].fase, Terminal("ATERRIZADO"))
 
     def test_timeout_del_push_rechaza_el_hueco_y_acredita_sin_segundo_push(self):
@@ -144,9 +138,7 @@ class HuecosTests(unittest.TestCase):
             if "push" not in argv or not argv[-1].endswith(":refs/heads/main"):
                 return transporte(argv, **kwargs)
             if push_en_remoto is not None:
-                # El rechazo de un reintento no resuelve el primer push.
-                return subprocess.CompletedProcess(argv, 1,
-                    "!\t" + argv[-1] + "\t[remote rejected] (otro push activo)\n", "")
+                self.fail("se intentó un segundo push")
             push_en_remoto = subprocess.Popen(argv, env=kwargs["env"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             limite = time.monotonic() + 20
@@ -162,7 +154,7 @@ class HuecosTests(unittest.TestCase):
                 self.assertEqual(self.ejecutar_cli("hueco", 2001, "--motivo", "reserva"),
                                  (2, {"error": "push-a-main-en-curso"}))
                 with self.ledger() as ledger:
-                    self.assertEqual(ledger.outbox(REPO)[0]["estado"], "ejecutando")
+                    self.assertEqual(ledger.outbox(REPO)[0]["estado"], "resultado")
                     self.assertEqual(ledger.decisiones(REPO), [])
                     ledger.registrar_decision(Decision(
                         "pendiente-antes-de-instalar", REPO, None, "abrir-hueco", None,
@@ -173,7 +165,7 @@ class HuecosTests(unittest.TestCase):
                     rechazada = ledger.decisiones(REPO)[0]
                     self.assertEqual(rechazada["estado"], "rechazada")
                     self.assertEqual(rechazada["resultado"]["motivo"], "push-a-main-en-curso")
-                    self.assertEqual(ledger.outbox(REPO)[0]["estado"], "ejecutando")
+                    self.assertEqual(ledger.outbox(REPO)[0]["estado"], "resultado")
         finally:
             liberar.touch()
             if push_en_remoto is not None:
@@ -191,55 +183,23 @@ class HuecosTests(unittest.TestCase):
         self.contexto.tick(2005)
         self.assertEqual(self.estado().hueco.hasta, 5605)
 
-    def recuperar_ack_en_hueco(self, muerto_en="durante-promover"):
+    def test_ack_perdido_se_reconcilia_antes_de_admitir_el_hueco(self):
         cert = self.hasta_fase(Certificado).trenes[0].fase
         with self.hijo("from test_activo import Contexto\n"
-                       "Contexto(sys.argv[3], sys.argv[4]).tick(2000)", muerto_en) as hijo:
+                       "Contexto(sys.argv[3], 'durante-promover').tick(2000)") as hijo:
             _, error = hijo.communicate(timeout=45)
             self.assertEqual(hijo.returncode, 77, error)
-        pushes = self.pushes_main()
-        with self.ledger() as ledger:
-            self.assertEqual(ledger.outbox(REPO)[0]["estado"], "ejecutando")
-            # Foto que podía quedar con la versión anterior.
-            ledger.guardar_paso(replace(self.estado(), hueco=Hueco(2061, "mantenimiento")), (), 2001)
+        self.assertEqual(self.ejecutar_cli("hueco", 2001, "--motivo", "reserva"),
+                         (2, {"error": "push-a-main-en-curso"}))
         self.contexto.tick(2002)
-        self.assertEqual(self.pushes_main(), pushes)
-        self.assertEqual(self.estado().hueco.hasta, 2061)
-        return cert
-
-    def test_recupera_ack_y_publica_aviso_durante_el_hueco(self):
-        cert = self.recuperar_ack_en_hueco()
         self.assertEqual(self.remoto(), cert.C)
         self.assertEqual(self.estado().trenes[0].fase, Terminal("ATERRIZADO"))
         self.assertEqual(len(self.pushes_main()), 1)
         posts = [json.loads(linea)["payload"] for linea in self.lineas("posts.log")]
         self.assertEqual(sum(p.get("state") == "success" for p in posts), len(self.miembros))
-
-    def test_commit_externo_durante_un_hueco_no_revierte_el_aterrizaje(self):
-        cert = self.recuperar_ack_en_hueco()
-        self.comando(self.fuente, "fetch", str(self.origen), cert.C)
-        externo = self.commit({"externo": "siguiente cambio\n"}, (cert.C,))
-        self.push(externo, "refs/heads/main")
+        self.orden("hueco", 2003, "--motivo", "reserva")
         self.contexto.tick(2004)
-        self.contexto.tick(2061)
-        estado = self.estado()
-        self.assertEqual(estado.trenes[0].fase, Terminal("ATERRIZADO"))
-        self.assertIsNone(estado.pausa)
-        self.assertTrue(all(isinstance(e.admision, Admitido) for e in estado.entradas))
-        self.assertEqual(self.remoto(), externo)
-
-    def test_en_base_con_ack_incierto_no_empuja_durante_el_hueco(self):
-        cert = self.recuperar_ack_en_hueco("antes-push")
-        self.assertEqual(self.remoto(), self.B)
-        self.assertIsInstance(self.estado().trenes[0].fase, Promoviendo)
-        with self.ledger() as ledger:
-            self.assertEqual(ledger.outbox(REPO)[0]["estado"], "ejecutando")
-        self.contexto.tick(2061)
-        self.contexto.tick(2062)
-        self.assertEqual(self.remoto(), self.B)
-        self.contexto.tick(2600)
-        self.assertEqual(self.remoto(), cert.C)
-        self.assertEqual(self.estado().trenes[0].fase, Terminal("ATERRIZADO"))
+        self.assertEqual(self.estado().hueco.hasta, 5604)
 
     def test_levantar_registrado_a_tiempo_se_aplica_despues_del_vencimiento(self):
         self.orden("pausa", 2000, "--minutos", "1", "--motivo", "mantenimiento")
@@ -293,25 +253,31 @@ class HuecosTests(unittest.TestCase):
     def pushes_main(self):
         return [p for p in self.lineas("pushes.log") if p.endswith(":refs/heads/main")]
 
-    def test_reintento_pendiente_queda_retenido_sin_gastar_intento(self):
+    def test_tres_rechazos_de_escritura_pausan_y_siguen_rechazando_el_hueco(self):
         self.hasta_fase(Certificado)
-        rechazo = self.raiz / "rechazar-push"
-        rechazo.write_text("")
-        self.contexto.tick(3000)
-        fase = self.estado().trenes[0].fase
-        self.assertIsInstance(fase, Promoviendo)
-        intentos, pushes = fase.intentos, self.pushes_main()
-        rechazo.unlink()
-        self.orden("hueco", 3001, "--minutos", "10", "--motivo", "sonda")
-        for ahora in range(3002, 3006):
-            self.contexto.tick(ahora)
-        fase = self.estado().trenes[0].fase
-        self.assertEqual(self.pushes_main(), pushes)
+        transporte = self.contexto.git.ejecutar
+        errores = []
+
+        def denegar(argv, **kwargs):
+            if "push" not in argv or not argv[-1].endswith(":refs/heads/main"):
+                return transporte(argv, **kwargs)
+            posicion = argv.index("push") + 1
+            resultado = transporte(argv[:posicion] + ["--receive-pack=false"] + argv[posicion:],
+                                   **kwargs)
+            errores.append(resultado.returncode)
+            return resultado
+
+        with patch.object(self.contexto.git, "ejecutar", side_effect=denegar):
+            for ahora in range(3000, 3005):
+                self.contexto.tick(ahora)
+        estado = self.estado()
         self.assertEqual(self.remoto(), self.B)
-        self.assertEqual((fase.intentos, fase.reintento_pendiente), (intentos, True))
-        for ahora in range(3602, 3606):
-            self.contexto.tick(ahora)
-        self.assertEqual(self.estado().trenes[0].fase, Terminal("ATERRIZADO"))
+        self.assertEqual(errores, [128, 128, 128])
+        self.assertIsInstance(estado.trenes[0].fase, Promoviendo)
+        self.assertEqual(estado.trenes[0].fase.intentos, 3)
+        self.assertEqual(estado.pausa, Pausa("promocion-rechazada"))
+        self.assertEqual(self.ejecutar_cli("hueco", 3005, "--motivo", "reserva"),
+                         (2, {"error": "push-a-main-en-curso"}))
 
     def test_levantar_anterior_a_la_instalacion_conserva_su_identidad(self):
         pausa = Pausa("manual", detalle="versión anterior")
@@ -370,26 +336,28 @@ class HuecosTests(unittest.TestCase):
 
 
 class GanchoConHuecoTests(ContextoInjerto):
-    def test_vence_el_hueco_y_el_gancho_vuelve_a_verificar_sin_otra_orden(self):
+    def test_el_gancho_empieza_despues_de_vencer_el_hueco(self):
         self.ahora = self.hora_tick = AHORA
-        self.config["pre_aterrizaje"]["plazo_s"] = 10
+        self.config["pre_aterrizaje"]["espera_max_s"] = 10
         self.preparar()
         cert = self.estado().trenes[0].fase
+        argumentos = cli.parser().parse_args(
+            ["hueco", "--repo", REPO, "--motivo", "reserva de promoción", "--minutos", "1"])
+        self.assertEqual(cli.ejecutar(argumentos, ahora=AHORA)[0], 0)
         self.tick()
-        self.assertEqual([l["accion"] for l in self.llamadas()], ["verificar"])
-        self.ahora = self.hora_tick = AHORA + 1
-        args = cli.parser().parse_args(
-            ["hueco", "--repo", REPO, "--motivo", "reserva de promoción"])
-        codigo, cuerpo = cli.ejecutar(args, ahora=self.ahora)
-        self.assertEqual(codigo, 0, cuerpo)
+        self.ahora = self.hora_tick = AHORA + 59
         self.tick()
-        self.ahora = self.hora_tick = AHORA + 2
-        self.modo("seguir")
-        self.tick()
-        self.assertEqual(self.diario()[0][1], 1)
+        self.assertEqual(self.llamadas(), [])
+        self.assertEqual(self.estado().trenes[0].fase, cert)
         self.assertEqual(self.remoto(), self.B)
+        self.ahora = self.hora_tick = AHORA + 60
+        self.tick()
         self.assertEqual([l["accion"] for l in self.llamadas()], ["verificar"])
-        self.ahora = self.hora_tick = AHORA + 3601
+        self.assertIsInstance(self.estado().trenes[0].fase, Promoviendo)
+        self.assertEqual(cli.ejecutar(argumentos, ahora=AHORA + 61),
+                         (2, {"error": "push-a-main-en-curso"}))
+        self.ahora = self.hora_tick = AHORA + 62
+        self.modo("seguir")
         self.hasta(lambda: self.estado().trenes[0].fase == Terminal("ATERRIZADO"))
         self.assertEqual(self.remoto(), cert.C)
         self.assertIsNone(self.estado().pausa)
