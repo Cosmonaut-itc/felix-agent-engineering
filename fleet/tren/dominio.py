@@ -1112,6 +1112,7 @@ def paso(estado, observacion):
                            if estado.pausa and isinstance(t.fase, Promoviendo)
                            and not t.fase.reintento_pendiente}
     esperando_ci = {t.id for t in activos if isinstance(t.fase, EsperandoCI)}
+    certificados = {t.id for t in activos if isinstance(t.fase, Certificado)}
     antes_de_ci = {t.id for t in activos if isinstance(t.fase, (Congelado, Armado))}
     con_conflicto = {t.id for t in activos if isinstance(t.fase, Congelado)
                     and observacion.conflicto_cadena and not base_vieja(t.fase, observacion)
@@ -1141,6 +1142,7 @@ def paso(estado, observacion):
                             else observacion.ahora)
             elif (decision == Retenido(Motivo.INCIERTO) or entrada.partida or
                   entrada.rearmada or entrada.tren in esperando_ci or
+                  (decision == Retenido(Motivo.CI) and entrada.tren in certificados) or
                   (cert_vencido is not None and entrada.tren == cert_vencido) or
                   entrada.tren in con_conflicto or
                   (entrada.rearme_ci and entrada.tren in antes_de_ci)):

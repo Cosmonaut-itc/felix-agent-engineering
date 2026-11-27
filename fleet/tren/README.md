@@ -993,6 +993,7 @@ pendiente abre el plazo `PLAZO_CI` de 60 minutos. Un verde limpia el plazo.
 Al vencer, el tren pausa en `infraestructura` con detalle
 `pre-aterrizaje:ci-sin-resultado`, que admite `reanudar` para reiniciar la
 espera o `abortar`.
+En `Certificado`, un PR retenido por CI conserva su fecha de admisión FIFO.
 
 El ejecutor reconcilia intentos anteriores y consulta de nuevo el CI del
 mismo candidato justo antes del push CAS, también cuando el repo no usa
