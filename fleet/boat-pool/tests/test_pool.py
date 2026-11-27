@@ -632,7 +632,12 @@ class Harness(unittest.TestCase):
 
     def test_reserva_conserva_su_motivo_aunque_otra_candidata_falle(self):
         self.config['vms'][0].update(RESERVATION_VM)
-        self.add_vm('vm-caida', fake_id('kmnp2345'), overrides=RESERVATION_VM, remote_state='error')
+        failing_id = fake_id('kmnp2345')
+        self.add_vm('vm-caida', failing_id, overrides=RESERVATION_VM, remote_state='error')
+        # El turno consulta una VM que arranca aunque la reserva la frene, y Boat la rechaza.
+        pool.atomic_json(self.state / 'vms' / 'vm-caida' / 'operacion.json', {
+            'id': 'reanudacion-local', 'sandbox_id': failing_id, 'accion': 'resume', 'desde': pool.stamp(NOW),
+        })
         self.reserve()
         take_vm = lambda: self.get_lease('tren-contract', 'contract', '--prioridad', 'tren', '--candidatas', NAME)
         with self.resume_clock({1: take_vm}):
