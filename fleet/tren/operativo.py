@@ -22,6 +22,8 @@ from preaterrizaje import Previo
 EJECUTABLES = frozenset(("armar-candidato", "solicitar-ci", "iniciar-suite",
                         "reanudar-suite", "repetir", "armar-subconjunto", "promover")) | FEEDBACK
 EFECTOS_SUITE = ("iniciar-suite", "reanudar-suite", "repetir")
+# El transporte Git tiene un timeout de 120 s; el remoto puede terminar después.
+PLAZO_PUSH_S = 10 * 60
 CAMPOS_RESULTADO = ("candidato", "suite", "conflicto_cadena", "main", "tren_id",
                     "intento_promocion", "rama_ocupada", "resultado_suite",
                     "suite_intento", "repeticion", "reproduccion_id")
@@ -226,9 +228,16 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     not suite_autorizada(estado, tren, observacion)):
                 continue
             intentados.add(efecto.clave)
-            if not solo_lectura and (fila["estado"] != "ejecutando" or
+            reiniciar_push = None
+            if push_previo and not solo_lectura:
+                inicio = ledger.ultimo_inicio(repo, efecto.clave)
+                if inicio is not None and ahora >= inicio + PLAZO_PUSH_S:
+                    reiniciar_push = lambda: ledger.iniciar_efecto(
+                        repo, efecto, reloj() if reloj is not None else ahora)
+            if not (solo_lectura or push_previo) and (fila["estado"] != "ejecutando" or
                                      efecto.tipo not in EFECTOS_SUITE):
-                ledger.iniciar_efecto(repo, efecto, ahora, limpiar_resultado=(
+                inicio = reloj() if promover and reloj is not None else ahora
+                ledger.iniciar_efecto(repo, efecto, inicio, limpiar_resultado=(
                     fila["estado"] == "fallido" and efecto.tipo in EFECTOS_SUITE))
             frontera("antes-ejecutar", efecto)
             try:
@@ -237,7 +246,8 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     completo = True
                 else:
                     ejecucion = ejecutar(efecto, estado, observacion, git, adaptador, previo,
-                                         solo_lectura=solo_lectura, push_previo=push_previo)
+                                         solo_lectura=solo_lectura, push_previo=push_previo,
+                                         reiniciar_push=reiniciar_push)
                     if ejecucion.aviso is not None:
                         ledger.evento(repo, "prelanzamiento-fallido", ahora, ejecucion.aviso)
                     if ejecucion.en_curso:

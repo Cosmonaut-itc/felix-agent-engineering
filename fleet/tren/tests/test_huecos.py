@@ -110,7 +110,24 @@ class HuecosTests(unittest.TestCase):
         self.assertEqual(self.vencimientos("pausa-manual-vencida"),
                          [(3801, {"motivo": "mantenimiento", "hasta": 3801})])
 
-    def test_timeout_del_push_impide_registrar_y_aplicar_un_hueco(self):
+    def test_tick_muerto_durante_el_push_reintenta_al_vencer_el_plazo(self):
+        cert = self.hasta_fase(Certificado).trenes[0].fase
+        with self.hijo("from test_activo import Contexto\n"
+                       "Contexto(sys.argv[3], 'antes-push').tick(2000)") as hijo:
+            _, error = hijo.communicate(timeout=45)
+            self.assertEqual(hijo.returncode, 77, error)
+        self.contexto.tick(2200)
+        self.contexto.tick(2599)
+        self.assertEqual(self.remoto(), self.B)
+        self.assertEqual(self.pushes_main(), [])
+        self.assertEqual(self.ejecutar_cli("hueco", 2599, "--motivo", "reserva"),
+                         (2, {"error": "push-a-main-en-curso"}))
+        self.contexto.tick(2600)
+        self.assertEqual(self.remoto(), cert.C)
+        self.assertEqual(self.pushes_main(), [cert.C + ":refs/heads/main"])
+        self.assertEqual(self.estado().trenes[0].fase, Terminal("ATERRIZADO"))
+
+    def test_timeout_del_push_rechaza_el_hueco_y_acredita_sin_segundo_push(self):
         cert = self.hasta_fase(Certificado).trenes[0].fase
         recibido, liberar = self.raiz / "push-recibido", self.raiz / "liberar-push"
         hook = self.origen / "hooks/pre-receive"
@@ -139,7 +156,7 @@ class HuecosTests(unittest.TestCase):
             raise subprocess.TimeoutExpired(argv, 120)
 
         try:
-            with patch.object(git, "ejecutar", side_effect=timeout):
+            with patch.object(git, "ejecutar", side_effect=timeout) as transporte_git:
                 self.contexto.tick(2000)
                 self.assertEqual(self.remoto(), self.B)
                 self.assertEqual(self.ejecutar_cli("hueco", 2001, "--motivo", "reserva"),
@@ -163,7 +180,12 @@ class HuecosTests(unittest.TestCase):
                 _, error = push_en_remoto.communicate(timeout=30)
         self.assertEqual(push_en_remoto.returncode, 0, error)
         self.assertEqual(self.remoto(), cert.C)
-        self.contexto.tick(2003)
+        with patch.object(git, "ejecutar", side_effect=timeout) as reconciliacion:
+            self.contexto.tick(2003)
+        intentos = [llamada.args[0] for llamada in transporte_git.call_args_list +
+                    reconciliacion.call_args_list if "push" in llamada.args[0] and
+                    llamada.args[0][-1].endswith(":refs/heads/main")]
+        self.assertEqual(len(intentos), 1)
         self.assertEqual(self.estado().trenes[0].fase, Terminal("ATERRIZADO"))
         self.orden("hueco", 2004, "--motivo", "reserva")
         self.contexto.tick(2005)
@@ -214,6 +236,8 @@ class HuecosTests(unittest.TestCase):
             self.assertEqual(ledger.outbox(REPO)[0]["estado"], "ejecutando")
         self.contexto.tick(2061)
         self.contexto.tick(2062)
+        self.assertEqual(self.remoto(), self.B)
+        self.contexto.tick(2600)
         self.assertEqual(self.remoto(), cert.C)
         self.assertEqual(self.estado().trenes[0].fase, Terminal("ATERRIZADO"))
 

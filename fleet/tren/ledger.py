@@ -303,6 +303,13 @@ class Ledger:
             "SELECT MIN(seq) FROM events WHERE repo=? AND tipo='efecto-iniciado' "
             "AND json_extract(payload, '$.clave')=?", (repo, clave)).fetchone()[0]
 
+    def ultimo_inicio(self, repo, clave):
+        fila = self.db.execute(
+            "SELECT instante FROM events WHERE repo=? AND tipo='efecto-iniciado' "
+            "AND json_extract(payload, '$.clave')=? ORDER BY seq DESC LIMIT 1",
+            (repo, clave)).fetchone()
+        return fila[0] if fila else None
+
     def outbox(self, repo):
         return [dict(r) for r in self.db.execute(
             "SELECT e.clave, e.payload, o.estado, r.payload AS resultado FROM effects e "

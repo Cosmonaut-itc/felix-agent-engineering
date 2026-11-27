@@ -39,6 +39,7 @@ class ContextoU18(unittest.TestCase):
     def setUp(self):
         activo.ActivoTests.setUp(self)
         self.ahora = AHORA
+        self.hora_tick = 5000
         self.guion = self.raiz / "gancho.py"
         self.guion.write_text('''import json, pathlib, subprocess, sys, time
 r = pathlib.Path(__file__).resolve().parent
@@ -97,7 +98,7 @@ print(json.dumps({'version': 1, 'id': s['id'], 'resultado': resultado}))
         # Se usa el CLI activo y su flock, con el observador y origen reales.
         # El reloj controla la hora al final de la suite y después del gancho.
         with patch('time.time', side_effect=self.reloj):
-            codigo, salida = self.contexto.tick(5000, frontera)
+            codigo, salida = self.contexto.tick(self.hora_tick, frontera)
         self.assertEqual(codigo, 0, salida)
         self.sin_rojo()
         return salida
@@ -239,6 +240,7 @@ class RegresionesTests(ContextoU18):
         self.assertEqual(self.remoto(), self.B)
         self.assertEqual(len(self.llamadas('verificar')), 1)
         self.modo('esperar')
+        self.hora_tick = 5600  # Venció la espera del push que pudo empezar.
         self.tick()
         self.assertEqual(self.remoto(), self.B)
         self.assertEqual(len(self.llamadas('verificar')), 2)
