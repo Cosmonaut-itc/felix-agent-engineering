@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -45,6 +46,9 @@ class ReservaBoatTests(Aislado):
         self.git = GitFalso(self.raiz)
         self.escritor = Mock()
         self.escritor.ejecutar_feedback.return_value = {}
+        reloj = patch('operativo.time', wraps=time)
+        self.reloj = reloj.start()
+        self.addCleanup(reloj.stop)
 
     def escribir_pool(self, binario, final=''):
         binario.parent.mkdir(parents=True, exist_ok=True)
@@ -92,6 +96,7 @@ with open({str(self.log)!r}, 'a') as log:
         return salida
 
     def tick(self, ahora=100):
+        self.reloj.time.return_value = ahora
         adaptador = seleccionar(self.observador.config, self.git)
         return self.cli('tick', ahora=ahora, observador=self.observador, git=self.git,
                         adaptador=adaptador, escritor=self.escritor)
@@ -152,15 +157,24 @@ with open({str(self.log)!r}, 'a') as log:
         tren = self.guardar(Promoviendo(Certificado(C, arbol, 'suite.json', 'verde', B)))
         self.observador.observacion = observacion(
             main=Aterrizado(B, C, arbol), tren_id=tren.id, intento_promocion=1)
-        self.tick()
+        recorte = self.reserva(tren.id, 100, ttl='300')
+        ejecutar = subprocess.run
+
+        def confirmar_recorte(argv, **opciones):
+            resultado = ejecutar(argv, **opciones)
+            if argv[1:] == recorte[0]:
+                self.reloj.time.return_value = 102
+            return resultado
+
+        with patch('operativo.subprocess.run', side_effect=confirmar_recorte):
+            self.tick()
         self.assertEqual(self.estado().trenes[0].fase, Terminal('ATERRIZADO'))
         self.assert_ultimo_estado_guardado()
-        self.tick(399)
-        self.assert_llamadas(self.reserva(tren.id, 100, ttl='300'))
-        self.tick(400)
+        self.tick(401)
+        self.assert_llamadas(recorte)
+        self.tick(402)
         self.tick(520)
-        self.assert_llamadas(self.reserva(tren.id, 100, ttl='300'),
-                             self.liberacion(tren.id, 400), self.liberacion(tren.id, 520))
+        self.assert_llamadas(recorte, self.liberacion(tren.id, 402), self.liberacion(tren.id, 520))
 
     def test_devuelto_por_ci_rojo_acorta_la_reserva(self):
         tren = self.guardar(EsperandoCI(CANDIDATO, 1))
@@ -280,6 +294,15 @@ with open({str(self.log)!r}, 'a') as log:
         self.assertEqual(codigo, 0, error)
         return {r['lote'] for r in json.loads(salida)['reservas']}
 
+    def assert_relevo_protegido(self, pool, lote):
+        estado = self.estado()
+        self.assertIsNone(estado.pausa)
+        self.assertTrue(all(isinstance(t.fase, Terminal) for t in estado.trenes))
+        reservas = self.reservas_pool(pool)
+        codigo, _, error = self.comando_pool(
+            pool, *pool.args('ajena-en-relevo', 'e2e', '--prioridad', 'suite'))
+        self.assertEqual((reservas, codigo), ({lote}, 75), error)
+
     def test_partido_protege_el_relevo_frente_a_una_corrida_en_espera(self):
         pool, inicio = self.preparar_pool()
         entorno_tren = {clave: os.environ[clave] for clave in pool.env}
@@ -329,6 +352,32 @@ with open({str(self.log)!r}, 'a') as log:
         self.assertEqual(en_tick_vacio, 75, razon_tick_vacio)
         self.assertIn('reserva del tren', razon_tick_vacio)
         self.assertEqual(self.reservas_pool(pool), {sucesor.id})
+
+    def test_cierre_lento_no_acorta_el_ttl_confirmado(self):
+        pool, inicio = self.preparar_pool()
+        tren = self.guardar_lote_doble()
+        self.reloj.time.side_effect = lambda: 100 + pool.api.now - inicio
+        observar = self.observador.observar
+
+        def observar_cierre(estado, ahora):
+            pool.api.now += 90
+            return observar(estado, ahora)
+
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
+            self.tick(100)
+            self.ver_ci(tren, 'rojo', n=2)
+            pool.api.now = inicio + 120
+            with patch.object(self.observador, 'observar', side_effect=observar_cierre):
+                self.tick(220)
+            self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+            self.assertEqual(self.reservas_pool(pool), {tren.id})
+
+            self.observador.observacion = replace(observacion(2), prs=())
+            for ahora in (340, 460, 580):
+                pool.api.now = inicio + ahora - 100
+                self.tick(ahora)
+        # El snapshot tiene 360 s y la reserva de Boat tiene 270 s.
+        self.assert_relevo_protegido(pool, tren.id)
 
     def test_fallo_al_acortar_libera_despues_del_plazo_de_relevo(self):
         pool, inicio = self.preparar_pool()
@@ -423,6 +472,28 @@ with open({str(self.log)!r}, 'a') as log:
         self.assertEqual([t.fase for t in self.estado().trenes],
                          [Terminal('DEVUELTO'), Terminal('REARMAR')])
         self.assertEqual(self.reservas_pool(pool), {sucesor})
+
+    def test_rearme_tras_dos_fallos_conserva_la_unica_reserva(self):
+        pool, inicio = self.preparar_pool()
+        anterior, sucesor = self.relevo_devueltos_con_fallo(pool, inicio, 'reservar')
+
+        self.observador.observacion = replace(observacion(2), base='f' * 40)
+        recorte, _ = self.reserva(sucesor, 340, ttl='300')
+        pool.api.now = inicio + 240
+        with patch('operativo.subprocess', self.proceso_pool(pool, recorte)):
+            self.tick(340)
+        self.assertEqual(self.estado().trenes[-1].fase, Terminal('REARMAR'))
+        self.assertEqual(self.reservas_pool(pool), {anterior})
+
+        self.observador.observacion = replace(self.observador.observacion, prs=())
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
+            pool.api.now = inicio + 360
+            self.tick(460)
+            self.assert_relevo_protegido(pool, anterior)
+
+            pool.api.now = inicio + 540
+            self.tick(640)
+        self.assertEqual(self.reservas_pool(pool), set())
 
     def test_absolver_reserva_y_libera_en_el_mismo_tick(self):
         viejo = self.guardar(Corriendo(CANDIDATO, 'suite.json'),

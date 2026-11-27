@@ -1370,7 +1370,10 @@ configurados y sólo puede tener claves `contract` y `e2e`.
 Tras confirmar el estado del tick activo y antes de drenar sus efectos,
 `"boat_pool"` (por omisión `~/.local/bin/boat-pool`) reserva por 30 min los
 modos Boat del lote vivo. Al cerrar sin sucesor, acorta la reserva del lote a
-300 s y los ticks vacíos la liberan al vencer el plazo si sigue viva. Con
+300 s. Tras confirmar el recorte, el tick libera las reservas anteriores que
+sigan vigentes. Los ticks vacíos esperan 300 s desde esa confirmación antes
+de liberar la reserva del último lote cerrado y las anteriores pendientes.
+Si falta la confirmación, cuentan el plazo desde el cierre guardado. Con
 sucesor, el tick reserva primero el lote vivo y luego libera las reservas
 anteriores. En pausa libera las reservas del carril, también al guardar una
 pausa producida por el drenado.

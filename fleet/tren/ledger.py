@@ -14,6 +14,7 @@ from dominio import Entrada, clave, datos, desde_datos, inicial
 
 EVENTO_ABSOLUCION = "intermitente-absuelto"
 VENTANA_ABSOLUCION_S = 7 * 86400
+EVENTO_RELEVO_BOAT = "relevo-boat-confirmado"
 
 
 def directorio_estado():
@@ -118,6 +119,8 @@ class Ledger:
                 self.db.execute("CREATE TABLE IF NOT EXISTS snapshots_lanzamientos ("
                                 "ruta TEXT NOT NULL REFERENCES snapshots_operador(ruta) ON DELETE CASCADE, "
                                 "tren TEXT NOT NULL, recibo TEXT NOT NULL, PRIMARY KEY(ruta, tren, recibo))")
+                self.db.execute("CREATE INDEX IF NOT EXISTS events_relevo_boat ON events(repo, seq) "
+                                f"WHERE tipo='{EVENTO_RELEVO_BOAT}'")
         except BaseException:
             self.db.close()
             raise
@@ -275,6 +278,15 @@ class Ledger:
             return set()
         estado = desde_datos(json.loads(fila[0])["estado"])
         return {tren.id for tren in estado.trenes if isinstance(tren.fase, Terminal)}
+
+    def instante_relevo_boat(self, repo, lote):
+        """Devuelve la última confirmación si corresponde al lote consultado."""
+        fila = self.db.execute("SELECT instante, payload FROM events WHERE repo=? "
+                               f"AND tipo='{EVENTO_RELEVO_BOAT}' ORDER BY seq DESC LIMIT 1",
+                               (repo,)).fetchone()
+        if fila is not None and json.loads(fila["payload"])["lote"] == lote:
+            return fila["instante"]
+        return None
 
     def efecto_iniciado(self, repo, clave, evidencia=None):
         """El efecto pasó por iniciar_efecto en algún tick: su IO pudo ocurrir.

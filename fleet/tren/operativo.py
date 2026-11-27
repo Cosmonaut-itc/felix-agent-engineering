@@ -17,6 +17,7 @@ from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase
 from efectos import EfectoFallido, ejecutar
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
+from ledger import EVENTO_RELEVO_BOAT
 from operador import FalloSnapshot, Snapshots
 from preaterrizaje import Previo
 
@@ -80,16 +81,20 @@ def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
         acciones.append(("reservar", titular.id, ("--clases", ",".join(clases), "--ttl", str(ttl))))
     elif estado.pausa and activo is not None:
         acciones.append(("liberar-reserva", activo.id, ()))
-    # Un tick vacío puede seguir esperando admisión. El cierre persistido
-    # permite liberar al vencer el relevo aunque haya fallado el recorte.
     if terminales:
         predecesor, *anteriores = terminales
-        if (estado.pausa or activo is not None or
-                (anterior is None and predecesor in ledger.terminales_hasta(
-                    estado.repo, ahora - PLAZO_RELEVO_BOAT_S))):
+        liberar = estado.pausa or activo is not None
+        if not liberar and anterior is None:
+            corte = ahora - PLAZO_RELEVO_BOAT_S
+            confirmado = ledger.instante_relevo_boat(estado.repo, predecesor)
+            if confirmado is None:
+                liberar = predecesor in ledger.terminales_hasta(estado.repo, corte)
+            else:
+                liberar = confirmado <= corte
+        if liberar:
             acciones.append(("liberar-reserva", predecesor, ()))
-        if anteriores:
-            # Un segundo cierre puede desplazar una liberación pendiente.
+        # Durante el relevo, un terminal anterior puede tener la única reserva vigente.
+        if acciones and anteriores:
             vencidos = ledger.terminales_hasta(estado.repo, ahora - PLAZO_LOTE_BOAT_S)
             acciones.extend(("liberar-reserva", lote, ()) for lote in anteriores
                             if lote not in vencidos)
@@ -109,6 +114,8 @@ def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
                 fallo["codigo"] = exc.returncode
             ledger.evento(estado.repo, "fallo-reserva-boat", ahora, fallo)
             break  # Soltar la reserva anterior requiere confirmar primero la del sucesor.
+        if comando == "reservar" and activo is None:
+            ledger.evento(estado.repo, EVENTO_RELEVO_BOAT, time.time(), {"lote": lote})
 
 
 def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
