@@ -311,9 +311,14 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         return terminar(nuevo, efectos)
     # La limpieza no crea pausas: sólo retiene el push, incluso al reanudar.
     estado, fallo = drenar(estado, observacion, recuperacion=True)
+    filas = ledger.outbox(repo)
+    if activo is not None and observacion.suite_de_ci_vigente and any(
+            f["clave"] == clave("suite", activo.id) and f["estado"] == "fallido" for f in filas):
+        # Un recibo ilegible no mantiene el plazo suspendido como una suite en curso.
+        observacion = replace(observacion, suite_de_ci_vigente=False)
     consumido = None
     if not estado.pausa:
-        for fila in ledger.outbox(repo):
+        for fila in filas:
             if fila["estado"] == "resultado":
                 recibida = json.loads(fila["resultado"])["observacion"]
                 efecto = desde_datos(json.loads(fila["payload"]))

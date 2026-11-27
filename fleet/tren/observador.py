@@ -333,8 +333,7 @@ class GitHubGit:
         # Status API returns newest first. A newer pending status supersedes green.
         ultimos = {}
         for status in statuses:
-            # Los commit statuses no identifican la ref que los solicitó.
-            if rama is not None:
+            if rama is not None and (self.sombra or not self.activo):
                 continue
             # D6 despierta al dueño; no es CI. Tras caducar, el head actual
             # debe poder reentregarse sin que nuestro aviso lo retenga solo.
@@ -361,13 +360,16 @@ class GitHubGit:
             if (valores[n] == "rojo" and c.get("conclusion") == "failure" and
                     (c.get("app") or {}).get("slug") == "github-actions"):
                 valores[n] = self.fallo_actions(repo, head, c)
-        estados = {n: STATUS_CI.get(s, "pendiente") for n, s in ultimos.items()}
+        # Un status sin ref puede vetar C, pero no acredita la solicitud.
+        estados = ({n: STATUS_CI.get(s, "pendiente") for n, s in ultimos.items()}
+                   if rama is None else
+                   {n: "rojo" for n, s in ultimos.items() if s in ("failure", "error")})
         rojos = tuple(sorted({n for n, v in list(valores.items()) + list(estados.items())
                               if v == "rojo"}))
         # Un esperado ausente impide verde, pero no oculta un rojo presente.
         if rojos:
             return ResultadoCI("rojo", rojos)
-        if faltan or (not checks and not ultimos and (esperados != [] or rama is not None)):
+        if faltan or (not checks and not estados and (esperados != [] or rama is not None)):
             return ResultadoCI("pendiente")
         return ResultadoCI("verde" if all(v == "verde" for v in valores.values())
                            and all(v == "verde" for v in estados.values()) else "pendiente")

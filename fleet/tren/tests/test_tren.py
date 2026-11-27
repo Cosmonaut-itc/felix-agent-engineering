@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ))
-from dominio import (Admitido, Armado, Candidato, Congelado, Corriendo,
-                     Diagnosticando, Entrada, Entrega, EsperandoCI, Estado,
+from dominio import (Admitido, Armado, Aterrizado, Candidato, Completo, Congelado, Corriendo,
+                     Decision, Diagnosticando, Entrada, Entrega, EsperandoCI, Estado,
                      Evidencia, Fallo, Intento, LIMITE_LOTE, Motivo, Observacion,
                      Pausa, Rechazado, Repeticion, Reproduccion, Retenido, Terminal,
                      UnidadRepetida, VistaPR, clave, datos, desde_datos, inicial, paso,
@@ -236,7 +236,7 @@ class RearmeCITests(unittest.TestCase):
         tren = nuevo.trenes[-1]
         prs = {e.entrega.recibo: e.entrega.pr for e in nuevo.entradas}
         eslabones = tuple((prs[r], HEAD, str(prs[r]) * 40) for r in tren.recibos)
-        candidato = Candidato(BASE, eslabones, eslabones[-1][2], "d" * 40)
+        candidato = Candidato(obs.base, eslabones, eslabones[-1][2], "d" * 40)
         armado, _ = paso(nuevo, replace(obs, candidato=candidato, tren_id=tren.id))
         return paso(armado, obs)
 
@@ -300,6 +300,68 @@ class RearmeCITests(unittest.TestCase):
         self.assertTrue(all(e.tren is None and e.solo and e.partida and e.particion == tren.id
                             for e in partido.entradas))
 
+    def test_rearme_conserva_fifo_si_main_avanza_antes_de_pedir_ci(self):
+        lote, obs = self.rearme(2)
+        base_nueva = "f" * 40
+        pendiente = replace(obs, ahora=104, base=base_nueva,
+                           prs=(vista(1, ci="pendiente"), vista(2)))
+        fila, _ = paso(lote, pendiente)
+        self.assertEqual(fila.trenes[-1].fase, Terminal("REARMAR"))
+        self.assertEqual([e.admitida for e in fila.entradas], [100, 100])
+        nuevo, _ = paso(fila, replace(obs, ahora=105, base=base_nueva))
+        self.assertEqual(nuevo.trenes[-1].recibos, (entrega(1).recibo, entrega(2).recibo))
+
+    def test_individual_aterriza_y_los_otros_cuatro_aterrizan_en_lote(self):
+        lote, obs = self.rearme(LIMITE_LOTE)
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        self.assertEqual(partido.trenes[-1].fase, Terminal("PARTIDO"))
+        solo, _ = paso(partido, obs)
+        self.assertEqual(solo.trenes[-1].recibos, (entrega(1).recibo,))
+        espera, _ = self.armar(solo, obs)
+        def aterrizar(estado, obs):
+            tren = estado.trenes[-1]
+            c = tren.fase.candidato
+            cert, _ = self.ci(estado, replace(obs, suite="suite",
+                                               resultado_suite=Completo("verde")), "verde")
+            prom, _ = paso(cert, obs)
+            fin, _ = paso(prom, replace(obs, tren_id=tren.id, intento_promocion=1,
+                                        main=Aterrizado(c.B, c.C, c.arbol)))
+            self.assertEqual(fin.trenes[-1].fase, Terminal("ATERRIZADO"))
+            return fin, c.C
+
+        fin, c = aterrizar(espera, obs)
+        self.assertTrue(all(not e.partida and e.rearme_ci for e in fin.entradas[1:]))
+        self.assertEqual([e.admitida for e in fin.entradas[1:]], [100] * 4)
+        obs = replace(obs, base=c)
+        juntos, _ = paso(fin, obs)
+        self.assertEqual(juntos.trenes[-1].recibos, tuple(entrega(i).recibo for i in range(2, 6)))
+        espera, _ = self.armar(juntos, obs)
+        final, _ = aterrizar(espera, obs)
+        self.assertTrue(all(e.tren is not None and e.rearme_ci is None for e in final.entradas))
+
+    def test_expulsion_individual_por_juicio_libera_la_particion(self):
+        lote, obs = self.rearme()
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        solo, _ = paso(partido, obs)
+        tren = solo.trenes[-1]
+        pausa = Pausa("head-cambiado-en-tren", pr=1)
+        decision = Decision("juicio", REPO, tren.id, "expulsar", 1, "motivo", 101, "pausa", pausa)
+        devuelto, _ = paso(replace(solo, pausa=pausa),
+                           replace(obs, decision=decision, pausa_id="pausa"))
+        self.assertEqual(devuelto.trenes[-1].fase, Terminal("DEVUELTO"))
+        juntos, _ = paso(devuelto, obs)
+        self.assertEqual(juntos.trenes[-1].recibos, (entrega(2).recibo, entrega(3).recibo))
+
+    def test_rechazo_en_cola_libera_la_particion_en_el_mismo_tick(self):
+        lote, obs = self.rearme()
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        juntos, _ = paso(partido, replace(obs, prs=(vista(1, abierto=False), vista(2), vista(3))))
+        self.assertEqual(juntos.entradas[0].admision, Rechazado(Motivo.CERRADO))
+        self.assertEqual(juntos.trenes[-1].recibos, (entrega(2).recibo, entrega(3).recibo))
+
     def test_devuelto_individual_libera_su_particion_y_reagrupa_hasta_el_limite(self):
         lote, obs = self.rearme(LIMITE_LOTE)
         espera, _ = self.armar(lote, obs)
@@ -314,9 +376,10 @@ class RearmeCITests(unittest.TestCase):
         self.assertEqual([e.tipo for e in efectos], ["devolver"])
         self.assertIsNone(devuelto.entradas[0].rearme_ci)
         liberadas = devuelto.entradas[1:LIMITE_LOTE]
-        self.assertTrue(all(not e.partida and not e.solo and e.particion is None for e in liberadas))
+        self.assertTrue(all(not e.partida and e.particion is None for e in liberadas))
         self.assertEqual([e.admitida for e in liberadas], [100] * (LIMITE_LOTE - 1))
         lote, _ = paso(devuelto, obs)
+        self.assertTrue(all(not e.solo for e in lote.entradas[1:LIMITE_LOTE]))
         self.assertEqual(lote.trenes[-1].recibos, tuple(entrega(i).recibo for i in range(2, LIMITE_LOTE + 2)))
         self.assertIsNone(lote.entradas[LIMITE_LOTE + 1].tren)
 

@@ -542,9 +542,11 @@ def aterrizaje(estado, tren, observacion):
         if isinstance(lectura, Aterrizado) and lectura.arbol == cert.arbol:
             fase = Terminal("ATERRIZADO")
             efectos = efectos_status(tren, "avisar-aterrizaje")
+            miembros = tuple(e for e in estado.entradas if e.entrega.recibo in tren.recibos)
             estado = replace(estado, entradas=tuple(
-                replace(e, rearme_ci=None) if e.rearme_ci and e.entrega.recibo in tren.recibos
+                replace(e, rearme_ci=None) if e.rearme_ci and e in miembros
                 else e for e in estado.entradas))
+            estado = liberar_particiones(estado, miembros)
         elif isinstance(lectura, BloqueoPrevia):
             return pausar_previa(estado, lectura.motivo), ()
         elif isinstance(lectura, EnBase):
@@ -612,17 +614,13 @@ def solo_por_vista(vista):
     return bool(vista and (vista.requiere_solo or vista.ventana is not None))
 
 
-def liberar_particion(estado, tren, observacion):
-    if len(tren.recibos) != 1:
+def liberar_particiones(estado, resueltas):
+    particiones = {e.particion for e in resueltas if e.particion is not None}
+    if not particiones:
         return estado
-    culpable = next(e for e in estado.entradas if e.entrega.recibo == tren.recibos[0])
-    if culpable.particion is None:
-        return estado
-    vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
     return replace(estado, entradas=tuple(
-        replace(e, partida=False, particion=None, rearmada=True,
-                solo=solo_por_vista(vistas.get(e.entrega.recibo, vistas.get(str(e.entrega.pr)))))
-        if e.particion == culpable.particion and e.tren is None and e.terminal is None
+        replace(e, partida=False, particion=None, rearmada=True)
+        if e.particion in particiones and e.tren is None and e.terminal is None
         and not isinstance(e.admision, Rechazado) else e
         for e in estado.entradas))
 
@@ -665,7 +663,7 @@ def avanzar_ci(estado, tren, observacion):
         estado = replace(estado, entradas=tuple(
             replace(e, terminal=Terminal("DEVUELTO"), rearme_ci=None) if e == entrada else e
             for e in estado.entradas))
-        return liberar_particion(estado, tren, observacion), (efecto,)
+        return liberar_particiones(estado, (entrada,)), (efecto,)
     if (salida == "esperar" and not observacion.suite_de_ci_vigente and
             observacion.ahora - fase.desde >= PLAZO_CI):
         return replace(estado, pausa=Pausa("infraestructura", detalle="ci-sin-resultado")), ()
@@ -775,7 +773,8 @@ def separar_devueltos(estado, tren, base, culpables, efectos):
         estado = replace(estado, trenes=estado.trenes + (nuevo,))
         efectos.append(Efecto(clave("armar", nuevo_id), "armar-candidato", (nuevo_id,)))
         efectos.extend(efectos_status(nuevo, "avisar-en-tren"))
-    return estado, tuple(efectos)
+    devueltos = (entradas[r] for r in tren.recibos if entradas[r].entrega.pr in culpables)
+    return liberar_particiones(estado, devueltos), tuple(efectos)
 
 
 def archivos_acreditados(fase, observacion):
@@ -921,8 +920,7 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
                 )
             if not despachar:
                 return cambiar_fase(estado, tren, fase), ()
-            nuevo, efectos = devolver_atribuidos(estado, tren, fase, plan.causas)
-            return liberar_particion(nuevo, tren, observacion), efectos
+            return devolver_atribuidos(estado, tren, fase, plan.causas)
         fase = replace(fase, pendiente=plan.siguiente)
     estado = cambiar_fase(estado, tren, fase)
     if fase.esperar_hasta is not None or not despachar:
@@ -969,6 +967,8 @@ def paso(estado, observacion):
                 return estado, efectos
     efectos = []
     entradas = []
+    rechazadas = []
+    solo_vistas = {}
     vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
     # A landed PR closes as merged; its delivery is settled, not expired.
     terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
@@ -979,6 +979,7 @@ def paso(estado, observacion):
                            if estado.pausa and isinstance(t.fase, Promoviendo)
                            and not t.fase.reintento_pendiente}
     esperando_ci = {t.id for t in activos if isinstance(t.fase, EsperandoCI)}
+    antes_de_ci = {t.id for t in activos if isinstance(t.fase, (Congelado, Armado))}
     for entrada in estado.entradas:
         entrega = entrada.entrega
         vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
@@ -999,16 +1000,22 @@ def paso(estado, observacion):
                 admitida = (entrada.admitida if entrada.admitida is not None
                             else observacion.ahora)
             elif (decision == Retenido(Motivo.INCIERTO) or entrada.partida or
-                  entrada.rearmada or entrada.tren in esperando_ci):
+                  entrada.rearmada or entrada.tren in esperando_ci or
+                  (entrada.rearme_ci and entrada.tren in antes_de_ci)):
                 # No perder FIFO al retener antes o después de una partición.
                 admitida = entrada.admitida
             else:
                 admitida = None
             entrada = replace(entrada, admision=decision, admitida=admitida,
-                              rearme_ci=None if isinstance(decision, Rechazado) else entrada.rearme_ci,
-                              solo=entrada.partida or solo_por_vista(vista))
+                              rearme_ci=None if isinstance(decision, Rechazado) else entrada.rearme_ci)
+            solo_vistas[entrega.recibo] = solo_por_vista(vista)
+        if isinstance(decision, Rechazado):
+            rechazadas.append(entrada)
         entradas.append(entrada)
-    estado = replace(estado, entradas=tuple(entradas))
+    estado = liberar_particiones(replace(estado, entradas=tuple(entradas)), rechazadas)
+    entradas = tuple(replace(e, solo=e.partida or solo_vistas[e.entrega.recibo])
+                     if e.entrega.recibo in solo_vistas else e for e in estado.entradas)
+    estado = replace(estado, entradas=entradas)
     if estado.pausa:
         return estado, tuple(efectos)
     activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
