@@ -471,7 +471,7 @@ class BasesCruzadasTests(TrenIntermitentes, unittest.TestCase):
 
 
 class PlanificarTests(unittest.TestCase):
-    def test_caso_1_exige_que_ambos_intentos_de_c_acrediten_el_caso(self):
+    def test_caso_1_exige_que_los_intentos_de_c_y_b_acrediten_el_caso(self):
         b, c = "b" * 40, "c" * 40
 
         def evidencia(objetivo, *intentos):
@@ -482,8 +482,9 @@ class PlanificarTests(unittest.TestCase):
 
         c1 = Intento(1, "pasa", "", 3, caso_ejecutado=True)
         c2 = Intento(2, "pasa", "", 3, caso_ejecutado=True)
-        b1 = Intento(1, "pasa", "", 3)
-        base = evidencia("B", b1, Intento(2, "pasa", "", 3))
+        b1 = Intento(1, "pasa", "", 3, caso_ejecutado=True)
+        b2 = Intento(2, "pasa", "", 3, caso_ejecutado=True)
+        base = evidencia("B", b1, b2)
 
         plan = planificar((F,), (1,), (evidencia("C", c1, c2), base), 600, absolver=True)
         self.assertEqual(plan, Plan(terminado=True, absoluciones=(Absolucion(F, 1, PASA, PASA),)))
@@ -495,6 +496,12 @@ class PlanificarTests(unittest.TestCase):
                                       (c1, replace(c2, caso_ejecutado=False))), 1):
             with self.subTest(sin_evidencia=n):
                 plan = planificar((F,), (1,), (evidencia("C", *intentos), base), 600, absolver=True)
+                self.assertEqual(plan, Plan(incierto="confirmacion-candidato:" + F.unidad))
+        for n, intentos in enumerate(((replace(b1, caso_ejecutado=False), b2),
+                                      (b1, replace(b2, caso_ejecutado=False))), 1):
+            with self.subTest(base_sin_evidencia=n):
+                plan = planificar((F,), (1,), (evidencia("C", c1, c2), evidencia("B", *intentos)),
+                                  600, absolver=True)
                 self.assertEqual(plan, Plan(incierto="confirmacion-candidato:" + F.unidad))
 
 

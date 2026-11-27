@@ -640,7 +640,7 @@ class JaleTests(Aislado):
         self.assertEqual(p.causas, ())
 
     def atribuir_con_casos(self, casos_suite, casos_repeticion, *, acreditados=False,
-                          campo_duplicado=None):
+                          campo_duplicado=None, casos_base=None, acreditados_base=None):
         previos = sum(a[2] == 'contract' for a in self.lanzamientos())
         tren = 'casos-' + str(previos)
         candidato = replace(CANDIDATO, B=format(previos + 1, '040x'))
@@ -650,7 +650,12 @@ class JaleTests(Aislado):
             roja['casos'] = casos_suite
         if casos_repeticion is not SIN_CASOS:
             repeticion['casos'] = casos_repeticion
-        self.plan({'contract': [{}] * previos + [roja] + [repeticion] * 4})
+        base = dict(repeticion)
+        if casos_base is SIN_CASOS:
+            base.pop('casos', None)
+        elif casos_base is not None:
+            base['casos'] = casos_base
+        self.plan({'contract': [{}] * previos + [roja] + [repeticion] * 2 + [base] * 2})
         origen, suite = esperar_resultado(self.adaptador.suite, candidato, tren)
         self.assertEqual(suite, Completo('rojo', (FALLO,), costo_s=8))
 
@@ -662,8 +667,9 @@ class JaleTests(Aislado):
             resultado = esperar_resultado(self.adaptador.repetir, candidato, origen,
                                            plan.siguiente, commit, tren)
             self.assertEqual([i.veredicto for i in resultado.unidades[0].intentos], ['pasa'] * 2)
+            esperado = acreditados if objetivo == 'C' or acreditados_base is None else acreditados_base
             self.assertEqual([i.caso_ejecutado for i in resultado.unidades[0].intentos],
-                             [acreditados] * 2)
+                             [esperado] * 2)
             evidencias += (Evidencia(plan.siguiente, resultado),)
         return planificar(suite.fallos, (1,), evidencias, 100, absolver=True,
                           firma_distingue_fallo=self.adaptador.firma_distingue_fallo)
@@ -698,6 +704,25 @@ class JaleTests(Aislado):
                 self.assertFalse(plan.terminado)
                 self.assertEqual(plan.incierto, 'confirmacion-candidato:' + UNIDAD)
                 self.assertEqual(plan.absoluciones, ())
+
+    def test_atribucion_pide_juicio_si_b_no_acredita_el_caso(self):
+        falla = dict(caso=CASO, resultado='falla')
+        pasa = dict(caso=CASO, resultado='pasa')
+        for escenario, casos_base in (('omitida', [dict(caso=CASO, resultado='omitida')]),
+                                      ('ausente', [dict(caso='otro', resultado='pasa')]),
+                                      ('recibo viejo', SIN_CASOS)):
+            with self.subTest(escenario=escenario):
+                plan = self.atribuir_con_casos([falla], [pasa], acreditados=True,
+                                               casos_base=casos_base, acreditados_base=False)
+                self.assertFalse(plan.terminado)
+                self.assertEqual(plan.incierto, 'confirmacion-candidato:' + UNIDAD)
+                self.assertEqual(plan.absoluciones, ())
+
+    def test_clave_duplicada_dentro_de_un_caso_descarta_evidencia_sin_rechazar(self):
+        plan = self.atribuir_con_casos([dict(caso=CASO, resultado='falla')],
+                                      [dict(caso=CASO, resultado='pasa', n=1)],
+                                      campo_duplicado='n')
+        self.assertEqual(plan.incierto, 'confirmacion-candidato:' + UNIDAD)
 
     def test_campo_duplicado_en_casos_solo_descarta_evidencia(self):
         plan = self.atribuir_con_casos([dict(caso=CASO, resultado='falla')],
