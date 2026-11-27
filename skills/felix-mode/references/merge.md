@@ -44,6 +44,11 @@ En sombra no edites `heads_autorizados`.
                  {"modelo":"opus-5.5","esfuerzo":"high","veredicto":"APTO","head":"<SHA40>"}]}
    ```
 
+   Los dos veredictos son sobre el head que entregas. Si un head nuevo
+   recibió APTO en una ronda delta de Sol, o si el PR es sensible de nivel
+   normal, pide además a Opus 5.5 en `high` la misma ronda sobre ese head,
+   con el mismo brief y evidencia, y anota los dos. Sin el par, sigue la vía
+   manual de abajo.
    `local.tren.ventanas-auto` añade el head a `heads_autorizados` en unos
    2 min y deja la procedencia en su `state.json`. El tren sigue exigiendo
    CI verde y, con migración, el journal sincronizado con `main`. No edites
@@ -82,13 +87,18 @@ En sombra no edites `heads_autorizados`.
    ```
 
    Comprueba la admisión de tu PR y head en sombra, separada de la custodia.
+   Un head autorizado por APTO doble puede seguir `Retenido` en `--seco`,
+   porque la simulación no lee las autorizaciones como el tick activo.
+   Compruébalo en `estado` después de que pasen el autorizador y un tick
+   activo, y mira `ventanas-auto.log` si no aparece.
    En modo activo, si quedó `Retenido` o `Rechazado`, resuelve el motivo
    o infórmaselo a Felix antes de terminar el turno. Si la entrega falla,
    resuelve su motivo o informa el bloqueo. Termina con el watch registrado.
 4. Ante un comentario de rojo del tren, lee el lote, B, C, unidad, firma,
    conjunto causal y comando de reproducción. Corrige con prueba dirigida,
    pasa la ronda de revisión correspondiente y entrega el head nuevo con
-   su APTO y recibo nuevos. Renueva la autorización de Felix si corresponde.
+   su APTO y recibo nuevos. Renueva la autorización si corresponde: el APTO
+   doble del head nuevo o el OK de Felix.
 
 El tick de launchd promueve C probado con push CAS fast-forward y comprueba
 `main == C` y su árbol. Las sesiones de Claude no mergean ni hacen push a
