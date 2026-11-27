@@ -1571,10 +1571,14 @@ bajo el candado de su corrida, manda TERM al lanzador que creó y conserva
 el candado hasta que éste sale. La corrida pedida para cancelación queda fuera de los reintentos
 y su salida queda sin consumir. Los eventos `suite-prelanzada-sin-leer` y
 `suite-sin-leer` registran en el mismo paso el modo, la clave (si llegó a
-escribirse), si ya había terminado, si se pidió cancelar y si el candado se
-liberó dentro del plazo. `cancelacion_confirmada` indica que el lanzador salió y soltó el
-candado. La liberación del recurso en el host depende del lanzador. Los
-errores de cancelación se registran en ese aviso.
+escribirse), si ya había terminado al observarla, si se pidió cancelar y si
+el candado quedó libre dentro del plazo. Si el cierre se reintenta antes de
+confirmarse en SQLite, el tick recupera las solicitudes de cancelación ya
+escritas, conserva `terminada=false` para esas corridas y vuelve a comprobar
+los candados.
+`cancelacion_confirmada` indica que el lanzador salió y soltó el candado.
+La liberación del recurso en el host depende del lanzador. Los errores de
+cancelación se registran en ese aviso.
 
 El tick espera hasta 30 s en total por los candados, con tope en el
 segundo 110 desde el arranque. Si ya alcanzó el tope, pide la cancelación
