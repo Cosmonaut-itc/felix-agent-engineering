@@ -79,11 +79,9 @@ def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
     for comando, lote, opciones in acciones:
         try:
             binario = os.path.expanduser(config.get("boat_pool", "~/.local/bin/boat-pool"))
-            argv = [binario, comando, "--repo", estado.repo, "--lote", lote, *opciones]
-            restante = limite - time.monotonic()
-            if restante <= 0:
-                raise subprocess.TimeoutExpired(argv, PLAZO_RESERVA_BOAT_S)
-            subprocess.run(argv, check=True, timeout=restante, stdin=subprocess.DEVNULL,
+            restante = max(0, limite - time.monotonic())
+            subprocess.run([binario, comando, "--repo", estado.repo, "--lote", lote, *opciones],
+                           check=True, timeout=restante, stdin=subprocess.DEVNULL,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError, TypeError, ValueError) as exc:
             fallo = {"lote": lote, "comando": comando, "clase": type(exc).__name__}
@@ -224,17 +222,17 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             frontera("resultado-guardado", efecto)
         return estado, fallo_operador
 
-    def terminar(nuevo, efectos):
-        actualizar_reserva_boat(ledger, config, adaptador, activo, nuevo, ahora)
-        drenado, fallo = drenar(nuevo, observacion)
+    def terminar(nuevo, efectos, *, paso_guardado=True):
+        nuevo, fallo = drenar(nuevo, observacion)
         if fallo is not None:
-            ledger.guardar_paso(drenado, (), ahora, fallo_operador=fallo)
+            ledger.guardar_paso(nuevo, (), ahora, fallo_operador=fallo)
             frontera("paso-guardado", None)
-            activo_confirmado = next((t for t in nuevo.trenes if not isinstance(t.fase, Terminal)), None)
-            actualizar_reserva_boat(ledger, config, adaptador, activo_confirmado, drenado, ahora)
-        snapshots.limpiar(drenado, previo.pendientes(repo), ahora)
-        return {"modo": "activo", "estado": datos(drenado), "efectos": datos(efectos),
-                "outbox": resumen_outbox(ledger, repo)}
+        snapshots.limpiar(nuevo, previo.pendientes(repo), ahora)
+        salida = {"modo": "activo", "estado": datos(nuevo), "efectos": datos(efectos),
+                  "outbox": resumen_outbox(ledger, repo)}
+        if paso_guardado or fallo is not None:
+            actualizar_reserva_boat(ledger, config, adaptador, activo, nuevo, ahora)
+        return salida
 
     # Una muerte con el marcador durable puede haber producido IO sin ACK.
     # Recuperarlo antes del paso evita caducar PR cerrados por nuestro push.
@@ -258,7 +256,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             lectura = previo.reconciliar(cert.B, cert.C, cert.arbol, heads)
             if isinstance(lectura, Incierto):
                 # Sigue pendiente; otro tick vuelve a acreditar sin empujar.
-                return terminar(estado, ())
+                return terminar(estado, (), paso_guardado=False)
             if isinstance(lectura, Aterrizado):
                 estado, recuperados = aterrizaje(replace(estado, pausa=None), tren,
                     replace(observacion, main=lectura, tren_id=tren.id,
