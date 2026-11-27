@@ -203,19 +203,22 @@ def admite_relanzamiento(rechazo):
     return rechazo.relanzable and rechazo.detalle in RECHAZOS_RELANZABLES
 
 
-def salida_repeticion_incierta(registro, commit, modo, filtros):
+def corrida_puede_seguir_viva(registro, commit, modo, filtros, registro_absuelto=''):
     codigo = registro / 'codigo.json'
     if not codigo.exists():
         return True
+    log = registro / 'corrida.log'
     try:
-        resultado = leer_salida(registro, registro / 'corrida.log', codigo, commit, modo, filtros)
+        resultado = leer_salida(registro, log, codigo, commit, modo, filtros)
+        if resultado is None:
+            return leer_pendiente_boat(log) is None or identidad_boat_pendiente(registro) is not None
     except ResultadoInvalido:
         return True
-    return (resultado is None or isinstance(resultado, RechazoLanzador) and
-            resultado.detalle == 'salida-sin-recibo')
+    return (isinstance(resultado, RechazoLanzador) and resultado.detalle == 'salida-sin-recibo' and
+            resultado.evidencia != registro_absuelto)
 
 
-def leer_seleccion_repeticion(raiz, intento, ronda):
+def leer_seleccion_corrida(raiz, intento, ronda):
     archivo = raiz / f'efecto-{intento}-{ronda}.json'
     if not archivo.exists():
         return raiz / str(intento), None
@@ -447,10 +450,9 @@ class Jale:
             raiz = self.estado / clave('suite', tren_id)
             corridas = MODOS
             intento = efecto.datos[1] if efecto.tipo == 'reanudar-suite' else '0'
+            ronda = efecto.datos[2] if len(efecto.datos) > 2 else 0
         for corrida in corridas:
-            registro = raiz / corrida / intento
-            if efecto.tipo == 'repetir':
-                registro, _ = leer_seleccion_repeticion(registro.parent, intento, ronda)
+            registro, _ = leer_seleccion_corrida(raiz / corrida, intento, ronda)
             if especulativa(registro) or (registro.parent / 'completo.json').exists():
                 continue
             viva = lanzamiento_activo(registro / 'candado')
@@ -484,7 +486,7 @@ class Jale:
                              'cancelacion_confirmada': False}
 
     def lanzar(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None,
-               reenganche=None, *, prelanzamiento=False, repeticion_paralela=False):
+               reenganche=None, *, prelanzamiento=False, reenganche_individual=False):
         """Devuelve el coordinador, EN_CURSO, None si hay salida o False si no se autorizó."""
         sin_confirmar = especulativa(registro)
         if (registro / CANCELAR).exists():
@@ -544,8 +546,8 @@ class Jale:
                 anterior = registro / ('codigo-reenganche-' + str(reenganche[0]) + '.json')
                 # El archivo conservado también marca el reenganche ya iniciado.
                 if not anterior.exists():
-                    if repeticion_paralela:
-                        renovar = salida_repeticion_incierta(registro, commit, modo, filtros)
+                    if reenganche_individual:
+                        renovar = corrida_puede_seguir_viva(registro, commit, modo, filtros)
                     else:
                         resultado = (leer_salida(registro, log, codigo, commit, modo, filtros)
                                      if codigo.exists() else None)
@@ -612,7 +614,7 @@ class Jale:
         return leer_salida(registro, log, codigo, commit, modo, filtros)
 
     def lanzar_corrida(self, raiz, commit, modo, filtros, intento, permitir_lanzar, tren_id,
-                       reenganche, *, repeticion_paralela=False):
+                       reenganche, *, reenganche_individual=False):
         cache = raiz / 'completo.json'
         if cache.exists():
             guardado = leer_json(cache)
@@ -621,7 +623,7 @@ class Jale:
             return registro, self.lanzar(registro, commit, modo, filtros, False)
         registro = raiz / str(intento)
         return registro, self.lanzar(registro, commit, modo, filtros, permitir_lanzar,
-                                     tren_id, reenganche, repeticion_paralela=repeticion_paralela)
+                                     tren_id, reenganche, reenganche_individual=reenganche_individual)
 
     def recoger_corrida(self, registro, proceso, commit, modo, filtros):
         cache = registro.parent / 'completo.json'
@@ -630,28 +632,38 @@ class Jale:
             guardar(cache, int(registro.name))
         return r
 
-    def suite(self, candidato, tren_id, intento=0, reanudar='', permitir_lanzar=True, *, reenganche=None):
+    def suite(self, candidato, tren_id, intento=0, reanudar='', permitir_lanzar=True, *,
+              reenganche=None, registro_absuelto=''):
         raiz = self.estado / clave('suite', tren_id)
         exigir(not reanudar or reanudar == str(raiz), 'reanudar-no-corresponde')
+        ronda = reenganche[0] if reenganche else 0
         lanzadas = []
         fallo_al_lanzar = None
         for modo in self.modos:
+            raiz_modo = raiz / modo
+            registro, reenganche_local = raiz_modo / str(intento), None
             try:
-                registro, proceso = self.lanzar_corrida(raiz / modo, candidato.C, modo, (), intento,
-                                                        permitir_lanzar, tren_id, reenganche)
+                if (intento or reenganche) and not (raiz_modo / 'completo.json').exists():
+                    registro, reenganche_local = self.registro_por_efecto(
+                        raiz_modo, intento, ronda, reenganche, candidato.C, modo, (),
+                        permitir_lanzar, registro_absuelto, suite=True)
+                registro, proceso = self.lanzar_corrida(
+                    raiz_modo, candidato.C, modo, (), int(registro.name), permitir_lanzar,
+                    tren_id, reenganche_local, reenganche_individual=True)
             except ResultadoInvalido as exc:
                 fallo_al_lanzar = fallo_al_lanzar or exc
                 continue
-            lanzadas.append((modo, registro, proceso))
+            lanzadas.append((modo, registro, proceso, reenganche_local))
         recibos = []
-        for modo, registro, proceso in lanzadas:
+        for modo, registro, proceso, _ in lanzadas:
             try:
                 recibos.append(self.recoger_corrida(registro, proceso, candidato.C, modo, ()))
             except ResultadoInvalido as exc:
                 recibos.append(exc)
         # Un modo sin confirmar puede seguir vivo aunque no se permita recogerlo.
         if EN_CURSO in recibos or any(
-                corrida_en_curso(raiz / modo / str(intento)) for modo in self.modos):
+                corrida_en_curso(leer_seleccion_corrida(raiz / modo, intento, ronda)[0])
+                for modo in self.modos):
             return EN_CURSO
         if fallo_al_lanzar is not None:
             raise fallo_al_lanzar
@@ -663,9 +675,8 @@ class Jale:
                 raise r
         if invalidos and not rechazos:
             raise invalidos[0]
-        if reenganche and any(proceso is False and
-                              str(registro / 'coordinador.log') == reenganche[1]
-                              for _, registro, proceso in lanzadas):
+        if any(proceso is False and reenganche_local
+               for _, _, proceso, reenganche_local in lanzadas):
             return None
         if rechazos:
             # Prioriza el envío incierto: con reanudar conserva su identidad.
@@ -701,7 +712,7 @@ class Jale:
                     u.get('unidad') == fallo.unidad for u in r['unidades'])
                 for r in origen), 'origen-no-corresponde')
         if permitir_lanzar and commit not in (candidato.B, candidato.C) and not any(
-                (leer_seleccion_repeticion(raiz / n, intento, ronda)[0]
+                (leer_seleccion_corrida(raiz / n, intento, ronda)[0]
                  / 'solicitud.json').exists() for n in ('1', '2')):
             exigir(self.git is not None, 'subconjunto-sin-git')
             publicado = self.git.publicar('subconjunto-' + clave(tren_id, commit), commit)
@@ -741,11 +752,11 @@ class Jale:
         finally:
             self.esperar_prelanzadas(lanzadas)
 
-    def registro_repeticion_paralela(self, raiz, intento, ronda, reenganche, commit, modo, filtros,
-                                     permitir_lanzar):
+    def registro_por_efecto(self, raiz, intento, ronda, reenganche, commit, modo, filtros,
+                           permitir_lanzar, registro_absuelto, *, suite=False):
         archivo = raiz / f'efecto-{intento}-{ronda}.json'
         if archivo.exists():
-            return leer_seleccion_repeticion(raiz, intento, ronda)
+            return leer_seleccion_corrida(raiz, intento, ronda)
         registro = raiz / str(intento)
         marca = None
         previo = max((p.parent for p in raiz.glob('*/solicitud.json') if p.parent.name.isdecimal()),
@@ -753,11 +764,16 @@ class Jale:
         existente = (not ronda and previo == registro and not any(raiz.glob('efecto-*.json')))
         if previo is not None and not existente:
             log_previo = str(previo / 'coordinador.log')
-            if (reenganche and previo == registro and reenganche[1] == log_previo and
+            if suite and reenganche:
+                # En la suite el reenganche explícito vuelve a consultar el modo de la pausa.
+                if reenganche[1] == log_previo:
+                    marca = str(ronda) if previo == registro else f'{intento}-{ronda}'
+                registro = previo
+            elif (reenganche and previo == registro and reenganche[1] == log_previo and
                     (previo / f'codigo-reenganche-{ronda}.json').exists()):
                 # El efecto ya pudo haber reenganchado con la versión anterior.
                 marca = str(ronda)
-            elif salida_repeticion_incierta(previo, commit, modo, filtros):
+            elif corrida_puede_seguir_viva(previo, commit, modo, filtros, registro_absuelto):
                 registro, marca = previo, f'{intento}-{ronda}'
             else:
                 registro = raiz / str(max(intento, int(previo.name) + 1))
@@ -769,7 +785,7 @@ class Jale:
         return registro, (marca, str(registro / 'coordinador.log')) if marca is not None else None
 
     def repetir(self, candidato, suite, solicitud, commit, tren_id, intento=0, reanudar='',
-                permitir_lanzar=True, *, reenganche=None):
+                permitir_lanzar=True, *, reenganche=None, registro_absuelto=''):
         ronda = reenganche[0] if reenganche else 0
         raiz, base = self.preparar_repeticion(candidato, suite, solicitud, commit, tren_id,
                                               reanudar, permitir_lanzar, intento=intento, ronda=ronda)
@@ -789,9 +805,9 @@ class Jale:
                 reenganche_local = reenganche
                 try:
                     if conserva_claves and not (raiz_corrida / 'completo.json').exists():
-                        registro, reenganche_local = self.registro_repeticion_paralela(
+                        registro, reenganche_local = self.registro_por_efecto(
                             raiz_corrida, intento, ronda, reenganche, commit, fallo.check, filtros,
-                            permitir_lanzar)
+                            permitir_lanzar, registro_absuelto)
                     # Otro tren pudo completar el caché mientras éste estaba pausado.
                     desde_base = cache_disponible and not (
                         reenganche_local and reenganche_local[1] == str(registro / 'coordinador.log') or
@@ -805,7 +821,7 @@ class Jale:
                     else:
                         registro, proceso = self.lanzar_corrida(raiz_corrida, commit, fallo.check,
                             filtros, int(registro.name), permitir_lanzar, tren_id, reenganche_local,
-                            repeticion_paralela=conserva_claves)
+                            reenganche_individual=conserva_claves)
                 except ResultadoInvalido as exc:
                     fallo_al_lanzar = fallo_al_lanzar or exc
                     if not paralelo:
@@ -858,7 +874,7 @@ class Jale:
             if not paralelo:
                 break
         # Un impedimento puede cortar el recorrido antes de un intento ya lanzado.
-        if en_curso or any(corrida_en_curso(leer_seleccion_repeticion(raiz / n, intento, ronda)[0])
+        if en_curso or any(corrida_en_curso(leer_seleccion_corrida(raiz / n, intento, ronda)[0])
                            for n in ('1', '2')):
             return EN_CURSO
         if fallo_al_lanzar is not None and (not paralelo or not lanzadas or lanzadas[0][0] == 2):

@@ -844,12 +844,13 @@ tercera señal pausa el tren y permite las decisiones de la tabla. En
 el límite y el detalle, por ejemplo «relanzado automáticamente 1/2 por
 salida-sin-recibo».
 
-En una repetición paralela, cada intento conserva su registro y clave mientras
-pueda seguir vivo, incluso tras un 75 sin recibo. Un intento con fin confirmado
-abre otro registro y clave si hace falta volver a correrlo. Los recibos válidos
-con código distinto de 75 se reutilizan desde la caché. La regla se aplica a
-los relanzamientos automáticos y a las decisiones de la tabla, incluso al
-reanudar una pausa guardada con la versión anterior.
+Cada modo de una suite y cada intento de una repetición paralela conserva su
+registro y clave mientras pueda seguir vivo. Esto incluye un 75 sin recibo,
+salvo que Boat indique una causa sin resultado recuperable. Una corrida con
+fin confirmado abre otro registro y clave si hace falta volver a correrla.
+Los recibos válidos con código distinto de 75 se reutilizan desde la caché.
+La regla se aplica a los relanzamientos automáticos y a las decisiones de la
+tabla, incluso al reanudar una pausa guardada con la versión anterior.
 
 Para cortar una corrida del tren a propósito, pausa el tren antes de cortarla
 o la relanzará hasta dos veces.
@@ -860,7 +861,7 @@ o la relanzará hasta dos veces.
 | `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
 | `escritor-externo` | vacío | Main avanzó por fuera y el tren lo vio en la promoción. Antes de CI y suite rearma sin esta pausa. `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
 | `infraestructura` | `lanzador-rechazo` / `corrida-interrumpida` | El lanzador salió 64 o Jale confirmó la interrupción con 125 y `PUEUE_INTERRUPTED=1` sin recibo. La pausa conserva la ruta del log y cierra el efecto. `reanudar` lanza otro intento con registro y clave nuevos. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
-| `infraestructura` | `salida-sin-recibo` | Jale guardó una salida entera distinta de 75 y 64 sin recibo, en cualquier host. La pausa conserva la ruta del log y cierra el efecto. `reanudar` reengancha el mismo registro con la misma clave y conserva la salida anterior. `absolver` abandona el reenganche y lanza otro intento con registro y clave nuevos para cada modo sin recibo válido, no sólo el de la pausa. Úsalo cuando el log de cada uno de esos modos muestra que la corrida terminó, porque reenganchar repetiría la misma salida. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
+| `infraestructura` | `salida-sin-recibo` | Jale guardó una salida entera distinta de 75 y 64 sin recibo, en cualquier host. La pausa conserva la ruta del log y cierra el efecto. `reanudar` reengancha el mismo registro con la misma clave y conserva la salida anterior. Usa `absolver` cuando el log de la pausa confirma que esa corrida terminó. Esa corrida vuelve a lanzarse con registro y clave nuevos. Las demás que puedan seguir vivas conservan sus claves. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
 | `infraestructura` | `cobertura-parcial-boat` | `corrida.log` acredita omisiones de cobertura. `reanudar` lanza otro intento con registro e identidad nuevos para el modo afectado. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
 | `infraestructura` | `checkout-operador:<estado>` | El tick no pudo obtener el SHA o verificar su snapshot. `reanudar` permite reintentar y `abortar` termina el tren. El tick conserva cualquier pausa vigente. |
 | `infraestructura` | `tres-reanudaciones-agotadas` | `reanudar`: un intento adicional del comando guardado, con contador/clave nuevos y sin certificado; otro 75 vuelve a pausar. `absolver`: abandonar el diagnóstico o reenganche anterior y exigir CI y suite completa nuevos sobre el mismo C, incluso si el diagnóstico agotó D5. `abortar`: liberar entregas sin rojo. |
@@ -1616,22 +1617,25 @@ detalle es `corrida-interrumpida`. Las demás salidas enteras sin recibo
 llevan el detalle `salida-sin-recibo`, también en Boat y en su caída al desk.
 `lanzador-rechazo`, `corrida-interrumpida` y `salida-sin-recibo` conservan la ruta de
 `coordinador.log`. La política de relanzamientos y pausas también se aplica al
-recuperar un efecto ya fallido. En las suites y las repeticiones en serie,
-`reanudar` en pausa por `lanzador-rechazo` o `corrida-interrumpida` lanza otro
-intento con registro y clave nuevos. Con
+recuperar un efecto ya fallido. `reanudar` en pausa por `lanzador-rechazo` o
+`corrida-interrumpida` abre clave nueva para la corrida rechazada. Los demás
+modos de una suite conservan su clave mientras puedan seguir vivos. Con
 `salida-sin-recibo`, `reanudar` reengancha el mismo registro con la misma
 clave y conserva la salida anterior. Si hay un checkout del operador, usa su
 lanzador vigente. Consulta `coordinador.log` y, si existe, el `corrida.log`
 del mismo registro. Cuando el log muestra que la corrida terminó y
-reenganchar repetiría la misma salida, `absolver` abre un registro con una
-clave nueva. El modo con recibo válido se recupera de la caché.
+reenganchar repetiría la misma salida, `absolver` abre un registro y una
+clave nueva para la corrida que figura en la pausa. El modo con recibo
+válido se recupera de la caché.
 `abortar` libera las entregas sin rojo.
-En una suite o repetición en serie, si Boat devuelve 75 pendiente, el siguiente intento usa la misma
-identidad con un log nuevo si el modo sigue configurado en Boat. Esto también
-recupera un envío del fallback cuyo desk devolvió 75 sin resultado. Si cambia
-el host del modo a `auto` o `desktop`, el intento nuevo usa ese host y su clave
-del desk. Una causa de interrupción, resultado desconocido, cancelación o
-despacho sin VM en Boat abre otro intento con una identidad nueva.
+Si Boat devuelve 75 con un resultado recuperable, una suite o repetición
+paralela reengancha el registro con el host y la clave guardados. Esto también
+recupera un envío del fallback cuyo desk devolvió 75 sin resultado. En una
+repetición en serie, el siguiente intento usa un log nuevo y conserva la
+identidad si el modo sigue configurado en Boat. Si el host cambia, el nuevo
+intento usa el host y la clave que le corresponden. Una causa de interrupción,
+resultado desconocido, cancelación o despacho sin VM en Boat abre otro
+intento con una identidad nueva.
 Un marcador `PARTIAL: boat omitted=N` con N mayor que cero produce el detalle
 `cobertura-parcial-boat` con `corrida.log` como evidencia. Con un relanzamiento
 automático o `reanudar`, el modo afectado usa otro registro y una identidad

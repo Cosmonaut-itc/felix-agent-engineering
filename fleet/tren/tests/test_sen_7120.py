@@ -140,7 +140,8 @@ if filtros:
             sys.exit(2)
     if (raiz / 'sin-recibo').exists() and intento == '1' and trabajo['conexiones'] == 1:
         f.update(codigo=1, sin_linea=True)
-    if (raiz / 'primero-75').exists() and intento == '1' and registro.name == '0':
+    if ((raiz / 'primero-75').exists() and intento == '1' and
+            registro.name == '0' and trabajo['conexiones'] == 1):
         f.update(codigo=75, sin_linea=True)
     if (raiz / 'primero-malformado').exists() and intento == '1':
         f.update(malformado=True)
@@ -355,7 +356,8 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
         registro = self.registros(self.pedidos[0])[0]
         self.assertEqual(r, RechazoLanzador(str(registro / 'coordinador.log'), 'salida-sin-recibo'))
         self.assertIsInstance(self.repetir(reenganche=(1, r.evidencia)), Repeticion)
-        self.assertTrue((registro / 'codigo-reenganche-1.json').exists())
+        anterior, = registro.glob('codigo-reenganche-*.json')
+        self.assertEqual(json.loads(anterior.read_text()), 1)
         self.assertEqual(len(self.lanzamientos()), 2)
         self.assertEqual(len(self.invocaciones()), 3)
 
@@ -368,9 +370,14 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
         self.assertTrue((segundo.parent / 'completo.json').exists())
         (self.raiz / 'sin-recibo').unlink()
         self.assertIsInstance(self.repetir(intento=1), Repeticion)
-        relanzados = [json.loads(solicitud.read_text())[3] for solicitud in
-                      sorted(primero.parents[1].glob('*/1/solicitud.json'))]
-        self.assertEqual(relanzados, [str(primero.parent / '1' / 'corrida.log')])
+        self.assert_reengancho_solo_el_primero(primero, segundo)
+
+    def assert_reengancho_solo_el_primero(self, primero, segundo):
+        invocaciones = self.invocaciones()
+        self.assertCountEqual([i['log'] for i in invocaciones],
+                             [str(primero / 'corrida.log')] * 2 + [str(segundo / 'corrida.log')])
+        self.assertEqual(len({i['clave'] for i in invocaciones}), 2)
+        self.assertEqual(len(self.lanzamientos()), 2)
 
     def test_rechazo_del_primero_prevalece_si_el_segundo_no_deja_salida(self):
         rechazo = RechazoLanzador('coordinador.log', 'salida-sin-recibo')
@@ -400,9 +407,7 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
         self.assertEqual(r, Incompleto(75, str(primero.parents[1])))
         self.assertTrue((segundo.parent / 'completo.json').exists())
         self.assertIsInstance(self.repetir(intento=1, reanudar=r.reanudar), Repeticion)
-        relanzados = [json.loads(solicitud.read_text())[3] for solicitud in
-                      sorted(primero.parents[1].glob('*/1/solicitud.json'))]
-        self.assertEqual(relanzados, [str(primero.parent / '1' / 'corrida.log')])
+        self.assert_reengancho_solo_el_primero(primero, segundo)
         serie = self.jale(1, 'serie')
         self.assertIsInstance(self.repetir(adaptador=serie), Incompleto)
         raiz = serie.estado / clave('repetir', TREN, self.pedidos[0][0].id)

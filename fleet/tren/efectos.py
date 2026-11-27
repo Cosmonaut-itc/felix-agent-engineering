@@ -128,8 +128,11 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
             raise ValueError("falta adaptador de suite")
         try:
             opciones = {"permitir_lanzar": admitidos}
-            if isinstance(fase, (Corriendo, Diagnosticando)) and fase.reenganches:
-                opciones["reenganche"] = (fase.reenganches, fase.registro_reenganche)
+            if isinstance(fase, (Corriendo, Diagnosticando)):
+                if fase.reenganches:
+                    opciones["reenganche"] = (fase.reenganches, fase.registro_reenganche)
+                if fase.registro_absuelto:
+                    opciones["registro_absuelto"] = fase.registro_absuelto
             if efecto.tipo == "iniciar-suite" and isinstance(fase, EsperandoCI):
                 if efecto != Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)):
                     raise ValueError("suite obsoleta")

@@ -322,6 +322,7 @@ class Corriendo:
     reintentos_lanzador: int = 0
     reenganches: int = 0
     registro_reenganche: str = ""
+    registro_absuelto: str = ""
 
 
 @dataclass(frozen=True)
@@ -352,6 +353,7 @@ class Diagnosticando:
     reintentos_lanzador: int = 0
     reenganches: int = 0
     registro_reenganche: str = ""
+    registro_absuelto: str = ""
 
 
 @dataclass(frozen=True)
@@ -710,13 +712,14 @@ LIMITE_RELANZAMIENTOS_AUTOMATICOS = 2
 RECHAZOS_RELANZABLES = ("salida-sin-recibo", "corrida-interrumpida", "cobertura-parcial-boat")
 
 
-def nuevo_intento_lanzador(fase):
+def nuevo_intento_lanzador(fase, registro_absuelto=""):
     return replace(fase, reintentos_lanzador=fase.reintentos_lanzador + 1,
-                   reenganches=0, registro_reenganche="")
+                   reenganches=0, registro_reenganche="", registro_absuelto=registro_absuelto)
 
 
 def reenganchar_lanzador(fase, evidencia):
-    return replace(fase, reenganches=fase.reenganches + 1, registro_reenganche=evidencia)
+    return replace(fase, reenganches=fase.reenganches + 1, registro_reenganche=evidencia,
+                   registro_absuelto="")
 
 
 def puede_relanzar(tren, resultado):
@@ -754,11 +757,11 @@ def efecto_diagnostico(tren, fase):
 def esperar_infraestructura(estado, tren, fase, resultado, ahora):
     if resultado.codigo != 75 or not resultado.reanudar:
         return replace(estado, pausa=Pausa("necesita-juicio", detalle="incompleto-invalido")), ()
+    fase = replace(fase, reanudar=resultado.reanudar, registro_absuelto="")
     if fase.reanudaciones >= len(ESPERAS_SUITE):
-        estado = cambiar_fase(estado, tren, replace(fase, reanudar=resultado.reanudar))
+        estado = cambiar_fase(estado, tren, fase)
         return replace(estado, pausa=Pausa("infraestructura", detalle="tres-reanudaciones-agotadas")), ()
-    fase = replace(fase, esperar_hasta=ahora + ESPERAS_SUITE[fase.reanudaciones],
-                   reanudar=resultado.reanudar)
+    fase = replace(fase, esperar_hasta=ahora + ESPERAS_SUITE[fase.reanudaciones])
     return cambiar_fase(estado, tren, fase), ()
 
 
@@ -916,7 +919,7 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
                 return replace(estado, pausa=Pausa("necesita-juicio", detalle="origen-distinto")), ()
             fase = replace(fase, evidencias=fase.evidencias + (Evidencia(s, resultado),),
                 pendiente=None, subconjunto=None, reanudaciones=0, esperar_hasta=None, reanudar="",
-                reintentos_lanzador=0, reenganches=0, registro_reenganche="")
+                reintentos_lanzador=0, reenganches=0, registro_reenganche="", registro_absuelto="")
         elif fase.esperar_hasta is not None:
             if observacion.ahora < fase.esperar_hasta or not despachar:
                 return cambiar_fase(estado, tren, fase), ()
@@ -1194,6 +1197,8 @@ def datos(valor):
                                and not getattr(valor, f.name))
                        and not (isinstance(valor, Tren) and f.name == "relanzamientos_automaticos"
                                 and not valor.relanzamientos_automaticos)
+                       and not (isinstance(valor, (Corriendo, Diagnosticando))
+                                and f.name == "registro_absuelto" and not valor.registro_absuelto)
                        and not (isinstance(valor, RechazoLanzador) and f.name == "relanzable"
                                 and valor.relanzable)
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"

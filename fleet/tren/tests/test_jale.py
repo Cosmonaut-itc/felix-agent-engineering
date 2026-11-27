@@ -229,7 +229,7 @@ class JaleTests(Aislado):
     def configurar_rechazo(self, respuesta, *, interrumpida=False):
         filas = {
             '64': {'codigo': 64, 'sin_linea': True},
-            '75': {'codigo': 75, 'sin_linea': True},
+            '75': {'codigo': 75},
             '127': {'transportes': 3, 'codigo_transporte': 127},
             '125': {'codigo': 125, 'sin_linea': True, 'interrumpida': interrumpida},
             'rojo': {'estados': ['falla']},
@@ -312,12 +312,14 @@ class JaleTests(Aislado):
         self.assertEqual((r.veredicto, r.fallos, r.restantes), ('rojo', (FALLO,), (OTRA,)))
 
     def test_75_sin_recibo_reanuda_sin_repetir_modo_terminado(self):
-        self.plan({'e2e': [{'codigo': 75, 'sin_linea': True}, {}]})
+        self.plan({'e2e': [{'consultas_75': 1}]})
         _, r = self.suite()
         self.assertIsInstance(r, Incompleto)
         _, final = self.suite(intento=1, reanudar=r.reanudar)
         self.assertEqual(final.veredicto, 'verde')
-        self.assertCountEqual([a[2] for a in self.lanzamientos()], ['contract', 'e2e', 'e2e'])
+        self.assertCountEqual([a[2] for a in self.lanzamientos()], ['contract', 'e2e'])
+        primera, segunda = [i for i in self.invocaciones() if i['modo'] == 'e2e']
+        self.assertEqual((segunda['log'], segunda['clave']), (primera['log'], primera['clave']))
 
     def test_75_con_recibo_no_se_usa_como_fallo(self):
         self.plan({'contract': [{'codigo': 75, 'estados': ['falla']}]})
@@ -724,7 +726,7 @@ class JaleTests(Aislado):
         self.assertEqual(len(self.invocaciones()), 2)
 
     def test_u23_clave_estable_y_distinta_por_intento_modo_y_tren(self):
-        self.plan({'contract': [{'codigo': 75, 'sin_linea': True}, {}]})
+        self.plan({'contract': [{'codigo': 75}, {}]})
         _, incompleto = self.suite()
         primero = next(i for i in self.invocaciones() if i['modo'] == 'contract')
         registro = Path(primero['log']).parent
@@ -956,9 +958,9 @@ class JaleTests(Aislado):
         self.assertEqual(recibo[1], RechazoLanzador(str(registro / 'coordinador.log'),
                                                   'salida-sin-recibo'))
         self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 125)
-        self.assertEqual(self.suite(intento=1)[1].veredicto, 'verde')
+        self.assertEqual(self.suite(intento=1), recibo)
         self.assertEqual(len(self.invocaciones()), 3)
-        self.assertEqual(len({i['clave'] for i in self.invocaciones()}), 3)
+        self.assertEqual(len({i['clave'] for i in self.invocaciones()}), 2)
 
     def test_boat_ejecuta_ambos_modos_en_paralelo_y_agrega_el_fallback(self):
         self.adaptador = self.Jale(self.lanzador, host='boat', boat_esperar_s=42)
@@ -994,11 +996,12 @@ class JaleTests(Aislado):
         self.assertEqual(json.loads(Path(ruta).read_text())[0]['codigo'], 0)
         self.assertEqual(self.invocaciones()[0]['boat']['SEN_BOAT_ESPERAR'], '180')
 
-    def test_boat_75_tras_corte_de_red_respeta_el_cambio_de_host_y_la_cache(self):
-        self.plan({'contract': [{'pendiente': 'resultado o transporte no acreditado'}, {}] * 2})
+    def test_boat_75_tras_corte_de_red_conserva_el_host_guardado_y_la_cache(self):
+        self.plan({'contract': [{'pendiente': 'resultado o transporte no acreditado'}] * 2})
         for host in ('auto', 'desktop'):
             with self.subTest(host=host):
                 antes = len(self.invocaciones())
+                trabajos_antes = len(self.lanzamientos())
                 self.adaptador = self.Jale(self.lanzador, host='boat')
                 raiz, resultado = self.suite(tren=host)
                 self.assertEqual(resultado, Incompleto(75, raiz))
@@ -1014,11 +1017,9 @@ class JaleTests(Aislado):
                 _, final = self.suite(tren=host, intento=1, reanudar=raiz)
                 self.assertEqual(final, Completo('verde', costo_s=8))
                 segunda, = self.invocaciones()[antes + 2:]
-                self.assertEqual((segunda['modo'], segunda['host']), ('contract', host))
-                self.assertRegex(segunda['clave'], r'^pao-jale-[0-9a-f]{64}$')
-                self.assertIsNone(segunda['boat']['SEN_RUN_ID'])
-                self.assertNotEqual(segunda['log'], primera['log'])
-                self.assertEqual(len(self.lanzamientos()), antes + 3)
+                self.assertEqual((segunda['modo'], segunda['host']), ('contract', 'boat'))
+                self.assertEqual((segunda['log'], segunda['clave']), (primera['log'], primera['clave']))
+                self.assertEqual(len(self.lanzamientos()), trabajos_antes + 2)
 
     def test_boat_tres_intentos_pendientes_reenganchan_la_misma_corrida(self):
         self.adaptador = self.Jale(self.lanzador, host='boat')
@@ -1027,12 +1028,12 @@ class JaleTests(Aislado):
         for intento in range(3):
             raiz, resultado = self.suite(intento=intento, reanudar=reanudar)
             self.assertEqual(resultado, Incompleto(75, raiz))
-            self.assertTrue((Path(raiz) / 'contract' / str(intento) /
+            self.assertTrue((Path(raiz) / 'contract' / '0' /
                              'corrida.log.boat-pendiente').is_file())
             reanudar = resultado.reanudar
         self.assertEqual(self.suite(intento=3, reanudar=reanudar)[1], Completo('verde', costo_s=8))
         contratos = [i for i in self.invocaciones() if i['modo'] == 'contract']
-        self.assertEqual([Path(i['log']).parent.name for i in contratos], ['0', '1', '2', '3'])
+        self.assertEqual([Path(i['log']).parent.name for i in contratos], ['0'] * 4)
         identidad = contratos[0]['boat']['SEN_RUN_ID']
         for i in contratos:
             entorno = Path(i['log']).with_name('entorno.json')
@@ -1281,6 +1282,93 @@ class JaleTests(Aislado):
                           for _, log, _, _, *filtros in self.lanzamientos() if filtros),
                       len({i['clave'] for i in self.invocaciones()
                            if Path(i['log']).parent.parent.name == n})) for n in ('1', '2'))
+
+    def comprobar_absolucion_paralela(self, segundo):
+        terminal = {'codigo': 1, 'sin_linea': True, 'terminal': True}
+        parte = {'por_intento': {'1': terminal, '2': segundo}}
+        estado, obs, efecto = self.preparar_repeticiones_de_prueba([parte, parte, {}])
+        tren, = estado.trenes
+        estado = replace(estado, trenes=(replace(tren, relanzamientos_automaticos=2),))
+        pausado, efectos = paso(estado, self.llegada_repeticion(efecto, estado, obs))
+        self.assertEqual(efectos, ())
+        self.assertEqual(pausado.pausa.detalle, 'salida-sin-recibo')
+        evidencia, = pausado.pausa.archivos
+        self.assertEqual(Path(evidencia).parent.parent.name, '1')
+        decision = Decision('absolver-repeticion', estado.repo, tren.id, 'absolver', None,
+                            'el registro confirma el fin', obs.ahora, 'pausa-1', pausado.pausa)
+        siguiente, (_, efecto) = paso(pausado, replace(obs, decision=decision, pausa_id='pausa-1'))
+        siguiente, efecto = desde_datos(datos(siguiente)), desde_datos(datos(efecto))
+        llegada = self.llegada_repeticion(efecto, siguiente, obs)
+        self.assertEqual(self.trabajos_y_claves_por_intento(), ((2, 2), (1, 1)))
+        self.assertIsInstance(llegada.repeticion, Repeticion)
+        registros = {Path(i['log']).parent.name for i in self.invocaciones()
+                     if Path(i['log']).parent.parent.name == '1'}
+        self.assertEqual(registros, {'0', '1'})
+
+    def test_r6_absolver_repeticion_paralela_abre_clave(self):
+        self.comprobar_absolucion_paralela({})
+
+    def test_r6_absolver_repeticion_paralela_con_hermano_incierto(self):
+        self.comprobar_absolucion_paralela({'transportes': 3, 'codigo_transporte': 127})
+
+    def comprobar_repeticion_boat_irrecuperable(self, causa):
+        pendiente = {'pendiente': causa, 'pendiente_fijo': True}
+        estado, obs, efecto = self.preparar_repeticiones_de_prueba([pendiente, pendiente, {}, {}])
+        self.adaptador.host = 'boat'
+        llegada = self.llegada_repeticion(efecto, estado, obs)
+        self.assertIsInstance(llegada.repeticion, Incompleto)
+        self.assertEqual(llegada.repeticion.codigo, 75)
+        esperando, efectos = paso(estado, llegada)
+        self.assertEqual(efectos, ())
+        obs = replace(obs, ahora=esperando.trenes[0].fase.esperar_hasta)
+        siguiente, (efecto,) = paso(esperando, obs)
+        llegada = self.llegada_repeticion(efecto, siguiente, obs)
+        self.assertEqual(self.trabajos_y_claves_por_intento(), ((2, 2), (2, 2)))
+        self.assertIsInstance(llegada.repeticion, Repeticion)
+
+    def test_r6_boat_75_paralelo_cancelado_abre_clave(self):
+        self.comprobar_repeticion_boat_irrecuperable('cancelación sin resultado acreditado')
+
+    def test_r6_boat_75_paralelo_interrumpido_abre_clave(self):
+        self.comprobar_repeticion_boat_irrecuperable('intento interrupted')
+
+    def comprobar_suite_interrumpida_y_75(self, *, manual):
+        self.adaptador = self.Jale(self.lanzador, host='desktop')
+        interrumpida = {'codigo': 125, 'sin_linea': True, 'interrumpida': True}
+        self.plan({'contract': [interrumpida, {}], 'e2e': [{'consultas_75': 1}, {}]})
+        estado, obs, efecto = self.preparar_suite_de_prueba()
+        tren, = estado.trenes
+        if manual:
+            estado = replace(estado, trenes=(replace(tren, relanzamientos_automaticos=2),))
+        llegada = esperar_resultado(ejecutar, efecto, estado, obs, object(), self.adaptador)
+        self.assertEqual(llegada.observacion.resultado_suite.detalle, 'corrida-interrumpida')
+        siguiente, efectos = paso(estado, llegada.observacion)
+        if manual:
+            self.assertEqual(siguiente.pausa.detalle, 'corrida-interrumpida')
+            self.assertEqual(efectos, ())
+            siguiente = desde_datos(datos(siguiente))
+            decision = Decision('reanudar-suite', estado.repo, tren.id, 'reanudar', None,
+                                'consultar el trabajo', obs.ahora, 'pausa-1', siguiente.pausa)
+            siguiente, efectos = paso(siguiente, replace(obs, decision=decision, pausa_id='pausa-1'))
+            self.assertEqual([e.tipo for e in efectos], ['resolver-juicio', 'reanudar-suite'])
+        else:
+            self.assertEqual([e.tipo for e in efectos],
+                             ['registrar-relanzamiento-automatico', 'reanudar-suite'])
+        efecto = efectos[-1]
+        llegada = esperar_resultado(ejecutar, efecto, siguiente, obs, object(), self.adaptador)
+        releida = esperar_resultado(ejecutar, efecto, siguiente, obs, object(), self.adaptador)
+        self.assertEqual(releida, llegada)
+        for modo, cantidad in (('e2e', 1), ('contract', 2)):
+            trabajos = sum(i[2] == modo for i in self.lanzamientos())
+            claves = {i['clave'] for i in self.invocaciones() if i['modo'] == modo}
+            self.assertEqual((trabajos, len(claves)), (cantidad, cantidad), modo)
+        self.assertIsInstance(llegada.observacion.resultado_suite, Completo)
+
+    def test_r6_suite_interrumpida_relanzada_reengancha_el_75(self):
+        self.comprobar_suite_interrumpida_y_75(manual=False)
+
+    def test_r6_suite_interrumpida_reanudada_reengancha_el_75(self):
+        self.comprobar_suite_interrumpida_y_75(manual=True)
 
     def comprobar_relanza_interrumpida_y_reengancha_incierta(self, incierta, *, manual=False):
         interrumpida = {'codigo': 125, 'sin_linea': True, 'interrumpida': True}

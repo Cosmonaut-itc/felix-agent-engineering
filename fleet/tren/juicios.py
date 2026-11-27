@@ -208,7 +208,9 @@ def resolver(estado, observacion):
         if operacion == "reenganchar":
             fase = reenganchar_lanzador(tren.fase, decision.pausa.archivos[0])
         else:
-            fase = nuevo_intento_lanzador(tren.fase)
+            registro_absuelto = (next(iter(decision.pausa.archivos), "")
+                                 if decision.decision == "absolver" else "")
+            fase = nuevo_intento_lanzador(tren.fase, registro_absuelto)
         estado = cambiar_fase(estado, tren, fase)
         efectos = ((efecto_reanudar_suite(tren, fase),) if isinstance(fase, Corriendo)
                    else (efecto_diagnostico(tren, fase),))
