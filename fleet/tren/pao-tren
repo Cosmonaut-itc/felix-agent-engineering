@@ -19,7 +19,7 @@ ARRANQUE = time.monotonic()
 # Script location is trusted, independent of cwd, including python -I invocations.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cache_github import CacheGitHub
-from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion,
+from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion, Terminal,
                      admision_entrada, datos, paso)
 from inscripcion import activacion, modo
 from ledger import (CandadoOcupado, Ledger, candado_programa, directorio_estado, filas_medicion,
@@ -347,14 +347,41 @@ def programa():
         return None
 
 
-def cuota(ejecutar=subprocess.run):
-    """La cadena no gasta la cuota de GitHub que comparten las demás sesiones."""
+def corte_cuota(ejecutar=subprocess.run, reloj=time.monotonic):
+    """La cadena no gasta la cuota de GitHub que comparten las demás sesiones.
+
+    Devuelve None si la cuota alcanza; si no, el motivo que corta la cadena.
+    """
+    inicio = reloj()
     try:
         salida = ejecutar(["gh", "api", "rate_limit", "--jq", ".resources.core.remaining"],
                           check=True, capture_output=True, text=True, timeout=10).stdout
-        return int(salida) >= CUOTA_MINIMA
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return False
+        restante = int(salida)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        # Sólo la clase: el error de un subproceso trae argv y salida.
+        return {"motivo": "cuota-ilegible", "clase": type(exc).__name__,
+                "lectura_s": round(reloj() - inicio, 1)}
+    return None if restante >= CUOTA_MINIMA else {"motivo": "cuota-baja", "restante": restante}
+
+
+def anotar_corte(repo, corte):
+    """Deja en el ledger por qué el tick no encadenó, si hay un lote vivo y sin pausa."""
+    try:
+        if not (directorio_estado() / "ledger.sqlite3").exists():
+            return
+        ledger = Ledger()
+        try:
+            with ledger.transaccion():
+                estado = ledger.estado(repo, operativo=True)
+                fases = [type(t.fase).__name__ for t in estado.trenes
+                         if not isinstance(t.fase, Terminal)]
+                if estado.pausa is None and fases:
+                    ledger.evento(repo, "cadena-cortada", time.time(), {**corte, "fases": fases})
+        finally:
+            ledger.close()
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+        # Anotar es diagnóstico: un fallo aquí no cambia el resultado del tick.
+        pass
 
 
 def estado_para_espera(repo):
@@ -454,7 +481,11 @@ def ticks(args):
 
     def seguir():
         # La cuota tarda; el programa se compara justo antes del siguiente tick.
-        return inicial is not None and cuota() and vigente()
+        corte = ({"motivo": "programa-ilegible"} if inicial is None else
+                 corte_cuota() or (None if vigente() else {"motivo": "programa-cambiado"}))
+        if corte is not None:
+            anotar_corte(args.repo, corte)
+        return corte is None
 
     def gh(argv, *, timeout, **opciones):
         restante = limite - time.monotonic()

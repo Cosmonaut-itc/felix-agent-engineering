@@ -315,6 +315,25 @@ La cadena termina también en dos casos:
 - A la cuota de la API de GitHub le quedan menos de 1,000 llamadas, o no se
   pudo leer.
 
+Cuando uno de esos dos casos corta la cadena con un lote vivo y sin pausa, el
+tick escribe un evento `cadena-cortada` en `events`. El lote tarda entonces un
+disparo de launchd más por paso, y el evento dice por qué. Su payload trae
+`motivo` y las fases de los lotes vivos en `fases`:
+
+| `motivo` | Qué pasó | Campos |
+|---|---|---|
+| `cuota-baja` | Quedaban menos de 1,000 llamadas. | `restante` |
+| `cuota-ilegible` | `gh api rate_limit` falló o pasó de 10 s. | `clase` del error y `lectura_s` |
+| `programa-cambiado` | Se instaló una versión nueva durante el tick. | |
+| `programa-ilegible` | El programa instalado no pudo leerse al arrancar. | |
+
+El tick consulta la cuota y el programa también cuando la huella no cambió,
+antes de sondear el CI del candidato, y escribe el mismo evento. El evento no
+cambia la huella ni el estado del carril. Un paso que sale con error, una
+huella ilegible y el tope de ocho ticks no escriben evento: el error lo dice
+la línea del tick en `stdout.log`, y el tope se ve como ocho pasos seguidos
+en `events`.
+
 ### Instalar una versión nueva
 
 Todos los carriles corren el mismo programa instalado. Instala con el candado

@@ -695,7 +695,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         reloj = SimpleNamespace(monotonic=lambda: segundos, sleep=dormir,
                                 time=lambda: next(self.reloj))
         with patch.object(cli, 'ARRANQUE', 0), patch.object(cli, 'time', reloj), \
-                patch.object(cli, 'cuota', return_value=True), \
+                patch.object(cli, 'corte_cuota', return_value=None), \
                 patch('adaptadores.jale.time', reloj), \
                 patch.object(self.contexto.observador, 'ci', side_effect=ci), \
                 patch.object(cli, 'GitHubGit', wraps=cli.GitHubGit,

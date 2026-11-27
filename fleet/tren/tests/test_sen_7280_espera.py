@@ -259,7 +259,8 @@ class EsperaActivaTests(unittest.TestCase):
             return codigo, resultado
 
         with patch("sys.argv", ["pao-tren", "tick", "--repo", REPO, "--config", str(config)]), \
-                patch.object(cli, "ARRANQUE", reloj()), patch.object(cli, "cuota", return_value=True), \
+                patch.object(cli, "ARRANQUE", reloj()), \
+                patch.object(cli, "corte_cuota", return_value=None), \
                 patch.object(cli, "intento", intento), patch.object(subprocess, "run", ejecutar), \
                 patch.object(cli, "time", SimpleNamespace(monotonic=reloj, sleep=dormir)), \
                 redirect_stdout(salida):

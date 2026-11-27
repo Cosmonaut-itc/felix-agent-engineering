@@ -91,7 +91,7 @@ class ProcesoTests(unittest.TestCase):
     def correr(self, *opciones, **parches):
         salida = io.StringIO()
         parches = {"activacion": lambda repo: "activo", "huella": lambda repo: None,
-                   "cuota": lambda: False, **parches}
+                   "corte_cuota": lambda: {"motivo": "cuota-baja", "restante": 0}, **parches}
         with ExitStack() as pila:
             pila.enter_context(patch("sys.argv", ["pao-tren", "tick", "--repo", REPO, *opciones]))
             for nombre, valor in parches.items():
@@ -107,7 +107,7 @@ class ProcesoTests(unittest.TestCase):
                     cli.candado_programa(exclusivo=True) as instalador:
                 self.assertTrue(instalador)
                 self.assertEqual(
-                    self.correr(*opciones, Ledger=prohibido, huella=prohibido, cuota=prohibido,
+                    self.correr(*opciones, Ledger=prohibido, huella=prohibido, corte_cuota=prohibido,
                                 programa=prohibido, esperar_ci=prohibido),
                     (0, [{"omitido": "instalacion-en-curso"}]))
         self.assertFalse((self.raiz / "pao-tren/ledger.sqlite3").exists())
@@ -159,7 +159,7 @@ class ProcesoTests(unittest.TestCase):
                     return llamada
 
                 self.assertEqual(
-                    self.correr(*opciones, intento=espiar((0, {})), cuota=espiar(True),
+                    self.correr(*opciones, intento=espiar((0, {})), corte_cuota=espiar(None),
                                 huella=espiar(lambda: next(huellas)), programa=lambda: "igual",
                                 ARRANQUE=float("-inf")),
                     (0, [{}] * (1 if opciones else 2)))
