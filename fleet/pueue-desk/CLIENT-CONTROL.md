@@ -617,17 +617,16 @@ Qué puede cerrar hoy:
   fase finish y cerrar; se reutilizan los validadores de `client_contract.py`.
   No se sustituye held/started por un terminal de otra fase.
 
-Los cuatro adaptadores instalados siguen devolviendo `unsupported`, sin
-leer formatos productivos ni consultar el daemon para reconstruir pertenencia.
-Con ellos, una identidad de hijo `gated`, `sent` o `reaped`, una aceptación
+Jale, apotheca y vigilante siguen devolviendo `unsupported`. Remote-run
+requiere el perfil `filtered` y una instalación acreditada (CC3-P2).
+Sin lector acreditado, una identidad de hijo `gated`, `sent` o `reaped`, una aceptación
 pendiente o un resultado supuesto conservan la reserva y su motivo cerrado.
 La salida del hijo, el reloj y dos observaciones iguales nunca acreditan
 exclusión de mensajes tardíos. Un hijo todavía vivo con el mismo nacimiento
 retiene `rpc_unresolved`; un cambio de generación retiene `startup`.
 Una reserva conocida conserva su recibo y su condición conocida; la falta de
 nueva prueba no fabrica incertidumbre de un RPC que nunca se envió.
-Con Pueue stock, los adaptadores siguen en `unsupported` hasta P2 y el perfil
-`filtered`. Un sello válido permite recoger aunque el emisor siga vivo: «hijo
+Con Pueue stock, un sello válido permite recoger aunque el emisor siga vivo: «hijo
 vivo → `rpc_unresolved`» pasa a ser «emisor vivo **sin sello**». R− (Failure
 de una sola id) cierra el hold inicial sin aceptación ni `hold_identity`,
 junto al rechazo sin envío. S3 y S4 ponen `uncertain:false`, sin cerrar la
@@ -993,8 +992,8 @@ python -I fleet/pueue-desk/tests/mutate_client_contract.py
 
 P1 añade el emisor stock y lo conecta a CC1 y CC2 con el perfil
 `coordinated`. No cambia el cable, `client_contract.py`, los corpus ni Pueue
-4.0.4. Ningún instalador de esta entrega fija `filtered`: `remote-run` sigue
-inerte y los adaptadores, en `unsupported` hasta P2.
+4.0.4. Ningún instalador de esta entrega fija `filtered`. La lectura fija de
+originales de `remote-run` se describe en «Entrega CC3-P2».
 
 - **Emisor.** `client_rpc.py` usa sólo la biblioteca estándar. Lee `dispatch`
   de stdin y deriva de él cada ruta bajo `A/client-rpc/<dispatch>/`. Publica el
@@ -1055,4 +1054,54 @@ tras la intención.
 ```text
 python -I -m unittest discover -s fleet/pueue-desk/tests -p "test_*.py" -v
 (cd fleet/pueue-desk/tests && python -B mutate_client_rpc.py)
+```
+
+## Entrega CC3-P2
+
+- **Instalación local.** CC1 y CC2 usan el mismo registro fijo. Sólo
+  `remote-run` puede usar `client_remote_run.py`. Requiere el perfil
+  `filtered` y un archivo privado 0600 `remote-run-adapter.json` en el
+  directorio local de autoridad. Ese archivo tiene el esquema
+  `remote-run-adapter@1`, una ruta absoluta `root` y una lista no vacía
+  `artifacts` de objetos `{producer, worker}`. Cada objeto liga el SHA-256
+  de una copia acreditada al contrato `remote-run-no-payload@1`. Los
+  instaladores de esta entrega conservan `coordinated`; la habilitación
+  por host corresponde a CC7. `coordinated_reorder` sigue apagada.
+- **Pertenencia e intento.** Se valida el token antes de abrir la raíz
+  local y su hijo exacto por descriptor. Se verifican dueño, tipo,
+  permisos, enlace único y tamaño de los originales. Se coteja el inode
+  al terminar la lectura. El binding @2 debe repetir los bytes de su
+  ancla de alta, acreditar los bytes de la copia local de `pueue.py` y
+  enlazar el intento de alta por el puntero current. El lector relee ese
+  puntero después de usarlo. Los JSON son UTF-8, con campos cerrados y
+  límite de 16 384 bytes; para el hash del productor se admiten hasta
+  1 MiB. La copia del productor sólo aporta bytes a ese hash.
+- **Observación.** Basta la proyección de ID, grupo, creación, estado y
+  tiempos del daemon. Se coteja el grupo con el binding y el perfil
+  instalado, incluido `caja` donde pertenece a ese perfil. La generación
+  del binding es SHA-256 de la generación de autoridad, como publica H1.
+  Una referencia inexistente devuelve `not_found`; si falta el directorio
+  de una reserva devuelve `evidence_missing` y la retiene. Un intento o
+  grupo cruzado devuelve `identity`. Una generación distinta devuelve
+  `startup` en las fases y en la recogida. Capabilities conserva su enum
+  CC0 de tres motivos. El intento nuevo se acredita sólo con procedencia
+  publicada; H1 publica la revisión 1 de alta.
+- **Verificación y cierre.** El lector verifica modo, selección y
+  aceptación contra los originales exactos por digest. En `finish`,
+  completion @1 liga la aceptación al nacimiento y al resultado del
+  mismo worker. El cierre exige Done vivo del mismo intento y una fase
+  `started` o `signalled` ya acreditada. En una retirada propia exige
+  su original de arbitraje y la fase `retired` acreditada por PAO. CC2
+  recopila observación y posible `finish` fuera del candado y vuelve a
+  verificar los originales locales antes de aplicarlos. La recogida
+  consulta el daemon sólo para acciones con evidencia aplicable. Los
+  sellos y `rpc_verdict` conservan la autoría de `settled` y
+  `effect_applied`.
+
+Las pruebas sintéticas publican originales H1 y ejercitan la consulta,
+el cierre autónomo y las lecturas de evidencia ausente o sustituida.
+
+```text
+python -I -m unittest discover -s fleet/pueue-desk/tests -p "test_client_remote_run.py" -v
+(cd fleet/pueue-desk/tests && python -B mutate_client_remote_run.py)
 ```

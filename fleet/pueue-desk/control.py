@@ -1806,6 +1806,10 @@ class MiniControl:
         # Native birth; a private harness may install a synthetic one, never the wire.
         return getattr(self, 'client_birth', None) or priority_helper().birth
 
+    def client_actions_options(self):
+        return dict(adapter=getattr(self, 'client_adapter', None),
+                    birth=self.client_birth_reader(), exclusion=self.client_exclusion)
+
     def rpc_endpoint(self, authority):
         # The runtime directory follows the accredited PID; the secret follows
         # the data directory validated by preparar. Older authorities use the
@@ -1833,17 +1837,13 @@ class MiniControl:
                 # Keep the guard/preparer's exclusion until its normal exit.
                 handles[-1].client_pending[self.directory.resolve()] = (self, offline)
                 return 0
-            return client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
-                                             birth=self.client_birth_reader(),
-                                             exclusion=self.client_exclusion).run(offline=offline)
+            return client_module().Reconciler(self, **self.client_actions_options()).run(offline=offline)
         except ADMISSION_ERRORS:
             return 0  # Collection failure cannot suppress the protective guard.
 
     def client_reconcile_turn(self, offline=None):
         try:
-            reconciler = client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
-                                                    birth=self.client_birth_reader(),
-                                                    exclusion=self.client_exclusion)
+            reconciler = client_module().Reconciler(self, **self.client_actions_options())
             return reconciler, offline, reconciler.protected_turn(offline)
         except ADMISSION_ERRORS:
             return None  # The guard has already run; retry on its next turn.
@@ -3272,8 +3272,7 @@ def main():
                       env=dict(HOME=str(Path.home()), PATH='/usr/bin:/bin:/opt/homebrew/bin', LANG='C'), cwd=Path.home())
         pueue.timeout = 1.0  # Client reads cannot hold control.lock indefinitely.
         engine = MiniControl(pueue, directory, host=host)
-        return client_module().main(engine, sys.stdin.buffer, sys.stdout, birth=priority_helper().birth,
-                                    exclusion=engine.client_exclusion)
+        return client_module().main(engine, sys.stdin.buffer, sys.stdout, **engine.client_actions_options())
     if args.sin_efecto and args.command != 'resolver-admision':
         parser.error('--sin-efecto sólo para resolver-admision')
     if args.command == 'resolver-admision' and (args.host != 'desk' or args.group is not None):
