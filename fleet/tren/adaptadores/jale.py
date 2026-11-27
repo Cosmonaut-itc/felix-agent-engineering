@@ -28,6 +28,7 @@ PLAZO_PRELANZAMIENTO_S = 5
 PLAZO_CANCELACION_S = 30
 SIN_IMPEDIMENTO = object()
 EN_CURSO = object()
+CAMPO_DUPLICADO = object()
 
 
 def especulativa(registro):
@@ -104,10 +105,38 @@ def identidad_boat_pendiente(registro):
 def objeto(pares):
     resultado = {}
     for k, v in pares:
-        if k in resultado:
-            raise ValueError('campo duplicado')
-        resultado[k] = v
+        resultado[k] = CAMPO_DUPLICADO if k in resultado else v
     return resultado
+
+
+def sin_campos_duplicados(valor):
+    pendientes = [valor]
+    while pendientes:
+        actual = pendientes.pop()
+        if actual is CAMPO_DUPLICADO:
+            return False
+        if isinstance(actual, dict):
+            pendientes.extend(actual.values())
+        elif isinstance(actual, list):
+            pendientes.extend(actual)
+    return True
+
+
+def resultados_por_caso(casos):
+    if not isinstance(casos, list):
+        return None
+    resultados = {}
+    for caso in casos:
+        if not isinstance(caso, dict):
+            return None
+        identidad_caso = caso.get('caso')
+        resultado = caso.get('resultado')
+        if (not isinstance(identidad_caso, str) or not identidad_caso or
+                identidad_caso in resultados or
+                resultado not in ('pasa', 'falla', 'omitida', 'recuperada')):
+            return None
+        resultados[identidad_caso] = resultado
+    return resultados
 
 
 def leer_recibo(log, codigo, commit, modo, filtros, *, host):
@@ -141,6 +170,16 @@ def leer_recibo(log, codigo, commit, modo, filtros, *, host):
         r = json.loads(base64.b64decode(match[1], validate=True).decode('utf-8'),
                        object_pairs_hook=objeto)
     except ValueError:
+        return RechazoLanzador(str(log), 'recibo-malformado')
+    # La evidencia opcional inválida se descarta sin invalidar la unidad.
+    unidades = r.get('unidades') if isinstance(r, dict) else None
+    if isinstance(unidades, list):
+        for u in unidades:
+            if isinstance(u, dict) and 'casos' in u and (
+                    resultados_por_caso(u['casos']) is None or
+                    not sin_campos_duplicados(u['casos'])):
+                u.pop('casos')
+    if not sin_campos_duplicados(r):
         return RechazoLanzador(str(log), 'recibo-malformado')
     exigir(isinstance(r, dict) and r.get('esquema') == 'jale-recibo@1', 'esquema-desconocido')
     exigir(sha(commit) and r.get('sha') == commit, 'sha-no-corresponde')
@@ -655,17 +694,22 @@ class Jale:
         base = self.cache_de_base(candidato, commit, fallo)
         exigir(not reanudar or reanudar == str(raiz), 'reanudar-no-corresponde')
         origen = leer_json(suite)
-        exigir(isinstance(origen, list) and all(isinstance(r, dict) for r in origen) and
-            any(r.get('sha') == candidato.C and r.get('modo') == fallo.check and
-                isinstance(r.get('unidades'), list) and any(isinstance(u, dict) and
-                    u.get('unidad') == fallo.unidad for u in r['unidades'])
-                for r in origen), 'origen-no-corresponde')
+        exigir(isinstance(origen, list) and all(isinstance(r, dict) for r in origen),
+               'origen-no-corresponde')
+        unidades = [u for r in origen if r.get('sha') == candidato.C and
+                    r.get('modo') == fallo.check and isinstance(r.get('unidades'), list)
+                    for u in r['unidades'] if isinstance(u, dict) and
+                    u.get('unidad') == fallo.unidad]
+        exigir(bool(unidades), 'origen-no-corresponde')
+        resultados = (resultados_por_caso(unidades[0].get('casos'))
+                      if len(unidades) == 1 and unidades[0].get('resultado') == 'falla' else None)
+        casos_fallidos = {caso for caso, resultado in (resultados or {}).items() if resultado == 'falla'}
         if permitir_lanzar and commit not in (candidato.B, candidato.C) and not any(
                 (raiz / n / str(intento) / 'solicitud.json').exists() for n in ('1', '2')):
             exigir(self.git is not None, 'subconjunto-sin-git')
             publicado = self.git.publicar('subconjunto-' + clave(tren_id, commit), commit)
             exigir(isinstance(publicado, Publicado), 'subconjunto-no-publicado')
-        return raiz, base
+        return raiz, base, casos_fallidos
 
     def cache_de_base(self, candidato, commit, fallo):
         return (self.estado / clave('base', commit, fallo.check, fallo.unidad)
@@ -688,7 +732,7 @@ class Jale:
         lanzadas = []
         try:
             for solicitud, commit in islice(pedidos, self.repeticiones_paralelas - 1):
-                raiz, base = self.preparar_repeticion(candidato, suite, solicitud, commit, tren_id)
+                raiz, base, _ = self.preparar_repeticion(candidato, suite, solicitud, commit, tren_id)
                 fallo = solicitud.fallo
                 indice = self.indice_adelantos(tren_id)
                 indice.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -702,8 +746,8 @@ class Jale:
 
     def repetir(self, candidato, suite, solicitud, commit, tren_id, intento=0, reanudar='',
                 permitir_lanzar=True, *, reenganche=None):
-        raiz, base = self.preparar_repeticion(candidato, suite, solicitud, commit, tren_id,
-                                              reanudar, permitir_lanzar, intento=intento)
+        raiz, base, casos_fallidos = self.preparar_repeticion(
+            candidato, suite, solicitud, commit, tren_id, reanudar, permitir_lanzar, intento=intento)
         fallo = solicitud.fallo
         filtros = (fallo.unidad,)
         fallo_al_lanzar = None
@@ -769,9 +813,12 @@ class Jale:
                 continue
             if isinstance(r, dict) and r['codigo'] != 75:
                 u = r['unidades'][0]
+                resultados = resultados_por_caso(u.get('casos')) or {}
                 intentos.append(Intento(n, 'omitida' if u['resultado'] == 'no-corrida' else
                     u['resultado'], u['firma'], u['duracion_s'], str(ultimo.parent),
-                    json.dumps(r['huella_entorno'], sort_keys=True)))
+                    json.dumps(r['huella_entorno'], sort_keys=True),
+                    caso_ejecutado=bool(casos_fallidos) and all(
+                        resultados.get(caso) == 'pasa' for caso in casos_fallidos)))
                 continue
             impedimento = r
             if not paralelo:
