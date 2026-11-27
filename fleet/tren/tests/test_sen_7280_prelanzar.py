@@ -2,6 +2,7 @@
 from dataclasses import replace
 from itertools import count
 import json
+from pathlib import Path
 import shlex
 import sqlite3
 import subprocess
@@ -282,12 +283,12 @@ class TickActivoTests(Productor, unittest.TestCase):
     def tick(self, frontera=None):
         return self.cli('tick', '--config', str(self.privada), frontera=frontera)
 
-    def hasta(self, fase):
+    def hasta(self, fase, indice=0):
         for _ in range(8):
             resultado = self.tick()
             trenes = self.estado().trenes
-            if trenes and isinstance(trenes[0].fase, fase):
-                return trenes[0], resultado
+            if trenes and isinstance(trenes[indice].fase, fase):
+                return trenes[indice], resultado
         self.fail('fase no alcanzada: ' + fase.__name__)
 
     def eventos(self, tipo):
@@ -383,7 +384,7 @@ class TickActivoTests(Productor, unittest.TestCase):
                                       (REPO, 'suite-prelanzada-sin-leer'))
             self.assertCountEqual([json.loads(fila[0]) for fila in filas], esperado)
 
-    def test_ci_rojo_registra_los_modos_sin_leer(self):
+    def test_ci_rojo_rearma_y_no_acredita_suites_prelanzadas_sin_verde(self):
         tren, _ = self.hasta(EsperandoCI)
         self.ci = 'verde'
 
@@ -395,6 +396,26 @@ class TickActivoTests(Productor, unittest.TestCase):
             self.tick(detener)
         self.ci = 'rojo'
         self.assert_sin_leer_por_modo(tren)
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
+        self.ci = 'pendiente'
+        nuevo, _ = self.hasta(EsperandoCI, -1)
+        self.assertNotEqual(nuevo.id, tren.id)
+        self.assertEqual(nuevo.fase.candidato.C, tren.fase.candidato.C)
+        self.assertEqual(nuevo.fase.solicitud, 1)
+        raiz = Jale(self.lanzador).estado
+        for modo in ('contract', 'e2e'):
+            self.esperar_archivo(raiz / clave('suite', nuevo.id) / modo / '0' / 'codigo.json')
+        resultado = self.tick()
+        self.assertEqual(self.estado().trenes[-1], nuevo)
+        self.assertFalse(any(f['efecto']['tipo'] == 'iniciar-suite' for f in resultado['outbox']))
+        for id_tren in (tren.id, nuevo.id):
+            for modo in ('contract', 'e2e'):
+                self.assertFalse((raiz / clave('suite', id_tren) / modo / '0' / 'confirmada.json').exists())
+        self.ci = 'verde'
+        certificado, _ = self.hasta(Certificado, -1)
+        self.assertEqual(certificado.fase.ci, 'github:' + nuevo.fase.candidato.C +
+                         ':tren/' + nuevo.id + '-ci-1')
+        self.assertEqual(Path(certificado.fase.suite).parent, raiz / clave('suite', nuevo.id))
 
     def abortar(self, tren):
         self.cli('juicio', '--tren', tren.id, '--decision', 'abortar', '--motivo', 'prueba')
@@ -497,11 +518,11 @@ class TickActivoTests(Productor, unittest.TestCase):
             self.esperar_archivo(registro / 'listo')
             self.assertEqual(json.loads((registro / 'predecesoras-activas.json').read_text()), [])
 
-    def test_partido_cancela_y_suelta_antes_de_prelanzar_sucesor(self):
+    def test_rearme_cancela_y_suelta_antes_de_prelanzar_sucesor(self):
         tren, registros = self.lote_con_prelanzadas()
         self.ci = 'rojo'
         self.tick()
-        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
         self.assert_canceladas(registros)
         self.assert_avisos_cancelacion(tren, 2, True)
         adaptador = Jale(self.lanzador, prelanzar=True)
@@ -511,13 +532,13 @@ class TickActivoTests(Productor, unittest.TestCase):
         (self.raiz / 'predecesor.json').write_text(json.dumps(list(map(str, registros))))
         self.assert_sucesor_sin_candados(self.esperar_sucesor_ci(tren))
 
-    def test_partido_aplaza_con_candado_y_prelanza_en_el_tick_siguiente_a_la_salida(self):
+    def test_rearme_aplaza_con_candado_y_prelanza_en_el_tick_siguiente_a_la_salida(self):
         tren, registros = self.lote_con_prelanzadas()
         (self.raiz / 'retener-cancelacion').touch()
         self.ci = 'rojo'
         with patch('adaptadores.jale.PLAZO_CANCELACION_S', .5):
             self.tick()
-        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
         self.assert_avisos_cancelacion(tren, 2, False)
         for registro in registros:
             self.esperar_archivo(registro / 'term')
@@ -563,10 +584,10 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.abortar_con_head_cambiado(tren)
         self.comprobar_cierre_con_confirmadas(tren, registros, efecto, 'ABORTADO')
 
-    def test_partido_cancela_confirmadas_antes_de_prelanzar_sucesor(self):
+    def test_rearme_cancela_confirmadas_antes_de_prelanzar_sucesor(self):
         tren, registros, efecto = self.lote_con_confirmadas()
         self.ci = 'rojo'
-        self.comprobar_cierre_con_confirmadas(tren, registros, efecto, 'PARTIDO')
+        self.comprobar_cierre_con_confirmadas(tren, registros, efecto, 'REARMAR')
 
     def test_aborto_aplaza_por_candados_de_suite_reanudada(self):
         tren, registros, efecto = self.lote_con_confirmadas(intento=1)
@@ -686,7 +707,7 @@ class TickActivoTests(Productor, unittest.TestCase):
             segundos += duracion
 
         def ci(repo, commit, rama=None):
-            if commit == tren.fase.candidato.C:
+            if commit == tren.fase.candidato.C and rama is None:
                 if segundos == 80:
                     dormir(11)  # El cuarto sondeo devuelve rojo a los 91 s.
                 if segundos >= 91:
@@ -708,7 +729,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertTrue(all(codigo == 0 for codigo, _ in pasos), pasos)
         self.assertLess(segundos, 120, f'el tick terminó a los {segundos:g} s')
         predecesor, sucesor = self.estado().trenes
-        self.assertEqual(predecesor.fase, Terminal('PARTIDO'))
+        self.assertEqual(predecesor.fase, Terminal('REARMAR'))
         self.assertIsInstance(sucesor.fase, EsperandoCI)
         self.assert_avisos_cancelacion(tren, 2, False)
         for registro in registros:
@@ -849,7 +870,7 @@ class TickActivoTests(Productor, unittest.TestCase):
             (registro / 'codigo.json').rename(registro / 'codigo-anterior.json')
         self.ci = 'rojo'
         self.tick()
-        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
         avisos = self.eventos('suite-prelanzada-sin-leer')
         self.assertEqual([a['error_cancelacion'] for a in avisos], ['coordinador-ausente'] * 2)
         self.assertTrue(all((r / 'cancelar.json').exists() for r in registros))
@@ -867,7 +888,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         with patch('adaptadores.jale.guardar', side_effect=guardar_sin_permiso), \
                 patch('adaptadores.jale.PLAZO_CANCELACION_S', .5):
             self.tick()
-        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
         avisos = {a['modo']: a for a in self.eventos('suite-prelanzada-sin-leer')}
         self.assertEqual(avisos['contract']['error_cancelacion'], 'PermissionError')
         self.assertFalse(avisos['contract']['cancelacion_pedida'])

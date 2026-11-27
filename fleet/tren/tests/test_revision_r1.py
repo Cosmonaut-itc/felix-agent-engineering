@@ -23,7 +23,7 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
             return subprocess.run(args, **kwargs)
 
         self.git.ejecutar = sin_enviar
-        resultado = ejecutar(efecto, estado, obs, self.git)
+        resultado = self.promover(efecto, estado, obs)
         self.git.ejecutar = subprocess.run
         self.assertTrue(any("push" in args for args in llamadas))
         self.assertTrue(resultado.completo)
@@ -71,11 +71,11 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
             self.assertEqual(efectos, ())
             self.assertEqual(estado.trenes[0].fase.intentos, 1)
         self.assertEqual(self.remoto(), self.B)
-        sana = replace(fresca, prs=obs.prs)
+        sana = self.ci_verde(estado, replace(fresca, prs=obs.prs))
         siguiente, efectos = paso(estado, sana)
         self.assertEqual(paso(estado, sana), (siguiente, efectos))
         self.assertEqual(efectos, (efecto_promover(estado.trenes[0].id, 2),))
-        llegada = ejecutar(efectos[0], siguiente, sana, self.git)
+        llegada = self.promover(efectos[0], siguiente, sana)
         final, efectos = paso(siguiente, llegada.observacion)
         self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
         self.assert_status_aterrizaje(final, efectos)
@@ -95,7 +95,7 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
             estado, efectos = paso(estado, retenida)
             self.assertEqual(efectos, ())
             self.assertEqual(estado.trenes[0].fase.intentos, intento)
-            sana = replace(obs, main=None, tren_id="", intento_promocion=0)
+            sana = self.ci_verde(estado, replace(obs, main=None, intento_promocion=0))
             estado, efectos = paso(estado, sana)
             if intento == LIMITE_PROMOCION:
                 self.assertEqual(estado.pausa, Pausa("promocion-rechazada"))
@@ -110,7 +110,7 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
                     return subprocess.CompletedProcess(args, 1, "", "sin enviar")
                 return subprocess.run(args, **kwargs)
             self.git.ejecutar = sin_enviar
-            obs = ejecutar(efectos[0], estado, sana, self.git).observacion
+            obs = self.promover(efectos[0], estado, sana).observacion
             self.git.ejecutar = subprocess.run
         self.assertEqual(len(claves), LIMITE_PROMOCION)
         self.assertEqual(self.remoto(), self.B)
@@ -143,7 +143,7 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
     def test_tick_tras_aterrizar_no_caduca_pr_merged(self):
         estado, candidato, obs = self.armar()
         estado, efecto = self.certificar(estado, candidato, obs)
-        llegada = ejecutar(efecto, estado, obs, self.git)
+        llegada = self.promover(efecto, estado, obs)
         cerradas = tuple(replace(v, abierto=False) for v in obs.prs)
         estado, efectos = paso(estado, replace(llegada.observacion, prs=cerradas))
         self.assertEqual(estado.trenes[0].fase, Terminal("ATERRIZADO"))
@@ -166,7 +166,7 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
             return subprocess.run(args, **kwargs)
 
         self.git.ejecutar = sin_lectura
-        pendiente = ejecutar(efecto, estado, obs, self.git)
+        pendiente = self.promover(efecto, estado, obs)
         self.assertFalse(pendiente.completo)
         self.assertIsInstance(pendiente.observacion.main, Incierto)
         self.assertEqual(self.remoto(), candidato.C)
@@ -243,7 +243,7 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
         evento["trenes"][0]["fase"].pop("reintento_pendiente", None)
         anterior = desde_datos(evento)
         self.assertEqual(anterior, estado)
-        llegada = ejecutar(efecto, anterior, obs, self.git)
+        llegada = self.promover(efecto, anterior, obs)
         final, _ = paso(anterior, llegada.observacion)
         self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
 

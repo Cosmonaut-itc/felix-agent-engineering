@@ -68,6 +68,22 @@ class Contexto:
         main = self.git_texto(self.config["remoto"], "rev-parse", "main")
         if "/git/ref/heads/main" in endpoint:
             valor = {"object": {"sha": main}}
+        elif "/check-suites?" in endpoint or (
+                "/check-runs?" in endpoint and "&filter=all" in endpoint):
+            head = endpoint.split("/")[4]
+            ramas = self.git_texto(self.config["remoto"], "for-each-ref", "--points-at", head,
+                                  "--format=%(refname:short)", "refs/heads/tren/").splitlines()
+            suites = [{"id": n, "head_sha": head, "head_branch": rama}
+                      for n, rama in enumerate(ramas, 1)]
+            if "/check-suites?" in endpoint:
+                valor = [{"check_suites": suites}]
+            else:
+                if (self.raiz / "fallo-ci").exists():
+                    raise subprocess.CalledProcessError(1, argv, stderr="dato privado")
+                pendiente = (self.raiz / "ci-pendiente").exists()
+                valor = [{"check_runs": [{"id": s["id"], "name": "check", "head_sha": head,
+                    "check_suite": {"id": s["id"]}, "status": "in_progress" if pendiente else "completed",
+                    "conclusion": None if pendiente else "success"} for s in suites]}]
         elif "/check-runs?" in endpoint:
             fallo = self.raiz / "fallo-ci"
             if fallo.exists():

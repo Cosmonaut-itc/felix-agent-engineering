@@ -69,11 +69,14 @@ class Entrada:
     terminal: Optional['Terminal'] = None
     # Sólo doble camino: instante observado de caducidad, sin borrar admisión.
     caducada: Optional[float] = None
-    # Ligada al recibo: conserva el aislamiento hasta resolver la entrega.
+    # Ligada al recibo: conserva el aislamiento mientras se busca al culpable.
     partida: bool = False
-    # Liberada por un rearmado antes de la suite: conserva su FIFO, como si
-    # siguiera en EsperandoCI, hasta entrar al lote siguiente.
+    # Liberada por rearme temprano o al resolver una partición: conserva su
+    # FIFO hasta entrar al lote siguiente.
     rearmada: bool = False
+    particion: Optional[str] = None
+    rearme_ci: Optional[str] = None
+    ci_ref_nueva: bool = False
 
 
 @dataclass(frozen=True)
@@ -329,6 +332,7 @@ class Certificado:
     ci: str
     # Defaults keep snapshots/events written by U1 readable.
     B: str = ""
+    ci_pendiente_desde: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -357,6 +361,7 @@ class Promoviendo:
     intentos: int = 1
     # EnBase ya recibido; la admisión puede diferir el siguiente intento.
     reintento_pendiente: bool = False
+    reintento_autorizado: bool = False
 
 
 @dataclass(frozen=True)
@@ -540,6 +545,12 @@ def aterrizaje(estado, tren, observacion):
         if isinstance(lectura, Aterrizado) and lectura.arbol == cert.arbol:
             fase = Terminal("ATERRIZADO")
             efectos = efectos_status(tren, "avisar-aterrizaje")
+            miembros = tuple(e for e in estado.entradas if e.entrega.recibo in tren.recibos)
+            estado = replace(estado, entradas=tuple(
+                replace(e, rearme_ci=None, ci_ref_nueva=False) if e in miembros
+                else e for e in estado.entradas))
+            estado = cambiar_fase(estado, tren, fase)
+            return liberar_particiones(estado, miembros), efectos
         elif isinstance(lectura, BloqueoPrevia):
             return pausar_previa(estado, lectura.motivo), ()
         elif isinstance(lectura, EnBase):
@@ -553,15 +564,16 @@ def aterrizaje(estado, tren, observacion):
                                        else t for t in estado.trenes)), efectos
 
 
-def rearmar(estado, tren, temprano=False):
-    """C ya no aterriza sobre main: cierra el tren y devuelve sus miembros a la fila.
+def rearmar(estado, tren, temprano=False, rojo_ci=False):
+    """Cierra el tren y devuelve sus miembros a la fila.
 
     Las fechas FIFO no cambian; el reductor congela el lote siguiente sobre main.
     """
     return replace(estado,
         trenes=tuple(replace(t, fase=Terminal("REARMAR")) if t.id == tren.id else t
                      for t in estado.trenes),
-        entradas=tuple(replace(e, tren=None, rearmada=temprano)
+        entradas=tuple(replace(e, tren=None, rearmada=temprano or e.rearmada,
+                               rearme_ci=tren.id if rojo_ci else e.rearme_ci)
                        if e.entrega.recibo in tren.recibos
                        else e for e in estado.entradas))
 
@@ -598,12 +610,96 @@ def rama_ci(tren):
 
 def recibo_ci(tren):
     """Identidad durable de C y, al reanudar, de la solicitud publicada."""
+    cert = certificado_de(tren.fase)
+    if cert is not None:
+        inicial = "github:" + cert.C
+        prefijo = inicial + ":tren/" + tren.id + "-ci-"
+        numero = cert.ci[len(prefijo):] if cert.ci.startswith(prefijo) else ""
+        return cert.ci if numero.isascii() and numero.isdigit() and numero[0] != "0" else inicial
     return "github:" + tren.fase.candidato.C + (
         ":tren/" + rama_ci(tren) if tren.fase.solicitud else "")
 
 
+def certificado_de(fase):
+    if isinstance(fase, Promoviendo):
+        return fase.certificado
+    return fase if isinstance(fase, Certificado) else None
+
+
+def cambiar_plazo_ci_promocion(estado, tren, desde):
+    cert = replace(certificado_de(tren.fase), ci_pendiente_desde=desde)
+    fase = replace(tren.fase, certificado=cert) if isinstance(tren.fase, Promoviendo) else cert
+    return cambiar_fase(estado, tren, fase)
+
+
+def solo_por_vista(vista):
+    return bool(vista and (vista.requiere_solo or vista.ventana is not None))
+
+
+def liberar_particiones(estado, resueltas):
+    particiones = {e.particion for e in resueltas if e.particion is not None}
+    if not particiones:
+        return estado
+    terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
+    return replace(estado, entradas=tuple(
+        replace(e, partida=False, particion=None, rearmada=True)
+        if e.particion in particiones and e.tren not in terminales and e.terminal is None
+        and not isinstance(e.admision, Rechazado) else e
+        for e in estado.entradas))
+
+
 SALIDAS_CI = {"verde": "suite", "rojo": "separar-o-devolver", "pendiente": "esperar"}
 PLAZO_CI = 3600
+
+
+def lectura_ci(tren, observacion):
+    if observacion.tren_id != tren.id or observacion.ci_recibo != recibo_ci(tren):
+        return "pendiente"
+    if observacion.ci_candidato == "rojo" and not (
+            isinstance(observacion.ci_rojos, (tuple, list)) and observacion.ci_rojos and
+            all(isinstance(n, str) and n.strip() for n in observacion.ci_rojos)):
+        return "pendiente"
+    return observacion.ci_candidato
+
+
+def cerrar_por_ci_rojo(estado, tren, B, C, rojos):
+    if len(tren.recibos) > 1:
+        if not any(e.rearme_ci for e in estado.entradas if e.entrega.recibo in tren.recibos):
+            return rearmar(estado, tren, temprano=True, rojo_ci=True), ()
+        estado = cambiar_fase(estado, tren, Terminal("PARTIDO"))
+        return replace(estado, entradas=tuple(
+            replace(e, tren=None, solo=True, partida=True, particion=tren.id)
+            if e.entrega.recibo in tren.recibos else e for e in estado.entradas)), ()
+    entrada = next(e for e in estado.entradas if e.entrega.recibo == tren.recibos[0])
+    entrega = entrada.entrega
+    payload = json.dumps({"lote": tren.id, "B": B, "C": C,
+        "pr": entrega.pr, "head": entrega.head, "fallos": [], "ci_rojos": rojos}, sort_keys=True)
+    efecto = Efecto(clave("devolver", tren.id, entrega.recibo), "devolver",
+                    (tren.id, entrega.recibo, payload))
+    estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
+    estado = replace(estado, entradas=tuple(
+        replace(e, terminal=Terminal("DEVUELTO"), rearme_ci=None, ci_ref_nueva=False)
+        if e == entrada else e
+        for e in estado.entradas))
+    return liberar_particiones(estado, (entrada,)), (efecto,)
+
+
+def avanzar_ci_promocion(estado, tren, observacion):
+    cert = certificado_de(tren.fase)
+    lectura = lectura_ci(tren, observacion)
+    if lectura == "verde":
+        if cert.ci_pendiente_desde is not None:
+            estado = cambiar_plazo_ci_promocion(estado, tren, None)
+        return estado, (), True
+    if lectura == "rojo":
+        nuevo, efectos = cerrar_por_ci_rojo(estado, tren, cert.B, cert.C, observacion.ci_rojos)
+        return nuevo, efectos, False
+    if cert.ci_pendiente_desde is None:
+        estado = cambiar_plazo_ci_promocion(estado, tren, observacion.ahora)
+    elif observacion.ahora - cert.ci_pendiente_desde >= PLAZO_CI:
+        estado = replace(estado, pausa=Pausa("infraestructura",
+                                            detalle="pre-aterrizaje:ci-sin-resultado"))
+    return estado, (), False
 
 
 def avanzar_ci(estado, tren, observacion):
@@ -613,31 +709,10 @@ def avanzar_ci(estado, tren, observacion):
         # Snapshots anteriores a U16: empezar el plazo al primer tick nuevo.
         fase = replace(fase, desde=observacion.ahora)
         estado = cambiar_fase(estado, tren, fase)
-    ligada = (observacion.tren_id == tren.id and
-              observacion.ci_recibo == recibo_ci(tren))
-    lectura = observacion.ci_candidato if ligada else "pendiente"
-    if lectura == "rojo" and not (isinstance(observacion.ci_rojos, (tuple, list)) and
-            observacion.ci_rojos and all(
-            isinstance(n, str) and n.strip() for n in observacion.ci_rojos)):
-        lectura = "pendiente"
+    lectura = lectura_ci(tren, observacion)
     salida = SALIDAS_CI.get(lectura, "esperar")
     if salida == "separar-o-devolver":
-        if len(tren.recibos) > 1:
-            estado = cambiar_fase(estado, tren, Terminal("PARTIDO"))
-            return replace(estado, entradas=tuple(
-                replace(e, tren=None, solo=True, partida=True)
-                if e.entrega.recibo in tren.recibos else e for e in estado.entradas)), ()
-        entrada = next(e for e in estado.entradas if e.entrega.recibo == tren.recibos[0])
-        entrega = entrada.entrega
-        payload = json.dumps({"lote": tren.id, "B": fase.candidato.B,
-            "C": fase.candidato.C, "pr": entrega.pr, "head": entrega.head,
-            "fallos": [], "ci_rojos": observacion.ci_rojos}, sort_keys=True)
-        efecto = Efecto(clave("devolver", tren.id, entrega.recibo), "devolver",
-                        (tren.id, entrega.recibo, payload))
-        estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
-        return replace(estado, entradas=tuple(
-            replace(e, terminal=Terminal("DEVUELTO")) if e == entrada else e
-            for e in estado.entradas)), (efecto,)
+        return cerrar_por_ci_rojo(estado, tren, fase.candidato.B, fase.candidato.C, observacion.ci_rojos)
     if (salida == "esperar" and not observacion.suite_de_ci_vigente and
             observacion.ahora - fase.desde >= PLAZO_CI):
         return replace(estado, pausa=Pausa("infraestructura", detalle="ci-sin-resultado")), ()
@@ -739,7 +814,8 @@ def separar_devueltos(estado, tren, base, culpables, efectos):
     estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
     nuevo_id = clave("sobrevivientes", tren.id, sobrevivientes)
     estado = replace(estado, entradas=tuple(
-        replace(e, terminal=Terminal("DEVUELTO")) if e.entrega.recibo in tren.recibos and
+        replace(e, terminal=Terminal("DEVUELTO"), rearme_ci=None, ci_ref_nueva=False)
+        if e.entrega.recibo in tren.recibos and
         e.entrega.pr in culpables else replace(e, tren=nuevo_id) if
         e.entrega.recibo in sobrevivientes else e for e in estado.entradas))
     if sobrevivientes:
@@ -747,7 +823,8 @@ def separar_devueltos(estado, tren, base, culpables, efectos):
         estado = replace(estado, trenes=estado.trenes + (nuevo,))
         efectos.append(Efecto(clave("armar", nuevo_id), "armar-candidato", (nuevo_id,)))
         efectos.extend(efectos_status(nuevo, "avisar-en-tren"))
-    return estado, tuple(efectos)
+    devueltos = (entradas[r] for r in tren.recibos if entradas[r].entrega.pr in culpables)
+    return liberar_particiones(estado, devueltos), tuple(efectos)
 
 
 def archivos_acreditados(fase, observacion):
@@ -925,10 +1002,21 @@ def paso(estado, observacion):
         from juicios import resolver
         return resolver(estado, observacion)
     activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
+    cert_vencido = None
+    if not estado.pausa and activos:
+        tren = activos[0]
+        if (isinstance(tren.fase, Certificado) and tren.fase.B and observacion.base and
+                observacion.base != tren.fase.B and lectura_ci(tren, observacion) != "verde"):
+            cert_vencido = tren.id
     if not estado.pausa and activos and isinstance(activos[0].fase, Promoviendo):
         tren = activos[0]
         fase = tren.fase
-        if not (fase.reintento_pendiente and observacion.main is None):
+        if observacion.main is None and not fase.reintento_pendiente:
+            # Si main sigue en B, el rojo puede cerrar tras readmitir los heads.
+            if lectura_ci(tren, observacion) != "rojo" or observacion.base != fase.certificado.B:
+                nuevo, efectos, _ = avanzar_ci_promocion(estado, tren, observacion)
+                return nuevo, efectos
+        elif observacion.main is not None:
             estado, efectos = aterrizaje(estado, tren, observacion)
             # Sólo EnBase del intento vigente permite readmitir y reintentar.
             lectura = observacion.main
@@ -940,6 +1028,8 @@ def paso(estado, observacion):
                 return estado, efectos
     efectos = []
     entradas = []
+    rechazadas = []
+    solo_vistas = {}
     vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
     # A landed PR closes as merged; its delivery is settled, not expired.
     terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
@@ -950,6 +1040,7 @@ def paso(estado, observacion):
                            if estado.pausa and isinstance(t.fase, Promoviendo)
                            and not t.fase.reintento_pendiente}
     esperando_ci = {t.id for t in activos if isinstance(t.fase, EsperandoCI)}
+    antes_de_ci = {t.id for t in activos if isinstance(t.fase, (Congelado, Armado))}
     for entrada in estado.entradas:
         entrega = entrada.entrega
         vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
@@ -959,7 +1050,8 @@ def paso(estado, observacion):
             continue
         decision = admision_entrada(entrada, vistas, observacion)
         if decision == Rechazado(Motivo.HEAD):
-            entrada = replace(entrada, admision=Rechazado(Motivo.HEAD))
+            entrada = replace(entrada, admision=Rechazado(Motivo.HEAD), rearme_ci=None,
+                              ci_ref_nueva=False)
             efectos.append(Efecto(clave("caduca", entrega.recibo),
                                   "avisar-caducidad", (entrega.recibo,)))
         else:
@@ -970,16 +1062,24 @@ def paso(estado, observacion):
                 admitida = (entrada.admitida if entrada.admitida is not None
                             else observacion.ahora)
             elif (decision == Retenido(Motivo.INCIERTO) or entrada.partida or
-                  entrada.rearmada or entrada.tren in esperando_ci):
+                  entrada.rearmada or entrada.tren in esperando_ci or
+                  (cert_vencido is not None and entrada.tren == cert_vencido) or
+                  (entrada.rearme_ci and entrada.tren in antes_de_ci)):
                 # No perder FIFO al retener antes o después de una partición.
                 admitida = entrada.admitida
             else:
                 admitida = None
-            entrada = replace(entrada, admision=decision, admitida=admitida,
-                              solo=entrada.partida or bool(vista and (
-                                  vista.requiere_solo or vista.ventana is not None)))
+            entrada = replace(entrada, admision=decision, admitida=admitida)
+            if isinstance(decision, Rechazado):
+                entrada = replace(entrada, rearme_ci=None, ci_ref_nueva=False)
+            solo_vistas[entrega.recibo] = solo_por_vista(vista)
+        if isinstance(decision, Rechazado):
+            rechazadas.append(entrada)
         entradas.append(entrada)
-    estado = replace(estado, entradas=tuple(entradas))
+    estado = liberar_particiones(replace(estado, entradas=tuple(entradas)), rechazadas)
+    entradas = tuple(replace(e, solo=e.partida or solo_vistas[e.entrega.recibo])
+                     if e.entrega.recibo in solo_vistas else e for e in estado.entradas)
+    estado = replace(estado, entradas=entradas)
     if estado.pausa:
         return estado, tuple(efectos)
     activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
@@ -990,7 +1090,7 @@ def paso(estado, observacion):
         if observacion.tren_id and observacion.tren_id != tren.id:
             return estado, tuple(efectos)
         # Un merge por fuera deja a C sin poder aterrizar: no gastar CI ni suite.
-        if base_vieja(fase, observacion):
+        if tren.id == cert_vencido or base_vieja(fase, observacion):
             return rearmar(estado, tren, temprano=True), tuple(efectos)
         ocupada = observacion.rama_ocupada
         if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
@@ -1040,6 +1140,13 @@ def paso(estado, observacion):
         # Los resultados completados quedan incorporados antes de esta puerta.
         if any(isinstance(e.admision, Rechazado) for e in miembros):
             return replace(estado, pausa=Pausa("head-cambiado-en-tren")), tuple(efectos)
+        cert = certificado_de(fase)
+        if cert is not None and cert.B:
+            estado, ci_efectos, verde = avanzar_ci_promocion(estado, tren, observacion)
+            if not verde:
+                return estado, tuple(efectos) + ci_efectos
+            tren = next(t for t in estado.trenes if t.id == tren.id)
+            fase = tren.fase
         if any(not isinstance(e.admision, Admitido) for e in miembros):
             return estado, tuple(efectos)
         if isinstance(tren.fase, Congelado) and isinstance(fase, Armado):
@@ -1048,13 +1155,17 @@ def paso(estado, observacion):
             nuevo, promocion = aterrizaje(estado, tren, observacion)
             return nuevo, tuple(efectos) + promocion
         if isinstance(fase, Promoviendo) and fase.reintento_pendiente:
-            if fase.intentos >= LIMITE_PROMOCION:
+            if fase.intentos >= LIMITE_PROMOCION and not fase.reintento_autorizado:
                 return replace(estado, pausa=Pausa("promocion-rechazada")), tuple(efectos)
-            fase = replace(fase, intentos=fase.intentos + 1, reintento_pendiente=False)
+            fase = replace(fase, intentos=fase.intentos + 1, reintento_pendiente=False,
+                           reintento_autorizado=False)
             efectos.append(efecto_promover(tren.id, fase.intentos))
         elif isinstance(fase, Armado):
-            fase = EsperandoCI(fase.candidato, observacion.ahora)
-            efectos.append(Efecto(clave("ci", tren.id), "solicitar-ci", (tren.id,)))
+            # C puede ser idéntico al del tren anterior. Pedir evidencia de esta ref.
+            solicitud = int(any(e.rearme_ci or e.ci_ref_nueva for e in miembros))
+            fase = EsperandoCI(fase.candidato, observacion.ahora, solicitud)
+            clave_ci = clave("ci", tren.id, solicitud) if solicitud else clave("ci", tren.id)
+            efectos.append(Efecto(clave_ci, "solicitar-ci", (tren.id,)))
         elif (isinstance(fase, EsperandoCI) and observacion.ci_candidato == "verde" and
               (not fase.solicitud or (observacion.tren_id == tren.id and
                                      observacion.ci_recibo == recibo_ci(tren)))):
@@ -1104,10 +1215,15 @@ def datos(valor):
         return dict({"_tipo": type(valor).__name__},
                     **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)
                        # Conservar payloads históricos de sombra/custodia.
-                       if not (isinstance(valor, Entrada) and f.name in ("partida", "rearmada")
+                       if not (isinstance(valor, Entrada) and f.name in (
+                                   "partida", "rearmada", "particion", "rearme_ci", "ci_ref_nueva")
                                and not getattr(valor, f.name))
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
-                                and valor.ventana is None)})
+                                and valor.ventana is None)
+                       and not (isinstance(valor, Certificado) and f.name == "ci_pendiente_desde"
+                                and valor.ci_pendiente_desde is None)
+                       and not (isinstance(valor, Promoviendo) and f.name == "reintento_autorizado"
+                                and not valor.reintento_autorizado)})
     if isinstance(valor, tuple):
         return [datos(v) for v in valor]
     return valor.value if isinstance(valor, Enum) else valor

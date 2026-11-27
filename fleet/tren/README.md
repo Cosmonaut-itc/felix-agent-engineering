@@ -962,12 +962,31 @@ por U16.
 
 ## CI sobre el candidato y salida del carril (U16)
 
+La promoción vuelve a observar el CI del candidato en `Certificado` y
+`Promoviendo`. El verde vigente permite pedir la promoción. Un rojo aplica
+las salidas de CI del lote y un pendiente espera otro tick. El primer
+pendiente abre el plazo `PLAZO_CI` de 60 minutos. Un verde limpia el plazo.
+Al vencer, el tren pausa en `infraestructura` con detalle
+`pre-aterrizaje:ci-sin-resultado`, que admite `reanudar` para reiniciar la
+espera o `abortar`.
+
+El ejecutor reconcilia intentos anteriores y consulta de nuevo el CI del
+mismo candidato justo antes del push CAS, también cuando el repo no usa
+gancho. Si hay gancho, la lectura de CI ocurre después de que éste autorice
+seguir. Si el CI deja de estar verde en esa lectura, el efecto espera otro
+tick sin empujar ni gastar un intento CAS. Si había una preparación del
+gancho, registra su cancelación y abre un plazo nuevo para el gancho cuando
+el CI vuelva a verde y se confirme la cancelación.
+
 `GitHubGit.ci` devuelve `ResultadoCI(estado, rojos)`: tres valores y los
 nombres de checks/statuses rojos, ordenados y sin duplicados. La admisión
-sigue exigiendo verde en cada head; la lectura del candidato consulta su C
-exacto y liga el resultado a `tren_id` y `ci_recibo=github:<C>`. Un rojo de
-otro tren o de otro C no produce partición ni devolución. Al reanudar, el
-recibo incluye además `:tren/<id>-ci-<n>` y sólo acepta esa solicitud.
+sigue exigiendo verde en cada head. La solicitud 0 consulta el CI por SHA de
+C y usa `ci_recibo=github:<C>`. Las solicitudes positivas filtran los
+checks por la ref propia y añaden
+`:tren/<id>-ci-<n>` al recibo. El reductor exige el ID del tren y el recibo
+vigentes. Las entregas liberadas por el aborto de un tren que pudo probar C,
+y las de una absolución que conserva C, piden una ref nueva. Esa marca no
+cuenta como un rearme por rojo.
 
 | Fuente | Conclusión / estado | Lectura |
 |---|---|---|
@@ -979,9 +998,11 @@ recibo incluye además `:tren/<id>-ci-<n>` y sólo acepta esa solicitud.
 | Check terminado | `cancelled`, `action_required`, `startup_failure`, `stale` | `pendiente` |
 | Check no terminado | cualquiera, incluido `success` prematuro | `pendiente` |
 | Check terminado | conclusión ausente o desconocida | `pendiente` |
-| Commit status | `success` | `verde` |
-| Commit status | `failure` | `rojo` |
-| Commit status | `error`, `pending`, estado desconocido | `pendiente` |
+| Commit status, solicitud 0 | `success` | `verde` |
+| Commit status, solicitud 0 | `failure` | `rojo` |
+| Commit status, solicitud 0 | `error`, `pending`, estado desconocido | `pendiente` |
+| Commit status, solicitud positiva | `success` | Requiere checks verdes en la ref |
+| Commit status, solicitud positiva | Cualquier otro estado | Bloquea el verde |
 
 En modo activo, `success` acredita aprobación; `skipped` y `neutral` son
 conclusiones aceptadas por GitHub, incluso si el check figura en
@@ -989,7 +1010,7 @@ conclusiones aceptadas por GitHub, incluso si el check figura en
 emite su check sigue pendiente. `failure` y `timed_out` informan el resultado
 negativo observado, sin afirmar una causa de producto D5. Una cancelación
 humana o por concurrencia, una intervención requerida, un fallo de arranque,
-evidencia vencida o un status `error` no acreditan un fallo del cambio:
+evidencia vencida o un status `error` en la solicitud 0 no acreditan un fallo del cambio:
 esperan hasta el plazo de infraestructura. Valores desconocidos también
 esperan sin inventar éxito ni culpa.
 
@@ -1022,11 +1043,17 @@ La sombra y `tick --seco` mantienen su lectura histórica: únicamente
 La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
 
 - **Verde:** mantiene el camino existente de suite y promoción de C.
-- **Rojo con más de un miembro:** cierra el tren `PARTIDO`, sin comentario,
-  status rojo, consumo de suite especulativa ni escritura en main. En el mismo snapshot libera todas
-  las entregas con `partida=True` y `solo=True`. Los ticks posteriores forman
-  trenes individuales en su orden FIFO, cada uno sobre el main entonces
-  vigente, con candidato, CI y suite propios. No se atribuye el fallo del lote.
+- **Primer rojo con más de un miembro:** cierra el tren `REARMAR` y devuelve
+  sus entregas a la fila con su admisión FIFO y la marca `rearme_ci`. El
+  siguiente lote se arma sobre el main vigente. Si incluye alguna entrega
+  marcada, comienza con la solicitud 1 en su propia ref `tren/<id>-ci-1`.
+  Aunque el SHA de C coincida, sólo cuentan los checks de esa ref, y un
+  commit status puede bloquear el verde de C. Las suites prelanzadas del tren
+  cerrado quedan sin consumir.
+- **Rojo de un lote con alguna entrega ya marcada:** cierra el tren
+  `PARTIDO`, sin atribuir el fallo ni publicar feedback rojo. Devuelve sus
+  entregas a la fila con `partida=True`, `solo=True` y el ID de la partición
+  para probarlas individualmente sobre el main vigente.
 - **Rojo con un miembro:** cierra `DEVUELTO`, resuelve esa entrega y deja
   libre el carril inmediatamente. Un efecto `devolver` de U14 publica un
   comentario marcado con lote, B, C, head y `ci_rojos`, seguido de `failure`
@@ -1043,9 +1070,13 @@ La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
   `desde` comienza a contar en el primer tick de U16.
   Un verde observado sin suite confirmada **no detiene el plazo**: si el CI
   vuelve a pendiente se cuenta desde la entrada original. Una pausa manual
-  tampoco descuenta tiempo. Un recibo durable de suite sí permite recuperar
-  su lanzamiento con el CI verde guardado y salir de `EsperandoCI`, aunque
-  la lectura fresca haya vuelto a pendiente.
+  tampoco descuenta tiempo. La solicitud 0 puede recuperar una suite con el
+  CI verde guardado en su recibo. Las solicitudes positivas requieren CI
+  verde fresco de su ref antes de consumir la suite. Una suite en curso
+  iniciada con el verde vigente mantiene suspendido el plazo. Si ya terminó
+  y espera un verde fresco, el plazo se evalúa de nuevo. El buzón reintenta
+  un fallo de recuperación al siguiente tick y, si la fila sigue fallida,
+  vuelve a evaluar el vencimiento.
 
 `reanudar` conserva el tren y C, reinicia `desde` al consumir el juicio y
 emite `solicitar-ci` con contador/clave nuevos. Publica una ref
@@ -1060,15 +1091,14 @@ la API garantiza `head_branch`, `head_sha` e `id` en cada suite, mientras el
 sólo garantiza `check_suite.id`. Se piden los checks con `filter=all` (el
 default `latest` filtra por `completed_at`), se cruzan por ese id y se exigen C y la ref
 publicada exactos **antes** de elegir el mayor id por nombre. Un check de la
-ref anterior, aunque termine después de reanudar, no sirve. Hasta observar
-checks de la solicitud vigente, la lectura es pendiente y corre el plazo
-nuevo, incluso con `checks_esperados: []`. Los commit statuses no informan
-la ref solicitante: al reanudar no se consumen, ni como verde ni como rojo.
-Un proveedor que sólo publique statuses o no exponga la suite con esa ref
-queda pendiente hasta el plazo; debe publicar checks ligados a la solicitud
-para habilitar la suite. El recibo incluye la ref también en el buzón de
-recuperación; un recibo anterior no autoriza una suite de la nueva solicitud.
-No relanza automáticamente checks fallidos.
+ref anterior, aunque termine después de reanudar, no sirve. Sin checks de
+la solicitud vigente ni evidencia negativa, la lectura es pendiente y
+corre el plazo nuevo, incluso con `checks_esperados: []`. Los commit statuses
+identifican únicamente C. En solicitudes positivas se toma el último
+status de cada contexto. Cualquier estado distinto de `success` bloquea
+el verde hasta que ese contexto publique un `success` o venza el plazo.
+Sólo los checks de la ref pueden dar rojo o acreditar un verde. El buzón
+mantiene el resultado de la suite hasta que el tick observe ese verde fresco.
 `abortar` conserva el comportamiento U15: cierra `ABORTADO`, libera
 la custodia sin rojo y permite readmisión desde el tick siguiente.
 
@@ -1079,14 +1109,19 @@ no existe suite ni diagnóstico que absolver y omitir CI sería un certificado
 falso. El validador exige `EsperandoCI` para `ci-nuevo`; el expediente sólo
 ofrece las decisiones que pasan esa validación.
 
-La marca `partida` pertenece al recibo `(repo, PR, head)` y resiste cada
-readmisión, incluida una retención transitoria, conservando `recibida` y la
-primera `admitida`. Dura hasta resolver la entrega: formar un individual no
-la consume; si se aborta o rearma, vuelve a formar un tren de uno. Un head nuevo
-caduca la entrega anterior por las reglas existentes y **no hereda** la
-marca: no es la entrega que participó en el lote rojo y tendrá su propio
-APTO/dirigida/CI. Los atributos sensible y alto riesgo siguen imponiendo
-viaje individual por su propia política.
+La marca `rearme_ci` pertenece al recibo `(repo, PR, head)` y se borra al
+aterrizar, devolver o rechazar esa entrega. Un CI verde conserva la marca.
+La entrega marcada conserva su admisión FIFO entre el rearme y la solicitud
+de CI del próximo lote, incluso si una retención coincide con otro avance de main.
+La marca `partida` resiste cada readmisión y conserva la primera
+`admitida`. Formar un tren individual, abortarlo o rearmarlo conserva el
+aislamiento. Cuando una entrega de la partición aterriza, se devuelve por
+CI, suite atribuida o expulsión, o se rechaza por caducidad u otra causa,
+las demás entradas no terminales de esa partición recuperan el régimen habitual
+de lotes con su admisión FIFO y su marca de rearme intactas. Un tren activo
+conserva sus miembros hasta cerrar o devolverlos a la fila. Un rearme
+posterior por escritor externo conserva también su admisión FIFO. Sensibles, alto
+riesgo y ventanas siguen su propia política de viaje individual.
 
 El reductor ignora un rojo sin nombres válidos y lo trata como pendiente;
 no parte ni devuelve sin evidencia nominada. El escritor de feedback también
@@ -1098,8 +1133,9 @@ esta devolución por CI se reconcilia además el último status del contexto
 contra el payload y URL antes de repetir un POST tras perder su ACK. Las
 claves y el orden por PR impiden adelantar un `pending` posterior al feedback
 anterior incompleto. Los efectos de trabajo del tren terminal se cancelan
-sin cancelar su feedback. La extensión aditiva omite `partida=False` al
-serializar: custodia y eventos `sombra`, `sombra-doble-camino` y
+sin cancelar su feedback. La extensión aditiva omite `partida=False` y los
+IDs de partición y rearme ausentes. Las partidas históricas sin ID conservan
+su aislamiento. Custodia y eventos `sombra`, `sombra-doble-camino` y
 `admision-entrega` conservan su contrato. `tick --seco` usa la sombra sin
 consumir el CI operativo ni ejecutar efectos.
 

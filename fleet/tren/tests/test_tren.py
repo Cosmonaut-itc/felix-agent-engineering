@@ -15,10 +15,12 @@ from unittest.mock import patch
 
 RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ))
-from dominio import (Admitido, Armado, Candidato, Congelado, Corriendo,
-                     Entrada, Entrega, EsperandoCI, Estado, Motivo, Observacion,
-                     Pausa, Rechazado, Retenido, Terminal, VistaPR,
-                     datos, desde_datos, inicial, paso)
+from dominio import (Admitido, Armado, Aterrizado, Candidato, Completo, Congelado, Corriendo,
+                     Decision, Diagnosticando, Entrada, Entrega, EscritorExterno, EsperandoCI, Estado,
+                     Evidencia, Fallo, Intento, LIMITE_LOTE, Motivo, Observacion,
+                     Pausa, Rechazado, Repeticion, Reproduccion, Retenido, Terminal,
+                     UnidadRepetida, VistaPR, clave, datos, desde_datos, inicial, paso,
+                     recibo_ci)
 from ledger import Ledger, directorio_estado
 from observador import Falso, GitHubGit, categorias_sensibles, configuracion
 from sombra import paso_sombra
@@ -227,6 +229,244 @@ class DominioTests(Aislado):
         candidato = Candidato("e" * 40, (), HEAD, HEAD)
         nuevo, _ = paso(nuevo, replace(observacion(3), candidato=candidato))
         self.assertEqual(nuevo.pausa, Pausa("candidato-no-corresponde"))
+
+
+class RearmeCITests(unittest.TestCase):
+    def armar(self, nuevo, obs):
+        tren = nuevo.trenes[-1]
+        prs = {e.entrega.recibo: e.entrega.pr for e in nuevo.entradas}
+        eslabones = tuple((prs[r], HEAD, str(prs[r]) * 40) for r in tren.recibos)
+        candidato = Candidato(obs.base, eslabones, eslabones[-1][2], "d" * 40)
+        armado, _ = paso(nuevo, replace(obs, candidato=candidato, tren_id=tren.id))
+        return paso(armado, obs)
+
+    def ci(self, nuevo, obs, conclusion="rojo"):
+        tren = nuevo.trenes[-1]
+        return paso(nuevo, replace(obs, tren_id=tren.id, ci_recibo=recibo_ci(tren),
+                                   ci_candidato=conclusion, ci_rojos=("gate",)))
+
+    def rearme(self, n=3):
+        obs = observacion(n)
+        lote, _ = paso(estado(n), obs)
+        espera, _ = self.armar(lote, obs)
+        rearmado, _ = self.ci(espera, obs)
+        lote_nuevo, _ = paso(rearmado, obs)
+        return lote_nuevo, obs
+
+    def test_primer_rojo_rearma_y_conserva_fifo(self):
+        lote, _ = paso(estado(3), observacion(3))
+        espera, _ = self.armar(lote, observacion(3))
+        original = espera.trenes[0]
+        obs = replace(observacion(3, ahora=101),
+                      prs=(vista(1, apto=False), vista(2), vista(3)))
+        rearmado, efectos = self.ci(espera, obs)
+        self.assertEqual(rearmado.trenes[0].fase, Terminal("REARMAR"))
+        self.assertIsNone(rearmado.pausa)
+        self.assertEqual(efectos, ())
+        self.assertEqual([e.admitida for e in rearmado.entradas], [100] * 3)
+        self.assertTrue(all(e.rearme_ci == original.id and not e.solo and e.tren is None
+                            for e in rearmado.entradas))
+        self.assertEqual(desde_datos(datos(rearmado)), rearmado)
+        nuevo, _ = paso(rearmado, observacion(3, ahora=102))
+        self.assertNotEqual(nuevo.trenes[-1].id, original.id)
+        self.assertEqual(nuevo.trenes[-1].recibos, original.recibos)
+
+    def test_rearme_verde_pide_suite_con_su_recibo_y_conserva_marca(self):
+        lote, obs = self.rearme()
+        espera, efectos = self.armar(lote, obs)
+        original, nuevo = espera.trenes
+        self.assertEqual(nuevo.fase.solicitud, 1)
+        self.assertEqual(efectos[0].clave, clave("ci", nuevo.id, 1))
+        self.assertEqual(efectos[0].tipo, "solicitar-ci")
+        anterior = replace(obs, tren_id=nuevo.id, ci_candidato="rojo", ci_rojos=("gate",),
+                           ci_recibo="github:" + nuevo.fase.candidato.C)
+        self.assertEqual(paso(espera, anterior), (espera, ()))
+        siguiente, efectos = self.ci(espera, obs, "verde")
+        self.assertEqual([e.tipo for e in efectos], ["iniciar-suite"])
+        self.assertTrue(all(e.rearme_ci == original.id for e in siguiente.entradas))
+
+    def test_rearme_rojo_parte_incluso_si_se_sumo_otra_entrega(self):
+        lote, _ = paso(estado(2), observacion(2))
+        espera, _ = self.armar(lote, observacion(2))
+        rearmado, _ = self.ci(espera, observacion(2))
+        rearmado = replace(rearmado, entradas=rearmado.entradas + estado(3).entradas[2:])
+        obs = observacion(3, ahora=101)
+        lote, _ = paso(rearmado, obs)
+        espera, _ = self.armar(lote, obs)
+        partido, efectos = self.ci(espera, obs)
+        tren = partido.trenes[-1]
+        self.assertEqual(tren.fase, Terminal("PARTIDO"))
+        self.assertEqual(efectos, ())
+        self.assertTrue(all(e.tren is None and e.solo and e.partida and e.particion == tren.id
+                            for e in partido.entradas))
+
+    def test_rearme_conserva_fifo_si_main_avanza_antes_de_pedir_ci(self):
+        lote, obs = self.rearme(2)
+        base_nueva = "f" * 40
+        pendiente = replace(obs, ahora=104, base=base_nueva,
+                           prs=(vista(1, ci="pendiente"), vista(2)))
+        fila, _ = paso(lote, pendiente)
+        self.assertEqual(fila.trenes[-1].fase, Terminal("REARMAR"))
+        self.assertEqual([e.admitida for e in fila.entradas], [100, 100])
+        nuevo, _ = paso(fila, replace(obs, ahora=105, base=base_nueva))
+        self.assertEqual(nuevo.trenes[-1].recibos, (entrega(1).recibo, entrega(2).recibo))
+
+    def test_individual_aterriza_y_los_otros_cuatro_aterrizan_en_lote(self):
+        lote, obs = self.rearme(LIMITE_LOTE)
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        self.assertEqual(partido.trenes[-1].fase, Terminal("PARTIDO"))
+        solo, _ = paso(partido, obs)
+        self.assertEqual(solo.trenes[-1].recibos, (entrega(1).recibo,))
+        espera, _ = self.armar(solo, obs)
+        def aterrizar(estado, obs):
+            tren = estado.trenes[-1]
+            c = tren.fase.candidato
+            cert, _ = self.ci(estado, replace(obs, suite="suite",
+                                               resultado_suite=Completo("verde")), "verde")
+            prom, _ = paso(cert, replace(obs, tren_id=tren.id, ci_candidato="verde",
+                                        ci_recibo=recibo_ci(tren)))
+            fin, _ = paso(prom, replace(obs, tren_id=tren.id, intento_promocion=1,
+                                        main=Aterrizado(c.B, c.C, c.arbol)))
+            self.assertEqual(fin.trenes[-1].fase, Terminal("ATERRIZADO"))
+            return fin, c.C
+
+        fin, c = aterrizar(espera, obs)
+        self.assertTrue(all(not e.partida and e.rearme_ci for e in fin.entradas[1:]))
+        self.assertEqual([e.admitida for e in fin.entradas[1:]], [100] * 4)
+        obs = replace(obs, base=c)
+        juntos, _ = paso(fin, obs)
+        self.assertEqual(juntos.trenes[-1].recibos, tuple(entrega(i).recibo for i in range(2, 6)))
+        espera, _ = self.armar(juntos, obs)
+        final, _ = aterrizar(espera, obs)
+        self.assertTrue(all(e.tren is not None and e.rearme_ci is None for e in final.entradas))
+
+    def test_expulsion_individual_por_juicio_libera_la_particion(self):
+        lote, obs = self.rearme()
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        solo, _ = paso(partido, obs)
+        tren = solo.trenes[-1]
+        pausa = Pausa("head-cambiado-en-tren", pr=1)
+        decision = Decision("juicio", REPO, tren.id, "expulsar", 1, "motivo", 101, "pausa", pausa)
+        devuelto, _ = paso(replace(solo, pausa=pausa),
+                           replace(obs, decision=decision, pausa_id="pausa"))
+        self.assertEqual(devuelto.trenes[-1].fase, Terminal("DEVUELTO"))
+        juntos, _ = paso(devuelto, obs)
+        self.assertEqual(juntos.trenes[-1].recibos, (entrega(2).recibo, entrega(3).recibo))
+
+    def test_rechazo_en_cola_libera_la_particion_en_el_mismo_tick(self):
+        lote, obs = self.rearme()
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        juntos, _ = paso(partido, replace(obs, prs=(vista(1, abierto=False), vista(2), vista(3))))
+        self.assertEqual(juntos.entradas[0].admision, Rechazado(Motivo.CERRADO))
+        self.assertEqual(juntos.trenes[-1].recibos, (entrega(2).recibo, entrega(3).recibo))
+
+    def test_rechazo_libera_el_individual_que_rearma_en_el_mismo_tick(self):
+        lote, obs = self.rearme()
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        individual, _ = paso(partido, obs)
+        cierre = replace(obs, ahora=101, prs=(vista(1), vista(2, abierto=False), vista(3)))
+        viajando, _ = paso(individual, cierre)
+        self.assertEqual(viajando.trenes[-1].recibos, (entrega(1).recibo,))
+        self.assertIsNotNone(viajando.entradas[0].tren)
+        base_nueva = replace(cierre, base="f" * 40)
+        fila, _ = paso(individual, base_nueva)
+        self.assertEqual(fila.trenes[-1].fase, Terminal("REARMAR"))
+        for pos in (0, 2):
+            self.assertFalse(fila.entradas[pos].partida)
+            self.assertIsNone(fila.entradas[pos].particion)
+            self.assertEqual(fila.entradas[pos].admitida, 100)
+        siguiente, _ = paso(fila, replace(base_nueva, ahora=102))
+        self.assertEqual(siguiente.trenes[-1].recibos, (entrega(1).recibo, entrega(3).recibo))
+
+    def test_individual_liberado_conserva_fifo_tras_rearmar_en_promocion(self):
+        lote, obs = self.rearme()
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        individual, _ = paso(partido, obs)
+        espera, _ = self.armar(individual, obs)
+        tren = espera.trenes[-1]
+        c = tren.fase.candidato
+        certificado, _ = self.ci(espera, replace(
+            obs, ahora=101, suite="suite", resultado_suite=Completo("verde")), "verde")
+        cierre = replace(obs, ahora=102, prs=(vista(1), vista(2, abierto=False), vista(3)))
+        promoviendo, _ = paso(certificado, replace(
+            cierre, tren_id=tren.id, ci_candidato="verde", ci_recibo=recibo_ci(tren)))
+        base_nueva = replace(cierre, ahora=103, base="f" * 40)
+        fila, _ = paso(promoviendo, replace(
+            base_nueva, tren_id=tren.id, intento_promocion=1,
+            main=EscritorExterno(c.B, c.C, base_nueva.base)))
+        self.assertEqual(fila.pausa.motivo, "escritor-externo")
+        pausada, _ = paso(fila, replace(
+            base_nueva, ahora=104, prs=(vista(1, ci="pendiente"), *cierre.prs[1:])))
+        decision = Decision("juicio", fila.repo, tren.id, "reanudar", None,
+                            "escritor externo revisado", 105, "pausa", pausada.pausa)
+        libre, _ = paso(pausada, replace(
+            base_nueva, ahora=105, decision=decision, pausa_id="pausa"))
+        siguiente, _ = paso(libre, replace(base_nueva, ahora=106))
+        self.assertEqual(siguiente.entradas[0].admitida, 100)
+        self.assertEqual(siguiente.trenes[-1].recibos, (entrega(1).recibo, entrega(3).recibo))
+
+    def test_devuelto_individual_libera_su_particion_y_reagrupa_hasta_el_limite(self):
+        lote, obs = self.rearme(LIMITE_LOTE)
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        n = LIMITE_LOTE + 3
+        partido = replace(partido, entradas=partido.entradas + estado(n).entradas[LIMITE_LOTE:])
+        obs = observacion(n, ahora=200)
+        solo, _ = paso(partido, obs)
+        espera, _ = self.armar(solo, obs)
+        devuelto, efectos = self.ci(espera, obs)
+        self.assertEqual(devuelto.trenes[-1].fase, Terminal("DEVUELTO"))
+        self.assertEqual([e.tipo for e in efectos], ["devolver"])
+        self.assertIsNone(devuelto.entradas[0].rearme_ci)
+        liberadas = devuelto.entradas[1:LIMITE_LOTE]
+        self.assertTrue(all(not e.partida and e.particion is None for e in liberadas))
+        self.assertEqual([e.admitida for e in liberadas], [100] * (LIMITE_LOTE - 1))
+        lote, _ = paso(devuelto, obs)
+        self.assertTrue(all(not e.solo for e in lote.entradas[1:LIMITE_LOTE]))
+        self.assertEqual(lote.trenes[-1].recibos, tuple(entrega(i).recibo for i in range(2, LIMITE_LOTE + 2)))
+        self.assertIsNone(lote.entradas[LIMITE_LOTE + 1].tren)
+
+    def test_suite_roja_individual_atribuida_libera_a_su_particion(self):
+        lote, obs = self.rearme()
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        solo, _ = paso(partido, obs)
+        espera, _ = self.armar(solo, obs)
+        tren = espera.trenes[-1]
+        c = tren.fase.candidato
+        fallo = Fallo("test", "firma", "solo-candidato", duracion_s=1)
+        evidencias = []
+        for objetivo, sha, veredicto in (("C", c.C, "falla"), ("B", c.B, "pasa")):
+            unidad = UnidadRepetida("", fallo.unidad, "", "definición", tuple(
+                Intento(i, veredicto, fallo.firma, 1) for i in (1, 2)))
+            evidencias.append(Evidencia(Reproduccion(objetivo, fallo, objetivo),
+                Repeticion(sha, c.C, c.B, "evidencia", (unidad,))))
+        fase = Diagnosticando(c, (fallo,), "suite", presupuesto_s=10, evidencias=tuple(evidencias))
+        diagnosticando = replace(espera, trenes=espera.trenes[:-1] + (replace(tren, fase=fase),))
+        final, efectos = paso(diagnosticando, replace(obs, tren_id=tren.id))
+        self.assertEqual(final.trenes[-1].fase, Terminal("DEVUELTO"))
+        self.assertEqual([e.tipo for e in efectos], ["devolver"])
+        self.assertTrue(all(not e.partida for e in final.entradas[1:]))
+
+    def test_snapshot_partido_sin_id_conserva_el_aislamiento(self):
+        viejo = estado(3)
+        viejo = replace(viejo, entradas=tuple(replace(e, partida=True, solo=True) for e in viejo.entradas))
+        snapshot = datos(viejo)
+        self.assertTrue(all("particion" not in e and "rearme_ci" not in e for e in snapshot["entradas"]))
+        obs = observacion(3)
+        lote, _ = paso(desde_datos(snapshot), obs)
+        espera, _ = self.armar(lote, obs)
+        devuelto, efectos = self.ci(espera, obs)
+        self.assertEqual(devuelto.trenes[-1].fase, Terminal("DEVUELTO"))
+        self.assertEqual([e.tipo for e in efectos], ["devolver"])
+        siguiente, _ = paso(devuelto, obs)
+        self.assertEqual(siguiente.trenes[-1].recibos, (entrega(2).recibo,))
+        self.assertTrue(all(e.partida and e.solo for e in siguiente.entradas[1:]))
 
 
 class LedgerTests(Aislado):

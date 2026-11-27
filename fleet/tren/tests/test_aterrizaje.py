@@ -16,7 +16,7 @@ sys.path.insert(0, str(RAIZ))
 from dominio import (Aterrizado, Armado, Candidato, Certificado, ConflictoCadena,
                      Congelado, EnBase, Entrada, Entrega, EscritorExterno, Estado,
                      Incierto, LIMITE_PROMOCION, Observacion, Pausa, Promoviendo,
-                     Terminal, VistaPR, clave, datos, desde_datos, paso)
+                     ResultadoCI, Terminal, VistaPR, clave, datos, desde_datos, paso, recibo_ci)
 from efectos import EfectoFallido, ejecutar
 from git_ops import ErrorGit, GitTren, Publicado, RamaOcupada
 from ledger import Ledger, codificar
@@ -119,9 +119,17 @@ class AterrizajeTests(unittest.TestCase):
     def certificar(self, estado, candidato, obs):
         cert = Certificado(candidato.C, candidato.arbol, "recibo-suite", "recibo-ci", candidato.B)
         estado = replace(estado, trenes=(replace(estado.trenes[0], fase=cert),))
-        estado, efectos = paso(estado, obs)
+        estado, efectos = paso(estado, self.ci_verde(estado, obs))
         self.assertIsInstance(estado.trenes[0].fase, Promoviendo)
         return estado, efectos[0]
+
+    def ci_verde(self, estado, obs):
+        tren = estado.trenes[-1]
+        return replace(obs, tren_id=tren.id, ci_candidato="verde", ci_recibo=recibo_ci(tren))
+
+    def promover(self, efecto, estado, obs):
+        return ejecutar(efecto, estado, self.ci_verde(estado, obs), self.git,
+                        leer_ci=lambda e: (e.trenes[-1], ResultadoCI("verde")))
 
     def assert_status_aterrizaje(self, estado, efectos):
         tren = estado.trenes[-1]
@@ -141,7 +149,7 @@ class AterrizajeTests(unittest.TestCase):
         self.assertEqual(publicado.ci_candidato, "pendiente")
         self.assertEqual(self.remoto("refs/heads/tren/" + estado.trenes[0].id), candidato.C)
         estado, efecto = self.certificar(estado, candidato, obs)
-        llegada = ejecutar(efecto, estado, obs, self.git).observacion
+        llegada = self.promover(efecto, estado, obs).observacion
         self.assertEqual(llegada.main, Aterrizado(self.B, candidato.C, candidato.arbol))
         self.assertEqual(self.remoto(), candidato.C)
         self.assertEqual(self.comando(self.origen, "rev-parse", "main^{tree}"), candidato.arbol)
@@ -192,7 +200,7 @@ class AterrizajeTests(unittest.TestCase):
         ajeno = self.commit({"comun": "base\n", "ajeno": "conservar\n"}, (self.B,), "externo")
         self.push(ajeno, "refs/heads/main")
         estado, efecto = self.certificar(estado, candidato, obs)
-        llegada = ejecutar(efecto, estado, obs, self.git).observacion
+        llegada = self.promover(efecto, estado, obs).observacion
         self.assertEqual(llegada.main, EscritorExterno(self.B, candidato.C, ajeno))
         final, efectos = paso(estado, llegada)
         self.assertEqual(self.remoto(), ajeno)
@@ -220,10 +228,10 @@ class AterrizajeTests(unittest.TestCase):
                 raise subprocess.TimeoutExpired(args, 120)
             return salida
         self.git.ejecutar = perder_ack
-        llegada = ejecutar(efecto, estado, obs, self.git).observacion
+        llegada = self.promover(efecto, estado, obs).observacion
         self.assertEqual(self.remoto(), candidato.C)
         self.assertIsInstance(llegada.main, Aterrizado)
-        repetida = ejecutar(efecto, estado, obs, self.git).observacion
+        repetida = self.promover(efecto, estado, obs).observacion
         self.assertEqual(repetida, llegada)
         self.assertEqual(self.remoto(), candidato.C)
         self.assertTrue(any("ls-remote" in args for args in llamadas))
@@ -241,7 +249,7 @@ class AterrizajeTests(unittest.TestCase):
         for intento in range(1, LIMITE_PROMOCION + 1):
             claves.append(efecto.clave)
             self.assertEqual(estado.trenes[0].fase.intentos, intento)
-            llegada = ejecutar(efecto, estado, obs, self.git).observacion
+            llegada = self.promover(efecto, estado, obs).observacion
             self.assertEqual(llegada.main, EnBase(self.B, candidato.C))
             siguiente, efectos = paso(estado, llegada)
             self.assertEqual(paso(estado, llegada), (siguiente, efectos))
@@ -307,7 +315,7 @@ class AterrizajeTests(unittest.TestCase):
                 raise subprocess.TimeoutExpired(args, 120)
             return subprocess.run(args, **kwargs)
         self.git.ejecutar = sin_transporte
-        incierta = ejecutar(efecto, estado, obs, self.git).observacion
+        incierta = self.promover(efecto, estado, obs).observacion
         self.assertIsInstance(incierta.main, Incierto)
         self.assertEqual(paso(estado, incierta), (estado, ()))
         en_base = replace(incierta, main=EnBase(self.B, candidato.C))
@@ -342,7 +350,7 @@ class AterrizajeTests(unittest.TestCase):
         self.git.ejecutar = registrar
         estado, efecto = self.certificar(estado, candidato, obs)
         with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(self.home / ".gitconfig")}):
-            llegada = ejecutar(efecto, estado, obs, self.git).observacion
+            llegada = self.promover(efecto, estado, obs).observacion
         self.assertIsInstance(llegada.main, Aterrizado)
         pushes = [(a, env) for a, env in llamadas if "push" in a]
         self.assertEqual(len(pushes), 1)
