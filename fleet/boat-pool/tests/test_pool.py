@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import datetime, timezone
 import io
@@ -5,10 +6,12 @@ import json
 import os
 from pathlib import Path
 import plistlib
+from queue import Queue
 import re
 import subprocess
 import sys
 import tempfile
+from threading import Event
 import time
 import unittest
 from unittest.mock import patch
@@ -118,7 +121,7 @@ class Double:
             vm.update(ttlSeconds=body['ttlSeconds'],
                       archiveAfter=pool.stamp(self.now + body['ttlSeconds']))
         elif method == 'POST' and operation == ['resume']:
-            vm.update(state='provisioning', stoppedAt=None, **self.resume_fields)
+            vm.update({'state': 'provisioning', 'stoppedAt': None, **self.resume_fields})
             if 'ttlSeconds' in body:
                 vm.update(ttlSeconds=body['ttlSeconds'],
                           archiveAfter=pool.stamp(self.now + body['ttlSeconds']))
@@ -784,6 +787,493 @@ class Harness(unittest.TestCase):
         ])
         self.assertEqual(self.api.sleeps, 1)
         self.assertEqual([item['evento'] for item in self.journal()], ['registro', 'arranque', 'concedido'])
+
+    @contextlib.contextmanager
+    def resume_clock(self, transitions):
+        def advance_clock(seconds):
+            self.api.now += seconds
+            self.assertLessEqual(self.api.now - NOW, 2 * pool.RESUME_TIMEOUT)
+            transition = transitions.get(self.api.now - NOW)
+            if transition is not None:
+                transition()
+
+        with patch.object(pool.time, 'monotonic', side_effect=lambda: self.api.now - NOW), \
+                patch.object(self.api, 'sleep', side_effect=advance_clock):
+            yield
+
+    def request_archived_vm(self, *, transition_at=None, state='ready'):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        with self.resume_clock({transition_at: lambda: self.api.sandbox(FAKE_ID, state=state)}):
+            return self.run_cli(*self.args())
+
+    def mark_resume(self):
+        pool.atomic_json(self.state / 'vms' / NAME / 'operacion.json', {
+            'id': 'reanudacion-local', 'sandbox_id': FAKE_ID, 'accion': 'resume', 'desde': pool.stamp(NOW),
+        })
+
+    def resume_posts(self):
+        return [(route, body) for method, route, body in self.api.calls
+                if method == 'POST' and route.endswith('/resume')]
+
+    def test_pedir_concede_cuando_la_reanudacion_tarda_mas_de_90_s(self):
+        code, output, stderr = self.request_archived_vm(transition_at=213)
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(output)['vm'], NAME)
+        self.assertEqual(self.api.now, NOW + 213)
+
+    def test_encender_espera_la_reanudacion_aunque_tarde_mas_de_90_s(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+
+        with self.resume_clock({213: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            code, _, stderr = self.run_cli('encender', NAME)
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(self.api.now, NOW + 213)
+        self.assertEqual(len(self.resume_posts()), 1)
+
+    def test_pedir_rechaza_si_la_vm_sigue_reanudando_a_los_420_s(self):
+        code, output, stderr = self.request_archived_vm()
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: Boat no confirmó el cambio de estado\n')
+        self.assertEqual(self.api.now, NOW + 420)
+
+    def test_pedir_acota_los_reenvios_si_boat_sigue_mostrando_archivada(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'archived'
+
+        with self.resume_clock({}):
+            code, output, stderr = self.run_cli(*self.args())
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: Boat no confirmó el cambio de estado\n')
+        self.assertEqual(self.api.now, NOW + 420)
+        self.assertEqual(len(self.resume_posts()), 5)
+        starts = [event['en'] for event in self.journal() if event['evento'] == 'arranque']
+        self.assertEqual(starts, [pool.stamp(NOW + offset) for offset in (0, 90, 180, 270, 360)])
+        marker = pool.read_json(self.state / 'vms' / NAME / 'operacion.json')
+        self.assertEqual(marker['inicio'], pool.stamp(NOW))
+        self.assertEqual(marker['desde'], pool.stamp(NOW + 360))
+
+    def test_pedir_puede_observar_el_vencimiento_tras_soltar_el_candado(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+
+        with contextlib.ExitStack() as held:
+            def occupy_vm():
+                self.assertTrue(held.enter_context(pool.lock(self.state / 'vms' / NAME / 'lock', wait=False)))
+
+            with self.resume_clock({420: occupy_vm, 423: held.close}):
+                code, output, stderr = self.run_cli(*self.args())
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: Boat no confirmó el cambio de estado\n')
+        self.assertEqual(self.api.now, NOW + 423)
+        self.assertEqual(len(self.resume_posts()), 1)
+
+    def test_pedir_rechaza_un_intento_nuevo_en_el_ultimo_sondeo(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        marker = self.state / 'vms' / NAME / 'operacion.json'
+
+        with contextlib.ExitStack() as held:
+            def occupy_vm():
+                self.assertTrue(held.enter_context(pool.lock(marker.parent / 'lock', wait=False)))
+
+            def publish_restart():
+                pool.atomic_json(marker, {**pool.read_json(marker), 'id': 'reanudacion-nueva',
+                                          'inicio': pool.stamp(self.api.now), 'desde': pool.stamp(self.api.now)})
+
+            with self.resume_clock({420: occupy_vm, 421: publish_restart, 423: held.close,
+                                    424: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+                code, output, stderr = self.run_cli(*self.args())
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: Boat no confirmó el cambio de estado\n')
+        self.assertEqual(self.api.now, NOW + 423)
+        self.assertEqual(pool.read_json(marker)['inicio'], pool.stamp(NOW + 421))
+
+    def test_pedir_rechaza_en_cuanto_boat_informa_error_al_reanudar(self):
+        code, output, stderr = self.request_archived_vm(transition_at=120, state='error')
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: Boat no confirmó el cambio de estado\n')
+        self.assertEqual(self.api.now, NOW + 120)
+        self.assertEqual(self.notices, ['Boat informa un error en ' + NAME])
+
+    def test_pedir_no_repite_una_reanudacion_sin_confirmar_a_los_120_s(self):
+        self.api.sandbox(FAKE_ID, state='resuming', holdsCreatorLogins=False)
+        self.mark_resume()
+        self.api.now += 120
+
+        with self.resume_clock({213: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            self.assertEqual(self.get_grant('segundo-pedido')['vm'], NAME)
+
+        self.assertFalse(self.resume_posts())
+        self.assertEqual(self.api.now, NOW + 213)
+
+    def test_pedir_concede_otra_vm_mientras_arranca_la_primera(self):
+        other = 'vm-ocupada'
+        self.add_vm(other, fake_id('efgh2345'))
+        busy = self.get_lease('ocupante', 'contract', '--candidatas', other)
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+
+        def release_other():
+            self.assertEqual(self.run_cli('soltar', busy)[0], 0)
+
+        with self.resume_clock({150: release_other}):
+            grant = self.get_grant('tren', 'contract', '--esperar', '180')
+            self.assertEqual(grant['vm'], other)
+            self.assertEqual(self.api.now, NOW + 150)
+
+            # El tren ya recibió B. Otro pedido sigue el mismo arranque de A hasta que vence.
+            self.assert_unavailable('api', *self.args('solo-primera', 'contract', '--candidatas', NAME))
+
+        self.assertEqual(len(self.resume_posts()), 1)
+        self.assertEqual(self.api.now, NOW + 420)
+        rejected, = [item for item in self.journal() if item['evento'] == 'rechazo']
+        self.assertEqual(rejected['motivo'], 'Boat no confirmó el cambio de estado')
+        self.assertEqual(rejected['en'], pool.stamp(NOW + 420))
+
+    @contextlib.contextmanager
+    def resume_requests(self):
+        pauses = Queue()
+        done = Event()
+        gates = []
+
+        def request(run, wait, kind):
+            def pause(_):
+                gate = Event()
+                gates.append(gate)
+                pauses.put((run, gate))
+                if done.is_set() or not gate.wait(5):
+                    raise AssertionError('el reloj simulado no avanzó para ' + run)
+
+            instance = pool.Pool(self.config, self.state, boat_factory=self.api.factory,
+                                 now=lambda: self.api.now, sleep=pause, notify=self.notices.append)
+            args = pool.parser().parse_args(self.args(run, kind, '--esperar', str(wait),
+                                                     '--prioridad', 'tren'))
+            return instance.ask(args)
+
+        def paused(run):
+            sleeping_run, gate = pauses.get(timeout=5)
+            self.assertEqual(sleeping_run, run)
+            return gate
+
+        with patch.object(pool.time, 'monotonic', side_effect=lambda: self.api.now - NOW), \
+                ThreadPoolExecutor(max_workers=2) as executor:
+            def start(run, wait=180, kind='contract'):
+                return executor.submit(request, run, wait, kind)
+
+            try:
+                yield start, paused
+            finally:
+                done.set()
+                for gate in gates:
+                    gate.set()
+
+    def check_two_requests_resume(self, wait):
+        self.config['vms'][0]['lugares'] = 2
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        with self.resume_requests() as (start, paused):
+            first = start('primero')
+            first_gate = paused('primero')
+            with pool.lock(self.state / 'vms' / NAME / 'lock', wait=False) as acquired:
+                self.assertTrue(acquired, 'el primer pedido duerme sin candado')
+            self.api.now = NOW + 130
+            second = start('segundo', wait)
+            second_gate = paused('segundo')
+            queued = [pool.read_json(path) for path in (self.state / 'espera').glob('*.json')]
+            self.assertEqual({turn['corrida'] for turn in queued}, {'primero', 'segundo'})
+            self.assertTrue(all(pool.epoch(turn['vence']) >= NOW + 420 for turn in queued))
+
+            self.api.now = NOW + 213
+            self.api.sandbox(FAKE_ID, state='ready')
+            # El segundo ve READY primero y cede el paso al turno FIFO.
+            second_gate.set()
+            second_ready = paused('segundo')
+            first_gate.set()
+            first_grant = first.result(timeout=5)
+            second_ready.set()
+            second_grant = second.result(timeout=5)
+
+        self.assertEqual((first_grant['vm'], second_grant['vm']), (NAME, NAME))
+        self.assertNotEqual(first_grant['arriendo'], second_grant['arriendo'])
+        self.assertEqual(len(self.resume_posts()), 1)
+        self.assertEqual([item['corrida'] for item in self.journal() if item['evento'] == 'concedido'],
+                         ['primero', 'segundo'])
+
+    def test_dos_pedidos_adoptan_el_arranque_con_espera_cero(self):
+        self.check_two_requests_resume(0)
+
+    def test_dos_pedidos_adoptan_el_arranque_con_espera_del_tren(self):
+        self.check_two_requests_resume(180)
+
+    def check_second_request_after_marker_cleanup(self, *, see_ready_first=False):
+        self.config['vms'][0]['lugares'] = 2
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        granting = Event()
+        release_grant = Event()
+        grant = pool.Pool.grant
+
+        def hold_first_grant(instance, vm, info, args):
+            if args.corrida == 'primero':
+                granting.set()
+                if not release_grant.wait(5):
+                    raise AssertionError('la concesión no soltó el candado')
+            return grant(instance, vm, info, args)
+
+        with patch.object(pool.Pool, 'grant', hold_first_grant), self.resume_requests() as (start, paused):
+            try:
+                first = start('primero')
+                first_gate = paused('primero')
+                second = start('segundo')
+                second_gate = paused('segundo')
+
+                self.api.now = NOW + 213
+                self.api.sandbox(FAKE_ID, state='ready')
+                if see_ready_first:
+                    second_gate.set()
+                    second_gate = paused('segundo')
+                    self.api.now = NOW + 220
+                first_gate.set()
+                self.assertTrue(granting.wait(5))
+                self.assertFalse((self.state / 'vms' / NAME / 'operacion.json').exists())
+                second_gate.set()
+                second_contended = paused('segundo')
+
+                if see_ready_first:
+                    self.api.now = NOW + 223
+                    second_contended.set()
+                    second_contended = paused('segundo')
+                self.api.now += 1
+                release_grant.set()
+                first_grant = first.result(timeout=5)
+                second_contended.set()
+                second_grant = second.result(timeout=5)
+            finally:
+                release_grant.set()
+
+        self.assertEqual((first_grant['vm'], second_grant['vm']), (NAME, NAME))
+        self.assertNotEqual(first_grant['arriendo'], second_grant['arriendo'])
+        self.assertEqual(len(self.resume_posts()), 1)
+
+    def test_segundo_pedido_espera_el_candado_si_el_primero_ya_limpio_la_marca(self):
+        self.check_second_request_after_marker_cleanup()
+
+    def test_segundo_pedido_conserva_el_margen_del_candado_tras_esperar_fifo(self):
+        self.check_second_request_after_marker_cleanup(see_ready_first=True)
+
+    def test_dos_modos_del_tren_reanudan_en_paralelo_una_vm_cada_uno(self):
+        other, other_id = 'vm-otra', fake_id('efgh2345')
+        self.add_vm(other, other_id, remote_state='archived')
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        first_route = '/sandboxes/' + FAKE_ID + '/resume'
+        second_route = '/sandboxes/' + other_id + '/resume'
+
+        with self.resume_requests() as (start, paused):
+            contract = start('contrato')
+            contract_gate = paused('contrato')
+            self.assertEqual([route for route, _ in self.resume_posts()], [first_route])
+
+            # Un lock breve obliga a e2e a observar el arranque ajeno antes de poder iniciar el suyo.
+            with pool.lock(self.state / 'vms' / other / 'lock'):
+                e2e = start('e2e', kind='e2e')
+                e2e_gate = paused('e2e')
+            self.api.now = NOW + 1
+            e2e_gate.set()
+            e2e_gate = paused('e2e')
+            self.assertEqual([route for route, _ in self.resume_posts()], [first_route, second_route])
+
+            self.api.now = NOW + 213
+            self.api.sandbox(FAKE_ID, state='ready')
+            contract_gate.set()
+            self.assertEqual(contract.result(timeout=5)['vm'], NAME)
+            self.api.now = NOW + 214
+            self.api.sandbox(other_id, state='ready')
+            e2e_gate.set()
+            self.assertEqual(e2e.result(timeout=5)['vm'], other)
+
+        self.assertEqual([route for route, _ in self.resume_posts()], [first_route, second_route])
+
+    def test_pedir_solo_reanuda_una_vm_si_la_primera_sigue_arrancando(self):
+        self.add_vm('vm-otra', fake_id('efgh2345'), remote_state='archived')
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+
+        with self.resume_clock({213: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            self.assertEqual(self.get_grant('tren', 'contract', '--esperar', '180')['vm'], NAME)
+
+        self.assertEqual([route for route, _ in self.resume_posts()], ['/sandboxes/' + FAKE_ID + '/resume'])
+
+    def test_pedir_conserva_el_turno_con_espera_cero_durante_el_primer_post(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        observer = pool.Pool(self.config, self.state, boat_factory=self.api.factory, now=lambda: self.api.now)
+        transport = self.api.transport
+        queued = []
+
+        def slow_resume(method, route, headers, body, timeout):
+            result = transport(method, route, headers, body, timeout)
+            if method == 'GET' and route.startswith('/sandboxes?') and self.api.now == NOW:
+                self.api.now += 12
+            elif method == 'GET' and route == '/limits':
+                self.api.now += 3
+            elif method == 'POST' and route.endswith('/resume'):
+                self.api.now += 15
+            else:
+                return result
+            with pool.lock(self.state / 'espera.lock'):
+                queued.append(observer.turns())
+            return result
+
+        with self.resume_clock({31: lambda: self.api.sandbox(FAKE_ID, state='ready')}), \
+                patch.object(self.api, 'transport', side_effect=slow_resume):
+            self.assertEqual(self.get_grant('solicitud', 'contract', '--esperar', '0')['vm'], NAME)
+
+        self.assertEqual([[turn['corrida'] for turn in snapshot] for snapshot in queued],
+                         [['solicitud'], ['solicitud'], ['solicitud']])
+        self.assertEqual(pool.epoch(queued[-1][0]['vence']), NOW + 15 + pool.RESUME_TIMEOUT + pool.LOCK_WAIT)
+        self.assertNotIn('comprobando_hasta', queued[-1][0])
+
+    def test_pedir_adopta_una_marca_joven_con_boat_aun_archivada(self):
+        self.api.sandbox(FAKE_ID, state='archived', holdsCreatorLogins=False)
+        self.mark_resume()
+        self.api.now = NOW + 60
+
+        with self.resume_clock({
+            80: lambda: self.api.sandbox(FAKE_ID, state='resuming'),
+            200: lambda: self.api.sandbox(FAKE_ID, state='ready'),
+        }):
+            self.assertEqual(self.get_grant('adopta')['vm'], NAME)
+
+        self.assertFalse(self.resume_posts())
+        self.assertEqual(self.api.now, NOW + 200)
+
+    def test_pedir_reenvia_una_marca_vieja_con_boat_aun_archivada(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        self.mark_resume()
+        self.api.now = NOW + 120
+
+        with self.resume_clock({213: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            self.assertEqual(self.get_grant('reintenta')['vm'], NAME)
+
+        self.assertEqual(len(self.resume_posts()), 1)
+        started, = [item for item in self.journal() if item['evento'] == 'arranque']
+        self.assertEqual(started['en'], pool.stamp(NOW + 120))
+        self.assertEqual(self.api.now, NOW + 213)
+
+    def expired_resume(self, last_post):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        marker = self.state / 'vms' / NAME / 'operacion.json'
+        self.mark_resume()
+        pool.atomic_json(marker, {**pool.read_json(marker), 'inicio': pool.stamp(NOW),
+                                  'desde': pool.stamp(NOW + last_post)})
+        self.api.now = NOW + 421
+        return marker
+
+    def test_pedir_inicia_otra_reanudacion_si_la_marca_ya_habia_vencido(self):
+        marker = self.expired_resume(331)
+
+        def ready():
+            operation = pool.read_json(marker)
+            self.assertEqual(operation['inicio'], pool.stamp(NOW + 421))
+            self.assertEqual(operation['desde'], operation['inicio'])
+            self.api.sandbox(FAKE_ID, state='ready')
+
+        with self.resume_clock({422: ready}):
+            self.assertEqual(self.get_grant('nuevo-arranque')['vm'], NAME)
+
+        self.assertEqual(len(self.resume_posts()), 1)
+
+    def check_restart_waits_for_last_post(self, *args):
+        marker = self.expired_resume(360)
+
+        def still_waiting():
+            self.assertFalse(self.resume_posts())
+            self.assertEqual(pool.read_json(marker)['inicio'], pool.stamp(NOW))
+
+        def ready():
+            operation = pool.read_json(marker)
+            self.assertEqual(operation['inicio'], pool.stamp(NOW + 450))
+            self.assertEqual(operation['desde'], operation['inicio'])
+            self.api.sandbox(FAKE_ID, state='ready')
+
+        with self.resume_clock({449: still_waiting, 451: ready}):
+            code, output, stderr = self.run_cli(*args)
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(len(self.resume_posts()), 1)
+        self.assertEqual(self.api.now, NOW + 451)
+        return output
+
+    def test_pedir_espera_90_s_desde_el_ultimo_post_antes_de_reiniciar(self):
+        output = self.check_restart_waits_for_last_post(*self.args('nuevo-arranque', 'contract', '--esperar', '60'))
+        self.assertEqual(json.loads(output)['vm'], NAME)
+
+    def test_encender_espera_90_s_desde_el_ultimo_post_antes_de_reiniciar(self):
+        self.check_restart_waits_for_last_post('encender', NAME)
+
+    def test_pedir_agota_su_espera_si_el_reinicio_aun_no_puede_enviar(self):
+        self.expired_resume(360)
+
+        with self.resume_clock({435: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            code, output, stderr = self.run_cli(*self.args('nuevo-arranque', 'contract', '--esperar', '9'))
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: Boat no confirmó el cambio de estado\n')
+        self.assertFalse(self.resume_posts())
+        self.assertEqual(self.api.now, NOW + 430)
+
+    def test_pedir_reenvia_solo_al_cumplir_90_s_si_boat_vuelve_a_archivada(self):
+        self.api.sandbox(FAKE_ID, state='resuming', holdsCreatorLogins=False)
+        self.api.resume_fields['state'] = 'resuming'
+        self.mark_resume()
+        self.api.now = NOW + 60
+
+        with self.resume_clock({
+            80: lambda: self.api.sandbox(FAKE_ID, state='archived'),
+            213: lambda: self.api.sandbox(FAKE_ID, state='ready'),
+        }):
+            self.assertEqual(self.get_grant('reintenta')['vm'], NAME)
+
+        self.assertEqual(len(self.resume_posts()), 1)
+        starts = [item['en'] for item in self.journal() if item['evento'] == 'arranque']
+        self.assertEqual(starts, [pool.stamp(NOW), pool.stamp(NOW + 90)])
+
+    def test_pedir_descarta_el_error_tardio_y_concede_otra_vm(self):
+        other = 'vm-ocupada'
+        self.add_vm(other, fake_id('efgh2345'))
+        busy = self.get_lease('ocupante', 'contract', '--candidatas', other)
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        transport = self.api.transport
+
+        def release_other_on_error(method, route, headers, body, timeout):
+            result = transport(method, route, headers, body, timeout)
+            if (method == 'GET' and route == '/sandboxes/' + FAKE_ID
+                    and result['sandbox']['state'] == 'error'):
+                self.assertEqual(self.run_cli('soltar', busy)[0], 0)
+            return result
+
+        with self.resume_clock({120: lambda: self.api.sandbox(FAKE_ID, state='error')}), \
+                patch.object(self.api, 'transport', side_effect=release_other_on_error):
+            self.assertEqual(self.get_grant('tren', 'contract', '--esperar', '30')['vm'], other)
+
+        self.assertEqual(self.api.now, NOW + 120)
+        self.assertEqual(self.notices, ['Boat informa un error en ' + NAME])
+        rejected, = [item for item in self.journal() if item['evento'] == 'rechazo']
+        self.assertEqual(rejected['motivo'], 'Boat no confirmó el cambio de estado')
+        self.assertEqual(rejected['en'], pool.stamp(NOW + 120))
 
     def test_cada_puerta_cerrada_se_registra_y_no_reanuda(self):
         self.api.sandbox(FAKE_ID, state='archived')
