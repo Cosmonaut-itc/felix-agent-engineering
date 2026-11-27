@@ -43,7 +43,10 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
   La VM vuelve al orden por carga.
   Los valores predeterminados son prioridad `otra`, espera de cero segundos
   para un lugar y arriendo de 900 segundos. La espera admite de 0 a 7200 s
-  y el arriendo de 300 a 3600 s. Una reanudación tiene su propio plazo.
+  y el arriendo de 300 a 3600 s. Una vez elegida la VM, la espera a que
+  quede lista tras reanudarla tiene un plazo propio de 420 s. Si vence,
+  `pedir` rechaza esa VM con `Boat no confirmó el cambio de estado` y prueba
+  las demás candidatas. Si no consigue un arriendo, sale con 75.
 - `pedir --repo R --corrida ID --clase preparar --vm NOMBRE` reserva toda
   la VM para el repositorio dueño aunque el registro indique `apta: false`.
   Mientras el turno espera, la VM deja de otorgar lugares. Una vez que los

@@ -118,7 +118,7 @@ class Double:
             vm.update(ttlSeconds=body['ttlSeconds'],
                       archiveAfter=pool.stamp(self.now + body['ttlSeconds']))
         elif method == 'POST' and operation == ['resume']:
-            vm.update(state='provisioning', stoppedAt=None, **self.resume_fields)
+            vm.update({'state': 'provisioning', 'stoppedAt': None, **self.resume_fields})
             if 'ttlSeconds' in body:
                 vm.update(ttlSeconds=body['ttlSeconds'],
                           archiveAfter=pool.stamp(self.now + body['ttlSeconds']))
@@ -784,6 +784,55 @@ class Harness(unittest.TestCase):
         ])
         self.assertEqual(self.api.sleeps, 1)
         self.assertEqual([item['evento'] for item in self.journal()], ['registro', 'arranque', 'concedido'])
+
+    def request_archived_vm(self, *, transition_at=None, state='ready'):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+
+        def advance_clock(seconds):
+            self.api.now += seconds
+            if self.api.now - NOW == transition_at:
+                self.api.sandbox(FAKE_ID, state=state)
+
+        with patch.object(pool.time, 'monotonic', side_effect=lambda: self.api.now - NOW), \
+                patch.object(self.api, 'sleep', side_effect=advance_clock):
+            return self.run_cli(*self.args())
+
+    def test_pedir_concede_cuando_la_reanudacion_tarda_mas_de_90_s(self):
+        code, output, stderr = self.request_archived_vm(transition_at=213)
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(output)['vm'], NAME)
+        self.assertEqual(self.api.now, NOW + 213)
+
+    def test_pedir_rechaza_si_la_vm_sigue_reanudando_a_los_420_s(self):
+        code, output, stderr = self.request_archived_vm()
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: Boat no confirmó el cambio de estado\n')
+        self.assertEqual(self.api.now, NOW + 420)
+
+    def test_pedir_rechaza_en_cuanto_boat_informa_error_al_reanudar(self):
+        code, output, stderr = self.request_archived_vm(transition_at=120, state='error')
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: Boat no confirmó el cambio de estado\n')
+        self.assertEqual(self.api.now, NOW + 120)
+        self.assertEqual(self.notices, ['Boat informa un error en ' + NAME])
+
+    def test_pedir_no_repite_una_reanudacion_sin_confirmar_a_los_120_s(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        marker = self.state / 'vms' / NAME / 'operacion.json'
+        pool.atomic_json(marker, {
+            'id': 'reanudacion-local', 'sandbox_id': FAKE_ID, 'accion': 'resume', 'desde': pool.stamp(NOW),
+        })
+        self.api.now += 120
+
+        code, output, stderr = self.run_cli(*self.args('segundo-pedido'))
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: reanudación anterior sin confirmar\n')
+        self.assertFalse(self.writes())
 
     def test_cada_puerta_cerrada_se_registra_y_no_reanuda(self):
         self.api.sandbox(FAKE_ID, state='archived')

@@ -44,6 +44,7 @@ GATES = {
     'monedero_usd': ('wallet', 'balanceDollars'),
 }
 POWER_TIMEOUT = 90
+RESUME_TIMEOUT = 420
 SUITE_MAX = 7200
 AUTO_STOP_CLOCK_TOLERANCE = 60
 RENEW_BEFORE = 48 * 3600
@@ -653,7 +654,7 @@ class Pool:
         self.validate(vm)
         previous = self.power_operation(vm)
         if (action == 'resume' and previous and previous['accion'] == 'resume'
-                and self.now() - epoch(previous['desde']) < POWER_TIMEOUT):
+                and self.now() - epoch(previous['desde']) < RESUME_TIMEOUT):
             raise BoatError('reanudación anterior sin confirmar')
         operation = {'id': uuid4().hex, 'sandbox_id': vm.id, 'accion': action, 'desde': stamp(self.now())}
         if action == 'stop' and previous and (previous['accion'] == 'resume' or previous.get('credenciales')):
@@ -664,8 +665,8 @@ class Pool:
         if action == 'resume':
             self.record_power_event(vm, operation, 'arranque', epoch(operation['desde']))
 
-    def wait_power(self, vm, target, pending):
-        deadline = time.monotonic() + POWER_TIMEOUT
+    def wait_power(self, vm, target, pending, *, timeout=POWER_TIMEOUT):
+        deadline = time.monotonic() + timeout
         while True:
             info = self.sandbox_info(vm)
             state = self.observe(vm, info)
@@ -693,7 +694,7 @@ class Pool:
                 self.send_power(vm, 'resume')
         elif state not in STARTING:
             raise BoatError('estado de VM no reanudable')
-        info = self.wait_power(vm, READY, STARTING | STOPPED)
+        info = self.wait_power(vm, READY, STARTING | STOPPED, timeout=RESUME_TIMEOUT)
         pending = self.power_operation(vm)
         if pending and pending['accion'] == 'resume':
             self.check_resumed(vm, info, pending, wait=True)
