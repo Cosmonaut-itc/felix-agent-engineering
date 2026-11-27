@@ -225,7 +225,7 @@ class PanelTests(Aislado):
         devolver, = (efecto for efecto in efectos if efecto.tipo == "devolver")
         return nuevo, devolver
 
-    def test_expulsion_conserva_url_original_con_otra_grafia(self):
+    def test_expulsion_desde_pausa_vieja_conserva_url_original_con_otra_grafia(self):
         nuevo, devolver = self.expulsar_del_lote("conflicto-en-cadena")
         self.assertEqual(json.loads(devolver.datos[2])["fallos"], [])
         url = URL.replace(REPO, "Example/Project")

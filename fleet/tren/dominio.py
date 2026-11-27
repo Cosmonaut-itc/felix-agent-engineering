@@ -77,6 +77,9 @@ class Entrada:
     particion: Optional[str] = None
     rearme_ci: Optional[str] = None
     ci_ref_nueva: bool = False
+    # Sin prefijo espera otra base. Con prefijo evita repetir la combinación.
+    aplazada_en_base: str = ""
+    prefijo_en_conflicto: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -820,11 +823,53 @@ def separar_devueltos(estado, tren, base, culpables, efectos):
         e.entrega.recibo in sobrevivientes else e for e in estado.entradas))
     if sobrevivientes:
         nuevo = Tren(nuevo_id, sobrevivientes, Congelado(base))
-        estado = replace(estado, trenes=estado.trenes + (nuevo,))
-        efectos.append(Efecto(clave("armar", nuevo_id), "armar-candidato", (nuevo_id,)))
-        efectos.extend(efectos_status(nuevo, "avisar-en-tren"))
+        estado = programar_armado(estado, nuevo, efectos)
     devueltos = (entradas[r] for r in tren.recibos if entradas[r].entrega.pr in culpables)
     return liberar_particiones(estado, devueltos), tuple(efectos)
+
+
+def programar_armado(estado, tren, efectos):
+    efectos.append(Efecto(clave("armar", tren.id), "armar-candidato", (tren.id,)))
+    efectos.extend(efectos_status(tren, "avisar-en-tren"))
+    return replace(estado, trenes=estado.trenes + (tren,))
+
+
+def aviso_conflicto_main(entrega):
+    tipo = "avisar-conflicto-main"
+    return Efecto(clave(tipo, entrega.recibo), tipo, (entrega.recibo,))
+
+
+def aplazar_conflicto(estado, tren, conflicto, efectos):
+    por_recibo = {e.entrega.recibo: e for e in estado.entradas}
+    corte = next((i for i, r in enumerate(tren.recibos)
+                  if por_recibo[r].entrega.pr == conflicto.pr), None)
+    if corte is None:
+        return replace(estado, pausa=Pausa("candidato-no-corresponde")), tuple(efectos)
+    anteriores, recibo = tren.recibos[:corte], tren.recibos[corte]
+    entrada = por_recibo[recibo]
+    base = tren.fase.B
+    payload = json.dumps({"lote": tren.id, "pr": conflicto.pr, "archivos": conflicto.archivos,
+                          "anteriores": [por_recibo[r].entrega.pr for r in anteriores]})
+    tipo = "avisar-conflicto-en-cadena"
+    efectos.append(Efecto(clave(tipo, tren.id), tipo, (tren.id, recibo, payload)))
+    if not entrada.aplazada_en_base and entrada.admision == Retenido(Motivo.CONFLICTO):
+        efectos.append(aviso_conflicto_main(entrada.entrega))
+    sobrevivientes = tuple(r for r in anteriores
+                           if not isinstance(por_recibo[r].admision, Rechazado))
+    nuevo = Tren(clave("sobrevivientes", tren.id, sobrevivientes), sobrevivientes, Congelado(base))
+    estado = cambiar_fase(estado, tren, Terminal("REARMAR"))
+    estado = replace(estado, entradas=tuple(
+        replace(e, tren=nuevo.id) if e.entrega.recibo in sobrevivientes else
+        # Contra main (sin prefijo) espera otra base; con prefijo acumula los de esta base.
+        replace(e, tren=None, rearmada=True, aplazada_en_base=base, prefijo_en_conflicto=tuple(
+            dict.fromkeys((e.prefijo_en_conflicto if e.aplazada_en_base == base else ()) + anteriores))
+            if anteriores else ())
+        if e.entrega.recibo == recibo else
+        replace(e, tren=None, rearmada=True)
+        if e.entrega.recibo in tren.recibos else e for e in estado.entradas))
+    if sobrevivientes:
+        estado = programar_armado(estado, nuevo, efectos)
+    return estado, tuple(efectos)
 
 
 def archivos_acreditados(fase, observacion):
@@ -985,14 +1030,25 @@ def orden_fifo(entrada):
     return entrada.admitida, entrada.recibida, entrada.entrega.recibo
 
 
-def siguiente_lote(fila):
+def siguiente_lote(fila, *, base=None):
     lote = []
+    recibos = set()
+    incompatibles = set()
     for entrada in fila[:LIMITE_LOTE]:
+        recibo = entrada.entrega.recibo
+        prefijo = entrada.prefijo_en_conflicto if entrada.aplazada_en_base == base else ()
+        choca = recibo in incompatibles or not recibos.isdisjoint(prefijo)
         if entrada.solo:
+            # Una entrega `solo` corta la fila aunque hoy no pueda viajar.
             if not lote:
                 lote.append(entrada)
             break
+        if choca:
+            # Sólo esta entrega choca con el lote; las siguientes pueden viajar.
+            continue
         lote.append(entrada)
+        recibos.add(recibo)
+        incompatibles.update(prefijo)
     return tuple(lote)
 
 
@@ -1041,6 +1097,9 @@ def paso(estado, observacion):
                            and not t.fase.reintento_pendiente}
     esperando_ci = {t.id for t in activos if isinstance(t.fase, EsperandoCI)}
     antes_de_ci = {t.id for t in activos if isinstance(t.fase, (Congelado, Armado))}
+    con_conflicto = {t.id for t in activos if isinstance(t.fase, Congelado)
+                    and observacion.conflicto_cadena and not base_vieja(t.fase, observacion)
+                    and observacion.tren_id in ("", t.id)}
     for entrada in estado.entradas:
         entrega = entrada.entrega
         vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
@@ -1049,6 +1108,9 @@ def paso(estado, observacion):
             entradas.append(entrada)
             continue
         decision = admision_entrada(entrada, vistas, observacion)
+        if (entrada.aplazada_en_base and decision == Retenido(Motivo.CONFLICTO)
+                and decision != entrada.admision):
+            efectos.append(aviso_conflicto_main(entrega))
         if decision == Rechazado(Motivo.HEAD):
             entrada = replace(entrada, admision=Rechazado(Motivo.HEAD), rearme_ci=None,
                               ci_ref_nueva=False)
@@ -1064,6 +1126,7 @@ def paso(estado, observacion):
             elif (decision == Retenido(Motivo.INCIERTO) or entrada.partida or
                   entrada.rearmada or entrada.tren in esperando_ci or
                   (cert_vencido is not None and entrada.tren == cert_vencido) or
+                  entrada.tren in con_conflicto or
                   (entrada.rearme_ci and entrada.tren in antes_de_ci)):
                 # No perder FIFO al retener antes o después de una partición.
                 admitida = entrada.admitida
@@ -1099,9 +1162,7 @@ def paso(estado, observacion):
                 ocupada.esperado == fase.candidato.C):
             return replace(estado, pausa=Pausa("rama-tren-ocupada")), tuple(efectos)
         if isinstance(fase, Congelado) and observacion.conflicto_cadena:
-            conflicto = observacion.conflicto_cadena
-            return replace(estado, pausa=Pausa("conflicto-en-cadena", pr=conflicto.pr,
-                                              archivos=conflicto.archivos)), tuple(efectos)
+            return aplazar_conflicto(estado, tren, observacion.conflicto_cadena, efectos)
         if isinstance(fase, Congelado) and observacion.candidato:
             candidato = observacion.candidato
             por_recibo = {e.entrega.recibo: e for e in miembros}
@@ -1179,9 +1240,11 @@ def paso(estado, observacion):
         estado = replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
                                              else t for t in estado.trenes))
         return estado, tuple(efectos)
-    fila = sorted((e for e in entradas if isinstance(e.admision, Admitido)
-                   and e.tren is None), key=orden_fifo)
-    lote = siguiente_lote(fila)
+    # Sin tren activo, el aplazado con prefijo recupera su lugar FIFO.
+    fila = sorted((e for e in entradas if isinstance(e.admision, Admitido) and e.tren is None
+                   and (e.aplazada_en_base != observacion.base or e.prefijo_en_conflicto)),
+                  key=orden_fifo)
+    lote = siguiente_lote(fila, base=observacion.base)
     if not lote or not observacion.base:
         return estado, tuple(efectos)
     recibos = tuple(e.entrega.recibo for e in lote)
@@ -1193,10 +1256,8 @@ def paso(estado, observacion):
         tren_id = clave("tren", estado.repo, observacion.base, recibos, generacion)
     tren = Tren(tren_id, recibos, Congelado(observacion.base))
     estado = replace(estado, entradas=tuple(replace(e, tren=tren_id, rearmada=False)
-                     if e.entrega.recibo in recibos else e for e in entradas),
-                     trenes=estado.trenes + (tren,))
-    efectos.append(Efecto(clave("armar", tren_id), "armar-candidato", (tren_id,)))
-    efectos.extend(efectos_status(tren, "avisar-en-tren"))
+                     if e.entrega.recibo in recibos else e for e in entradas))
+    estado = programar_armado(estado, tren, efectos)
     return estado, tuple(efectos)
 
 
@@ -1216,7 +1277,8 @@ def datos(valor):
                     **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)
                        # Conservar payloads históricos de sombra/custodia.
                        if not (isinstance(valor, Entrada) and f.name in (
-                                   "partida", "rearmada", "particion", "rearme_ci", "ci_ref_nueva")
+                                   "partida", "rearmada", "particion", "rearme_ci",
+                                   "ci_ref_nueva", "aplazada_en_base", "prefijo_en_conflicto")
                                and not getattr(valor, f.name))
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
                                 and valor.ventana is None)

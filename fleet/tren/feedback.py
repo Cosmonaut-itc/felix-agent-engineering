@@ -10,19 +10,20 @@ import shlex
 import subprocess
 
 from adaptadores.jale import HOSTS, MODOS
-from dominio import LANZADOR_JALE, Rechazado
+from dominio import LANZADOR_JALE, Rechazado, clave
 from observador import sha
 
 
 STATUS_SOLO = {"avisar-en-tren": ("pending", "En el tren; lote {}"),
                "avisar-aterrizaje": ("success", "Aterrizado; lote {}")}
-FEEDBACK = frozenset(("devolver", "avisar-caducidad")) | frozenset(STATUS_SOLO)
+AVISOS_CONFLICTO = frozenset(("avisar-conflicto-en-cadena", "avisar-conflicto-main"))
+FEEDBACK = frozenset(("devolver", "avisar-caducidad")) | frozenset(STATUS_SOLO) | AVISOS_CONFLICTO
 CONTEXTO = "pao-tren/resultado"
 
 
 def pr_feedback(efecto, estado):
     """Ordenar por dueño, incluso si la caducidad aún no conoce su head."""
-    recibo = efecto.datos[0 if efecto.tipo == "avisar-caducidad" else 1]
+    recibo = efecto.datos[0 if efecto.tipo in ("avisar-caducidad", "avisar-conflicto-main") else 1]
     return next(e.entrega.pr for e in estado.entradas if e.entrega.recibo == recibo)
 
 
@@ -84,6 +85,9 @@ class EscritorGitHub:
         return self.api(endpoint, {"body": marcador + "\n" + texto})["html_url"]
 
     def ejecutar_feedback(self, efecto, estado, frontera):
+        if efecto.tipo in AVISOS_CONFLICTO:
+            return self.avisar_conflicto(efecto, estado, frontera)
+
         def status(head, payload, url=None, reconciliar=False):
             if head is not None:
                 publicado = False
@@ -160,3 +164,24 @@ class EscritorGitHub:
         return status(head, {"state": "failure", "context": CONTEXTO,
                              "description": descripcion, "target_url": url}, url,
                       reconciliar=efecto.tipo == "devolver" and "ci_rojos" in payload)
+
+    def avisar_conflicto(self, efecto, estado, frontera):
+        if efecto.tipo == "avisar-conflicto-en-cadena":
+            _, recibo, detalle = efecto.datos
+            payload = json.loads(detalle)
+            anteriores = ", ".join("#{}".format(pr) for pr in payload["anteriores"])
+            contra = "los PR anteriores del lote (" + anteriores + ")" if anteriores else "`main`"
+            archivos = "\n".join("    " + json.dumps(ruta, ensure_ascii=False)
+                                 for ruta in payload["archivos"])
+            texto = ("El tren aplazó esta entrega por un conflicto con {}. "
+                     "El tren la reintentará en otro lote.\n\n"
+                     "Archivos en conflicto:\n\n{}").format(contra, archivos or "Sin detalle de Git.")
+        else:
+            recibo, = efecto.datos
+            texto = ("El tren retuvo esta entrega por un conflicto con `main`. "
+                     "Haz rebase sobre `main`, resuelve los conflictos y vuelve a entregar el nuevo head.")
+        entrega = next(e.entrega for e in estado.entradas if e.entrega.recibo == recibo)
+        # El evento es por lote; el marcador del comentario es por entrega.
+        url = self.comentario(estado.repo, entrega.pr, clave(efecto.tipo, recibo), texto)
+        frontera("comentario-publicado", efecto)
+        return {"comentario_url": url, "status_sha": None}

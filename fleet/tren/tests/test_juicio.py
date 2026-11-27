@@ -9,8 +9,8 @@ import unittest
 
 import test_activo as activo
 from dominio import (Armado, Certificado, ConflictoCadena, Congelado, Corriendo,
-                     Diagnosticando, EsperandoCI, Pausa, Reproduccion,
-                     Terminal, clave, datos)
+                     Diagnosticando, EsperandoCI, Motivo, Pausa, Reproduccion,
+                     Retenido, Terminal, clave, datos)
 from juicios import politica, tren_pausado
 
 REPO = activo.REPO
@@ -334,19 +334,84 @@ class JuicioTests(unittest.TestCase):
         self.assertEqual(len(self.posts("/comments")), 1)
         self.assertEqual(self.decisiones()[0]["estado"], "aplicada")
 
-    def test_conflicto_en_cadena_solo_expulsa_pr_en_conflicto(self):
-        original = self.contexto.git.armar
-        self.contexto.git.armar = lambda base, miembros: ConflictoCadena(2, ("archivo",))
-        self.assertEqual(self.hasta_pausa().pausa.motivo, "conflicto-en-cadena")
-        tren = self.estado().trenes[0].id
+    def pausa_vieja_por_conflicto(self):
+        estado = self.hasta_fase(Congelado)
+        tren = estado.trenes[0].id
+        with self.ledger() as ledger:
+            ledger.guardar_paso(replace(estado, pausa=Pausa("conflicto-en-cadena", pr=2,
+                                archivos=("archivo",))), (), 5000, consumido=clave("armar", tren))
+        return tren
+
+    def test_pausa_vieja_por_conflicto_solo_expulsa_pr_en_conflicto(self):
+        tren = self.pausa_vieja_por_conflicto()
         self.assertEqual(self.cli("juicio", "--tren", tren, "--decision", "expulsar",
                                   "--pr", "1", "--motivo", "prueba")[0], 2)
         self.juicio("expulsar", 2)
-        self.contexto.git.armar = original
         self.contexto.tick(8000)
         self.aterrizar_ultimo()
         self.assertEqual(len(self.posts("/comments")), 1)
         self.assertIn("conflicto-en-cadena", self.posts("/comments")[0]["payload"]["body"])
+
+    def test_pausa_vieja_por_conflicto_permite_abortar(self):
+        self.pausa_vieja_por_conflicto()
+        self.juicio("abortar")
+        self.contexto.tick(8000)
+        final = self.estado()
+        self.assertIsNone(final.pausa)
+        self.assertEqual(final.trenes[0].fase, Terminal("ABORTADO"))
+        self.assertTrue(all(e.tren is None and e.terminal is None for e in final.entradas))
+        self.assertEqual(self.posts("/comments"), [])
+        self.assertEqual(self.decisiones()[0]["estado"], "aplicada")
+
+    def test_conflicto_comenta_una_vez_aunque_pierda_el_ack_y_cambie_el_lote(self):
+        original = self.contexto.git.armar
+        def armar(base, miembros):
+            if any(pr == 2 for pr, _ in miembros):
+                return ConflictoCadena(2, ("archivo",))
+            return original(base, miembros)
+        self.contexto.git.armar = armar
+        inicial = self.hasta_fase(Congelado)
+
+        class Muerte(Exception):
+            pass
+        def detener(nombre, efecto):
+            if nombre == "comentario-publicado" and efecto.tipo == "avisar-conflicto-en-cadena":
+                raise Muerte()
+        with self.assertRaises(Muerte):
+            self.contexto.tick(5000, detener)
+        comentario, = self.posts("/comments")
+        self.assertTrue(comentario["endpoint"].endswith("/issues/2/comments"))
+        for texto in ("#1", "archivo", "reintentará en otro lote"):
+            self.assertIn(texto, comentario["payload"]["body"])
+        self.contexto.tick(6000)
+        self.aterrizar_ultimo()
+        # Tras aterrizar #1, #2 pasa a ser el primero de un lote sobre otra base.
+        self.contexto.tick(15000)
+        self.contexto.tick(15120)
+        final = self.estado()
+        self.assertIsNone(final.pausa)
+        self.assertEqual(final.trenes[-1].fase, Terminal("REARMAR"))
+        self.assertEqual(self.posts("/comments"), [comentario])
+        with self.ledger() as ledger:
+            eventos = [json.loads(r[0]) for r in ledger.db.execute(
+                "SELECT payload FROM events WHERE tipo='conflicto-en-cadena-aplazado' ORDER BY seq")]
+        self.assertEqual(eventos, [
+            dict(lote=inicial.trenes[0].id, pr=2, archivos=["archivo"], anteriores=[1]),
+            dict(lote=final.trenes[-1].id, pr=2, archivos=["archivo"], anteriores=[]),
+        ])
+
+        vista = self.contexto.observador.vista
+        def vista_con_conflicto(entrega):
+            actual = vista(entrega)
+            return replace(actual, conflicto=True) if entrega.pr == 2 else actual
+        self.contexto.observador.vista = vista_con_conflicto
+        for ahora in (15240, 15360, 15480):
+            self.contexto.tick(ahora)
+        self.assertEqual(self.estado().entradas[1].admision, Retenido(Motivo.CONFLICTO))
+        primero, rebase = self.posts("/comments")
+        self.assertEqual(primero, comentario)
+        self.assertEqual(rebase["endpoint"], comentario["endpoint"])
+        self.assertIn("Haz rebase sobre `main`", rebase["payload"]["body"])
 
     def test_reanudar_candidato_incorrecto_repite_armado_no_certifica(self):
         original = self.contexto.git.armar
