@@ -131,6 +131,7 @@ def main():
     nominal = run(SOURCE, 'test_client_remote_run', timeout=120)
     if nominal.returncode:
         raise AssertionError(nominal.stdout + nominal.stderr)
+    failures = []
     for number, (rule, name, old, new, test) in enumerate(CASES, 1):
         with tempfile.TemporaryDirectory(prefix='cc3-p2-mutant-', dir='/tmp') as folder:
             root = Path(folder) / 'pueue-desk'
@@ -140,14 +141,19 @@ def main():
             edits = zip(old, new) if isinstance(old, tuple) else [(old, new)]
             for before, after in edits:
                 if source.count(before) != 1:
-                    raise AssertionError('Nonunique anchor: ' + rule)
+                    failures.append('Nonunique anchor: ' + rule)
+                    break
                 source = source.replace(before, after)
-            path.write_text(source)
-            result = run(root, T + test)
-            if (result.returncode != 1 or 'FAIL: ' + test + ' (' not in result.stderr
-                    or 'AssertionError:' not in result.stderr or 'ERROR:' in result.stderr):
-                raise AssertionError(rule + ' did not fail by assertion:\n' + result.stdout + result.stderr)
-            print(f'{number} {rule}: assertion', flush=True)
+            else:
+                path.write_text(source)
+                result = run(root, T + test)
+                if (result.returncode != 1 or 'FAIL: ' + test + ' (' not in result.stderr
+                        or 'AssertionError:' not in result.stderr or 'ERROR:' in result.stderr):
+                    failures.append(rule + ' did not fail by assertion:\n' + result.stdout + result.stderr)
+                    continue
+                print(f'{number} {rule}: assertion', flush=True)
+    if failures:
+        raise AssertionError('\n'.join(failures))
     print(f'{len(CASES)}/{len(CASES)} mutants; nominal green; {sys.version.split()[0]}', flush=True)
 
 

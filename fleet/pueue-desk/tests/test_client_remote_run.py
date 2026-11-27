@@ -218,6 +218,7 @@ class RemoteRunTests(unittest.TestCase):
         bundle = reconciler.actions.adapter.recover(request, item['state'], item['reservation'],
                                                     item['record']['process'], self.status())
         self.assertEqual(set(bundle), {'observation', 'finish'})
+        self.assertIsNotNone(bundle['finish'])
         self.assertEqual(bundle['finish']['proof'], proof)
         self.engine.reconcile_clients()
         finish = self.actions.record(bundle['finish'])['response']
