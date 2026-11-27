@@ -181,14 +181,28 @@ class Fallo:
 
 
 LANZADOR_JALE = "scripts/test-hosts/run-remote.sh"
+LANZADOR_CAJA = "scripts/tren/lanzador"
+PARTE_CAJA = "caja-desk"
 
 
 def argv_reproduccion(fallo, commit, origen="<resultado.json>", worktree="<worktree>"):
     if fallo.parte == "jale":
         return ["bash", LANZADOR_JALE, "auto", "<log>", fallo.check, commit, fallo.unidad]
-    return ["bash", "scripts/mini/run.sh", "--repetir", origen,
-            "--sha", commit, "--worktree", worktree, "--veces", "2",
-            "--unidad", fallo.check + "=" + fallo.unidad]
+    return argv_repetir_publico(fallo.parte, fallo.check, fallo.unidad, commit, origen, worktree)
+
+
+def argv_repetir_publico(parte, check, unidad, commit, origen, worktree):
+    """Plantilla de repetición con el contrato de Hasito; caja exige evidencia y nombre."""
+    args = ["--repetir", origen, "--sha", commit, "--worktree", worktree, "--veces", "2",
+            "--unidad", check + "=" + unidad]
+    if parte == PARTE_CAJA:
+        return ["bash", LANZADOR_CAJA, *args, "--evidencia", "<evidencia>", "--nombre", "<nombre>"]
+    return ["bash", "scripts/mini/run.sh", *args]
+
+
+def parte_publica(fallo):
+    """Sólo caja viaja con su parte: los payloads guardados de Hasito y Jale no cambian."""
+    return {"parte": fallo.parte} if fallo.parte == PARTE_CAJA else {}
 
 
 @dataclass(frozen=True)
@@ -720,7 +734,7 @@ def devolver_atribuidos(estado, tren, fase, causas):
                 comando = shlex.join(evidencia.resultado.comando or argv_reproduccion(
                     f, commit, fase.suite, "<worktree-desacoplado-en-" + commit + ">"))
                 detalles.append({"unidad": f.unidad, "check": f.check, "firma": f.firma,
-                                 "conjunto_causal": grupo, "comando": comando})
+                                 "conjunto_causal": grupo, "comando": comando, **parte_publica(f)})
         payload = json.dumps({"lote": tren.id, "B": fase.candidato.B, "C": fase.candidato.C,
                               "pr": entrega.pr, "head": entrega.head, "fallos": detalles}, sort_keys=True)
         efectos.append(Efecto(clave("devolver", tren.id, recibo), "devolver", (tren.id, recibo, payload)))

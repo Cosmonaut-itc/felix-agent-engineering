@@ -663,6 +663,8 @@ contiene IDs de lote/entrega, SHAs y números de PR, motivos de un enum y texto
 fijo; no se transportan otros campos del diagnóstico ni del config privado.
 En Hasito se publica la plantilla `bash scripts/mini/run.sh --repetir <resultado.json>
 --sha <SHA-causal> --worktree <worktree-en-SHA> --veces 2 --unidad check=unidad`.
+En caja se publica la misma plantilla sobre `bash scripts/tren/lanzador`, con
+`--evidencia <evidencia> --nombre <nombre>` al final, porque su lanzador los exige.
 En Jale se publica `bash scripts/test-hosts/run-remote.sh <host> <log>
 <modo> <SHA-causal> <unidad>`. Con host `boat` el comando empieza con
 `SEN_RUN_OWNER=<agente>`, porque Boat sólo admite corridas con un dueño válido.
@@ -1361,10 +1363,11 @@ La configuración privada por repo admite `"adaptador": "caja"` con
 `"lanzador"`, la ruta absoluta a `scripts/tren/lanzador` del checkout de caja.
 Ese lanzador habla el contrato de Hasito: recibe los mismos argumentos y
 escribe recibos `suite-resultado@1` y `suite-repeticion@1`. Por eso PAO usa la
-clase `Hasito`. Sólo cambia el directorio de estado, que es
-`$XDG_STATE_HOME/pao-tren/caja`. A diferencia de Hasito, caja no acepta
-`lanzador_hasito`, y sin `lanzador` la selección falla. Esta selección no
-inscribe ni activa el repositorio.
+clase `Hasito`. Cambian dos cosas. El estado vive en
+`$XDG_STATE_HOME/pao-tren/caja`. El comando de reproducción que publica cada
+devolución nombra `scripts/tren/lanzador`. Caja ignora `lanzador_hasito`, así
+que sin `lanzador` la selección falla. Esta selección no inscribe ni activa el
+repositorio.
 
 ```json
 {
