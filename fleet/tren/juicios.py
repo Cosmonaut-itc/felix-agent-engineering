@@ -5,8 +5,9 @@ import shlex
 
 from dominio import (Armado, Congelado, Corriendo, Diagnosticando,
                      Efecto, EsperandoCI, Pausa, Promoviendo, Rechazado, Terminal, Tren,
-                     argv_reproduccion, cambiar_fase, clave, datos, efecto_diagnostico,
-                     efecto_promover, efecto_reanudar_suite, efectos_status, separar_devueltos)
+                     argv_reproduccion, cambiar_fase, cambiar_plazo_ci_promocion, certificado_de,
+                     clave, datos, efecto_diagnostico, efecto_promover, efecto_reanudar_suite,
+                     efectos_status, lectura_ci, separar_devueltos)
 
 
 # Motivo/detalle -> decisión -> operación. Los prefijos terminan en ':' y
@@ -30,6 +31,8 @@ POLITICA = {
         {"reanudar": "continuar", "abortar": "abortar"},
     ("infraestructura", "ci-sin-resultado"):
         {"reanudar": "ci-nuevo", "abortar": "abortar"},
+    ("infraestructura", "pre-aterrizaje:ci-sin-resultado"):
+        {"reanudar": "reiniciar-ci-promocion", "abortar": "abortar"},
     ("infraestructura", "pre-aterrizaje:"):
         {"reanudar": "promover", "abortar": "abortar"},
     ("infraestructura", "cancelacion-pre-aterrizaje"):
@@ -143,6 +146,8 @@ def error_decision(estado, decision, pausa_id):
         return "fase-no-corresponde"
     if operacion == "ci-nuevo" and not isinstance(fase, EsperandoCI):
         return "fase-no-corresponde"
+    if operacion == "reiniciar-ci-promocion" and certificado_de(fase) is None:
+        return "fase-no-corresponde"
     if operacion == "armar" and not isinstance(fase, Congelado):
         return "fase-no-corresponde"
     if operacion == "promover" and not isinstance(fase, Promoviendo):
@@ -165,9 +170,14 @@ def resolver(estado, observacion):
     estado = replace(estado, pausa=None)
     efectos = ()
     if operacion == "abortar":
+        # Un candidato ya publicado pudo terminar su CI después de este juicio.
+        pudo_probarse = isinstance(tren.fase, (EsperandoCI, Corriendo, Diagnosticando)) or (
+            certificado_de(tren.fase) is not None)
         estado = cambiar_fase(estado, tren, Terminal("ABORTADO"))
         estado = replace(estado, entradas=tuple(
-            replace(e, tren=None) if e.entrega.recibo in tren.recibos else e
+            replace(e, tren=None, ci_ref_nueva=(e.ci_ref_nueva or pudo_probarse)
+                    and not isinstance(e.admision, Rechazado))
+            if e.entrega.recibo in tren.recibos else e
             for e in estado.entradas))
     elif operacion == "suite-nueva":
         # Otro espacio de recibos evita que el adaptador reutilice el rojo.
@@ -176,7 +186,8 @@ def resolver(estado, observacion):
         nuevo = Tren(clave("juicio-suite", tren.id, decision.id), tren.recibos,
                      Armado(candidato_de(tren)))
         estado = replace(estado, trenes=estado.trenes + (nuevo,), entradas=tuple(
-            replace(e, tren=nuevo.id) if e.entrega.recibo in tren.recibos else e
+            replace(e, tren=nuevo.id, ci_ref_nueva=not isinstance(e.admision, Rechazado))
+            if e.entrega.recibo in tren.recibos else e
             for e in estado.entradas))
         efectos = efectos_status(nuevo, "avisar-en-tren")
     elif operacion == "devolver":
@@ -200,6 +211,8 @@ def resolver(estado, observacion):
         estado = cambiar_fase(estado, tren, fase)
         efectos = (Efecto(clave("ci", tren.id, fase.solicitud),
                           "solicitar-ci", (tren.id,)),)
+    elif operacion == "reiniciar-ci-promocion":
+        estado = cambiar_plazo_ci_promocion(estado, tren, observacion.ahora)
     elif operacion in ("armar", "publicar"):
         tipo = "armar-candidato" if operacion == "armar" else "solicitar-ci"
         efectos = (Efecto(clave(tipo, tren.id, decision.id), tipo, (tren.id,)),)
@@ -222,9 +235,14 @@ def resolver(estado, observacion):
         efectos = ((efecto_reanudar_suite(tren, fase),)
             if isinstance(fase, Corriendo) else (efecto_diagnostico(tren, fase),))
     elif operacion == "promover":
-        fase = replace(tren.fase, intentos=tren.fase.intentos + 1, reintento_pendiente=False)
-        estado = cambiar_fase(estado, tren, fase)
-        efectos = (efecto_promover(tren.id, fase.intentos),)
+        if lectura_ci(tren, observacion) == "verde":
+            fase = replace(tren.fase, intentos=tren.fase.intentos + 1, reintento_pendiente=False,
+                           reintento_autorizado=False)
+            estado = cambiar_fase(estado, tren, fase)
+            efectos = (efecto_promover(tren.id, fase.intentos),)
+        else:
+            fase = replace(tren.fase, reintento_pendiente=True, reintento_autorizado=True)
+            estado = cambiar_fase(estado, tren, fase)
     return estado, (resultado,) + efectos
 
 

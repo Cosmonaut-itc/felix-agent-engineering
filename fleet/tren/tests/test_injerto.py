@@ -69,10 +69,10 @@ class InjertoTests(fixtures.AterrizajeTests):
             cert = Certificado(candidato.C, candidato.arbol, "suite", "ci", self.B)
             estado = replace(estado, trenes=estado.trenes[:-1] +
                              (replace(estado.trenes[-1], fase=cert),))
-            estado, efectos = paso(estado, obs)
+            estado, efectos = paso(estado, self.ci_verde(estado, obs))
             ajeno = self.commit({"comun": "base\n", "ajeno": str(generacion)}, (self.B,))
             self.push(ajeno, "refs/heads/main")
-            llegada = observacion_de(ejecutar(efectos[0], estado, obs, self.git))
+            llegada = observacion_de(self.promover(efectos[0], estado, obs))
             estado, _ = paso(estado, llegada)
             self.assertEqual(estado.trenes[-1].fase, Terminal("REARMAR"))
             self.assertEqual(estado.pausa, Pausa("escritor-externo", main=ajeno))
@@ -94,8 +94,8 @@ class InjertoTests(fixtures.AterrizajeTests):
         cert = Certificado(candidato.C, candidato.arbol, "suite", "ci", self.B)
         estado = replace(estado, trenes=estado.trenes[:-1] +
                          (replace(estado.trenes[-1], fase=cert),))
-        estado, efectos = paso(estado, obs)
-        final, _ = paso(estado, observacion_de(ejecutar(efectos[0], estado, obs, self.git)))
+        estado, efectos = paso(estado, self.ci_verde(estado, obs))
+        final, _ = paso(estado, observacion_de(self.promover(efectos[0], estado, obs)))
         self.assertEqual(final.trenes[-1].fase, Terminal("ATERRIZADO"))
         self.assertEqual(self.remoto(), candidato.C)
 
@@ -121,13 +121,13 @@ class InjertoTests(fixtures.AterrizajeTests):
                 raise subprocess.TimeoutExpired(args, 120)
             return subprocess.run(args, **kwargs)
         self.git.ejecutar = sin_lectura
-        incierta = ejecutar(efecto, estado, obs, self.git)
+        incierta = self.promover(efecto, estado, obs)
         self.assertFalse(incierta.completo)
         self.assertIsInstance(incierta.observacion.main, Incierto)
         self.assertEqual(paso(estado, incierta.observacion), (estado, ()))
         self.assertEqual(self.remoto(), candidato.C)
         self.git.ejecutar = subprocess.run
-        recuperada = ejecutar(efecto, estado, obs, self.git)
+        recuperada = self.promover(efecto, estado, obs)
         self.assertTrue(recuperada.completo)
         final, efectos = paso(estado, recuperada.observacion)
         self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))

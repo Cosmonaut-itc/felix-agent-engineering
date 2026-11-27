@@ -12,7 +12,7 @@ from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
                      BloqueoPrevia, EsperaPrevia,
                      Observacion, Promoviendo, RamaOcupada, admision_entrada,
                      clave, efecto_diagnostico, efecto_promover, efecto_reanudar_suite,
-                     intento_suite, rama_ci, recibo_ci)
+                     intento_suite, lectura_ci, rama_ci, recibo_ci)
 from atribucion import planificar
 from git_ops import FalloGit, Publicado
 from adaptadores.hasito import ResultadoInvalido
@@ -92,7 +92,7 @@ def pedidos_adelantados(fase, git, adaptador, tren):
         yield solicitud, commit
 
 
-def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
+def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None, *, leer_ci=None):
     """Repetible sobre la misma instantánea; los leases hacen converger el IO.
 
     Devuelve Ejecucion; sólo completo=True permite cerrar el efecto del outbox.
@@ -140,12 +140,13 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                 if recibo is None:
                     return Ejecucion(limpia, False)
                 ruta, resultado = recibo
-                # Consumir la suite requiere haber acreditado CI verde sobre C.
-                # Al recuperar se conserva esa evidencia.
-                return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado,
-                    ci_candidato="verde", ci_recibo=recibo_ci(tren) if fase.solicitud else
-                    observacion.ci_recibo if observacion.ci_candidato == "verde"
-                    else recibo_ci(tren)), True)
+                llegada = replace(limpia, suite=ruta, resultado_suite=resultado)
+                # La solicitud inicial conserva el contrato histórico de recuperación.
+                if not fase.solicitud:
+                    llegada = replace(llegada, ci_candidato="verde",
+                        ci_recibo=observacion.ci_recibo if observacion.ci_candidato == "verde"
+                        else recibo_ci(tren))
+                return Ejecucion(llegada, True)
             if efecto.tipo == "reanudar-suite" and isinstance(fase, Corriendo):
                 esperado = efecto_reanudar_suite(tren, fase)
                 if efecto != esperado or fase.esperar_hasta is not None:
@@ -226,17 +227,39 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
         # siendo seguro por el lease, y su lectura posterior decide el resultado.
         lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
         if isinstance(lectura, (EnBase, Incierto)):
-            if previo is not None and previo.necesario(tren, observacion):
-                if isinstance(lectura, Incierto):
-                    if (previo.operador is not None and previo.operador.checkout is not None
-                            and "pre_aterrizaje" in previo.config):
-                        raise FalloSnapshot("main-no-disponible")
-                    lectura = BloqueoPrevia(cert.B, cert.C, "base-incierta")
-                else:
-                    lectura = git.promover(cert.B, cert.C, cert.arbol, heads,
-                        antes_push=lambda: previo.verificar(estado, tren, observacion, efecto))
+            requiere_previa = previo is not None and previo.necesario(tren, observacion)
+
+            def antes_push():
+                if requiere_previa:
+                    impedimento = previo.verificar(estado, tren, observacion, efecto)
+                    if impedimento is not None:
+                        return impedimento
+                candidato_ci = leer_ci(estado) if leer_ci is not None else None
+                if candidato_ci is None or candidato_ci[0] != tren or candidato_ci[1].estado != "verde":
+                    if requiere_previa:
+                        # El próximo verde abre otro plazo para el gancho.
+                        previo.resolver(estado, tren, None)
+                    return EsperaPrevia(cert.B, cert.C)
+                if requiere_previa:
+                    # La consulta de CI toma tiempo. Verificar de nuevo la ventana local.
+                    ventana = previo.ventana(tren, observacion)
+                    if ventana != "seguir":
+                        return (EsperaPrevia(cert.B, cert.C) if ventana == "esperar" else
+                                BloqueoPrevia(cert.B, cert.C, ventana))
+                return None
+
+            if lectura_ci(tren, observacion) != "verde":
+                if isinstance(lectura, EnBase):
+                    if previo is not None:
+                        previo.resolver(estado, tren, lectura)
+                    lectura = EsperaPrevia(cert.B, cert.C)
+            elif requiere_previa and isinstance(lectura, Incierto):
+                if (previo.operador is not None and previo.operador.checkout is not None
+                        and "pre_aterrizaje" in previo.config):
+                    raise FalloSnapshot("main-no-disponible")
+                lectura = BloqueoPrevia(cert.B, cert.C, "base-incierta")
             else:
-                lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
+                lectura = git.promover(cert.B, cert.C, cert.arbol, heads, antes_push=antes_push)
         if previo is not None:
             lectura = previo.resolver(estado, tren, lectura)
         return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),

@@ -11,9 +11,9 @@ import os
 import subprocess
 import time
 
-from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
+from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EscritorExterno, EsperandoCI, Incierto,
                      Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, base_vieja, clave,
-                     datos, desde_datos, paso, recibo_ci)
+                     datos, desde_datos, lectura_ci, paso, recibo_ci)
 from efectos import EfectoFallido, ejecutar, prelanzar_ci, suite_autorizada
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
@@ -138,10 +138,6 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         ci = ledger.primer_inicio(repo, clave("ci", tren.id, tren.fase.solicitud))
         return ci is not None and ci < inicio
 
-    def suite_de_ci_anterior(tren):
-        return (isinstance(tren.fase, EsperandoCI) and tren.fase.solicitud > 0 and
-                not suite_de_ci_vigente(tren))
-
     previo.limpiar(estado)
     observacion = observador.observar(estado, ahora)
     activo = next((t for t in estado.trenes if not isinstance(t.fase, Terminal)), None)
@@ -240,15 +236,16 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     resultado = escritor.ejecutar_feedback(efecto, estado, frontera)
                     completo = True
                 else:
-                    ejecucion = ejecutar(efecto, estado, observacion, git, adaptador, previo)
+                    ejecucion = ejecutar(efecto, estado, observacion, git, adaptador, previo,
+                                         leer_ci=getattr(observador, "ci_candidato", None))
                     if ejecucion.aviso is not None:
                         ledger.evento(repo, "prelanzamiento-fallido", ahora, ejecucion.aviso)
                     if ejecucion.en_curso:
                         frontera("efecto-ejecutado", efecto)
                         continue
-                    ci_anterior = efecto.tipo == "iniciar-suite" and suite_de_ci_anterior(tren)
+                    ci_numerado = isinstance(tren.fase, EsperandoCI) and tren.fase.solicitud > 0
                     resultado = {"observacion": resultado_observacion(
-                        efecto, ejecucion.observacion, conserva_ci=not ci_anterior)}
+                        efecto, ejecucion.observacion, conserva_ci=not ci_numerado)}
                     completo = ejecucion.completo
                     if not completo:
                         resultado["error"] = "ejecucion-incompleta"
@@ -346,10 +343,17 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         frontera("paso-guardado", None)
         return terminar(nuevo, efectos)
     # La limpieza no crea pausas: sólo retiene el push, incluso al reanudar.
+    clave_suite = clave("suite", activo.id) if activo is not None else None
+    fallo_previo = observacion.suite_de_ci_vigente and any(
+        f["clave"] == clave_suite and f["estado"] == "fallido" for f in ledger.outbox(repo))
     estado, fallo = drenar(estado, observacion, recuperacion=True)
+    filas = ledger.outbox(repo)
+    if fallo_previo and any(f["clave"] == clave_suite and f["estado"] == "fallido" for f in filas):
+        # Tras reintentar la fila fallida, un recibo aún ilegible deja correr el plazo.
+        observacion = replace(observacion, suite_de_ci_vigente=False)
     consumido = None
     if not estado.pausa:
-        for fila in ledger.outbox(repo):
+        for fila in filas:
             if fila["estado"] == "resultado":
                 recibida = json.loads(fila["resultado"])["observacion"]
                 efecto = desde_datos(json.loads(fila["payload"]))
@@ -357,11 +361,13 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     tren = next((t for t in estado.trenes if t.id == efecto.datos[0]), None)
                     if tren is None:
                         continue
-                    if suite_de_ci_anterior(tren):
+                    if isinstance(tren.fase, EsperandoCI) and tren.fase.solicitud:
+                        # La suite terminó. Si falta verde, corre el plazo de CI.
+                        observacion = replace(observacion, suite_de_ci_vigente=False)
                         if (observacion.tren_id != tren.id or observacion.ci_candidato != "verde" or
                                 observacion.ci_recibo != recibo_ci(tren)):
                             continue
-                        # Un resultado guardado antes de esta versión puede traer otro verde.
+                        # Los recibos anteriores pueden incluir el CI del momento del arranque.
                         recibida.pop("ci_candidato", None)
                         recibida.pop("ci_recibo", None)
                 if efecto.tipo == "promover":
@@ -378,6 +384,8 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     if not bloqueo or not isinstance(lectura, (EnBase, Incierto)):
                         recibida["main"] = datos(lectura)
                     if isinstance(lectura, Incierto) and not bloqueo:
+                        observacion = replace(observacion, main=lectura, tren_id=tren.id,
+                                              intento_promocion=tren.fase.intentos)
                         ledger.registrar_efecto(repo, efecto, ahora,
                             {"error": "reconciliacion-incierta", "observacion": recibida})
                         intentados.add(efecto.clave)
@@ -386,6 +394,17 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     k: desde_datos(v) for k, v in recibida.items()})
                 consumido = fila["clave"]
                 break
+    if (not estado.pausa and activo is not None and isinstance(activo.fase, Promoviendo)
+            and observacion.main is None
+            and lectura_ci(activo, observacion) != "verde"):
+        # Un push anterior pudo aterrizar antes de perder el ACK.
+        cert = activo.fase.certificado
+        heads = tuple(e.entrega.head for e in estado.entradas
+                      if e.entrega.recibo in activo.recibos)
+        lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
+        if isinstance(lectura, (Aterrizado, EscritorExterno, Incierto)):
+            observacion = replace(observacion, main=lectura, tren_id=activo.id,
+                                  intento_promocion=activo.fase.intentos)
     nuevo, efectos = paso(estado, observacion)
     nuevo = limpiar(nuevo)
     guardar_paso(nuevo, efectos, consumido, fallo)

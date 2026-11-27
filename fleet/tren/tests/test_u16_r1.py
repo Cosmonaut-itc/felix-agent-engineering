@@ -1,12 +1,16 @@
 """R1 U16: solicitud vigente y preparación de runner; sólo host remoto."""
 from dataclasses import replace
+from datetime import datetime, timezone
 import json
 import subprocess
 import unittest
+from unittest.mock import patch
 
 import test_activo as activo
 from test_u16 import ContextoCI, REPO
+from adaptadores.hasito import ResultadoInvalido
 from dominio import Certificado, EsperandoCI, Pausa, Terminal, paso
+from git_ops import ErrorGit
 from observador import GitHubGit
 
 
@@ -17,6 +21,11 @@ def check(conclusion, suite=1, identidad=90, actions=False):
         valor.update(app={'slug': 'github-actions'}, details_url=
             'https://github.com/' + REPO + '/actions/runs/10/job/20')
     return valor
+
+
+def status(estado, instante):
+    return {'context': 'Vercel', 'state': estado,
+            'created_at': datetime.fromtimestamp(instante, timezone.utc).isoformat()}
 
 
 def job(head='a' * 40):
@@ -75,7 +84,7 @@ class CasosCI(ContextoCI):
         viejo['head_sha'] = fase.candidato.C
         datos = {'head': fase.candidato.C, 'checks': [viejo], 'suites': [
             {'id': 1, 'head_sha': fase.candidato.C, 'head_branch': 'tren/' + tren.id}],
-            'statuses': [{'context': 'legacy', 'state': conclusion}]}
+            'statuses': [{'context': 'legacy', 'state': 'success'}]}
         self.guardar_ci(datos)
         self.juicio('reanudar')
         return antes, datos, fase.desde + 4000
@@ -97,6 +106,137 @@ class CasosCI(ContextoCI):
         self.guardar_ci(datos)
 
 
+class RearmeCIRefTests(CasosCI):
+    def rearmar_con_rojo(self):
+        estado = self.hasta_fase(EsperandoCI)
+        anterior = estado.trenes[0]
+        c = anterior.fase.candidato.C
+        viejo = dict(check('failure'), head_sha=c)
+        datos = {'head': c, 'checks': [viejo], 'suites': [
+            {'id': 1, 'head_sha': c, 'head_branch': 'tren/' + anterior.id}]}
+        self.guardar_ci(datos)
+        self.contexto = ContextoR1(self.ruta_contexto)
+        self.contexto.tick(1000)
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
+        estado = self.siguiente_hasta(lambda e: isinstance(e.trenes[-1].fase, EsperandoCI), 1001)
+        return anterior, estado.trenes[-1], datos
+
+    def test_rearmado_filtra_rojo_anterior_aunque_c_sea_el_mismo(self):
+        anterior, nuevo, datos = self.rearmar_con_rojo()
+        c = datos['head']
+        self.assertNotEqual(nuevo.id, anterior.id)
+        self.assertEqual(nuevo.fase.candidato.C, c)
+        self.assertEqual(nuevo.fase.solicitud, 1)
+        self.assertEqual(self.remoto('refs/heads/tren/' + nuevo.id + '-ci-1'), c)
+        self.contexto.tick(1020)
+        self.assertEqual(self.estado().trenes[-1], nuevo)
+        self.assertEqual(self.lineas('trabajos.log'), [])
+
+        self.nueva(datos, nuevo, 'success')
+        certificado = self.siguiente_hasta(lambda e: isinstance(e.trenes[-1].fase, Certificado), 1021)
+        self.assertTrue(all(e.rearme_ci == anterior.id for e in certificado.entradas))
+        self.assertEqual(certificado.trenes[-1].fase.ci, 'github:' + c + ':tren/' + nuevo.id + '-ci-1')
+        aterrizado = self.siguiente_hasta(lambda e: e.trenes[-1].fase == Terminal('ATERRIZADO'), 1030)
+        self.assertTrue(all(e.rearme_ci is None for e in aterrizado.entradas))
+        self.assertEqual(len(self.lineas('trabajos.log')), 1)
+
+    def test_status_no_verde_bloquea_el_lanzamiento_sin_partir(self):
+        _, nuevo, datos = self.rearmar_con_rojo()
+        datos['statuses'] = [status('pending', 1019)]
+        self.nueva(datos, nuevo, 'success')
+        self.contexto.tick(1020)
+        self.assertEqual(self.estado().trenes[-1], nuevo)
+        self.assertEqual(self.lineas('trabajos.log'), [])
+        datos['statuses'].insert(0, status('failure', 1021))
+        self.guardar_ci(datos)
+        self.contexto.tick(1021)
+        self.assertEqual(self.estado().trenes[-1].fase, nuevo.fase)
+        self.assertEqual(self.remoto(), self.B)
+
+    def test_suite_terminada_espera_verde_fresco_y_check_rojo_parte(self):
+        _, nuevo, datos = self.rearmar_con_rojo()
+        self.nueva(datos, nuevo, 'success')
+        self.contexto.tick(1020)
+        self.assertEqual(len(self.lineas('trabajos.log')), 1)
+        datos['statuses'] = [status('pending', 1021)]
+        self.guardar_ci(datos)
+        self.contexto.tick(1021)
+        self.assertEqual(self.estado().trenes[-1].fase, nuevo.fase)
+        datos['statuses'].insert(0, status('failure', 1022))
+        self.guardar_ci(datos)
+        self.contexto.tick(1022)
+        self.assertEqual(self.estado().trenes[-1].fase, nuevo.fase)
+        datos['checks'][1]['conclusion'] = 'failure'
+        self.guardar_ci(datos)
+        self.contexto.tick(1023)
+        self.assertEqual(self.estado().trenes[-1].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.remoto(), self.B)
+
+    def test_suite_terminada_con_status_bloqueante_vence_el_plazo_de_ci(self):
+        _, nuevo, datos = self.rearmar_con_rojo()
+        self.nueva(datos, nuevo, 'success')
+        self.contexto.tick(1020)
+        self.assertEqual(len(self.lineas('trabajos.log')), 1)
+        datos['statuses'] = [status('failure', 1021)]
+        self.guardar_ci(datos)
+        vence = nuevo.fase.desde + 3600
+        self.contexto.tick(vence - 1)
+        self.assertIsNone(self.estado().pausa)
+        self.contexto.tick(vence)
+        self.assertEqual(self.estado().pausa, Pausa('infraestructura', detalle='ci-sin-resultado'))
+        self.assertEqual(self.estado().trenes[-1].fase, nuevo.fase)
+        self.assertEqual(self.remoto(), self.B)
+
+    def perder_ack_suite(self):
+        class Corte(Exception):
+            pass
+
+        def cortar(nombre, efecto):
+            if nombre == 'efecto-ejecutado' and efecto.tipo == 'iniciar-suite':
+                raise Corte
+
+        _, nuevo, datos = self.rearmar_con_rojo()
+        self.nueva(datos, nuevo, 'success')
+        with self.assertRaises(Corte):
+            self.contexto.tick(1020, cortar)
+        self.assertEqual(len(self.lineas('trabajos.log')), 1)
+        datos['checks'][1].update(status='in_progress', conclusion=None)
+        self.guardar_ci(datos)
+        return nuevo, datos, nuevo.fase.desde + 3600
+
+    def test_fallo_transitorio_al_leer_recibo_se_recupera_sin_juicio(self):
+        _, datos, vencimiento = self.perder_ack_suite()
+        with patch.object(self.contexto.hasito, 'suite',
+                          side_effect=ResultadoInvalido('resultado-ilegible')):
+            self.contexto.tick(vencimiento)
+        self.assertIsNone(self.estado().pausa)
+        datos['checks'][1].update(status='completed', conclusion='success')
+        self.guardar_ci(datos)
+        self.contexto.tick(vencimiento + 120)
+        self.assertIsInstance(self.estado().trenes[-1].fase, Certificado)
+        self.assertIsNone(self.estado().pausa)
+        self.assertEqual(len(self.lineas('trabajos.log')), 1)
+
+    def test_suite_recuperada_de_la_solicitud_uno_no_tapa_el_rojo_de_la_dos(self):
+        nuevo, datos, vencimiento = self.perder_ack_suite()
+        with patch.object(self.contexto.hasito, 'suite',
+                          side_effect=ResultadoInvalido('resultado-ilegible')):
+            self.contexto.tick(vencimiento - 1)
+            self.contexto.tick(vencimiento)
+        self.assertEqual(self.estado().pausa, Pausa('infraestructura', detalle='ci-sin-resultado'))
+        self.juicio('reanudar')
+        self.contexto.tick(vencimiento + 1)
+        self.assertEqual(self.estado().trenes[-1].fase.solicitud, 2)
+        c = datos['head']
+        datos['checks'].append(dict(check('failure', suite=3, identidad=3), head_sha=c))
+        datos['suites'].append({'id': 3, 'head_sha': c, 'head_branch': 'tren/' + nuevo.id + '-ci-2'})
+        self.guardar_ci(datos)
+        self.assertEqual(self.contexto.observador.ci_candidato(self.estado())[1].estado, 'rojo')
+        self.contexto.tick(vencimiento + 2)
+        self.assertEqual(self.estado().trenes[-1].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.remoto(), self.B)
+
+
 class RegresionesTests(CasosCI):
     def test_rojo_anterior_no_devuelve_y_rojo_vigente_si(self):
         antes, datos, ahora = self.anterior('failure')
@@ -116,9 +256,6 @@ class RegresionesTests(CasosCI):
         self.contexto.tick(ahora + 1)
         self.sin_feedback()
         self.nueva(datos, antes.trenes[0], 'success')
-        # El status viejo rojo tampoco debe contaminar la nueva solicitud.
-        datos['statuses'][0]['state'] = 'failure'
-        self.guardar_ci(datos)
         self.contexto.tick(ahora + 2)
         self.assertEqual(len(self.lineas('trabajos.log')), 1)
         self.contexto.tick(ahora + 3)
@@ -165,6 +302,38 @@ ContextoR1(sys.argv[3]).tick(int(sys.argv[4]), frontera)
 
 
 class ContratoTests(CasosCI):
+    def test_status_anterior_a_la_solicitud_espera_hasta_que_el_contexto_publica_verde(self):
+        anterior, datos, ahora = self.anterior('success')
+        datos['statuses'] = [status('failure', ahora - 1)]
+        self.guardar_ci(datos)
+        self.contexto.tick(ahora)
+        self.nueva(datos, anterior.trenes[0], 'success')
+        self.contexto.tick(ahora + 1)
+        self.contexto.tick(ahora + 2)
+        self.assertIsInstance(self.estado().trenes[-1].fase, EsperandoCI)
+        self.assertEqual(self.lineas('trabajos.log'), [])
+        self.assertEqual(self.posts('/comments'), [])
+        datos['statuses'].insert(0, status('success', ahora + 3))
+        self.guardar_ci(datos)
+        self.contexto.tick(ahora + 3)
+        self.contexto.tick(ahora + 4)
+        self.assertIsInstance(self.estado().trenes[-1].fase, Certificado)
+
+    def test_status_tardio_con_ref_aun_sin_publicar_no_devuelve_el_individual(self):
+        anterior, datos, ahora = self.anterior('success')
+        ref = 'refs/heads/tren/' + anterior.trenes[0].id + '-ci-1'
+        with patch.object(self.contexto.git, 'publicar',
+                          return_value=ErrorGit('publicacion-rechazada')) as publicar:
+            self.contexto.tick(ahora)
+            publicar.assert_called_once()
+        self.assertFalse(self.contexto.git.leer_ref(ref))
+        datos['statuses'] = [status('failure', ahora + 1)]
+        self.guardar_ci(datos)
+        self.contexto.tick(ahora + 2)
+        self.assertIsInstance(self.estado().trenes[-1].fase, EsperandoCI)
+        self.assertEqual(self.posts('/comments'), [])
+        self.assertEqual(self.remoto(), self.B)
+
     def test_recibo_antiguo_no_autoriza_verde_en_reductor_ni_ejecutor(self):
         from efectos import ejecutar
         from dominio import Efecto, clave
@@ -214,19 +383,51 @@ class LecturaActionsTests(unittest.TestCase):
                                           'head_branch': 'tren/otra'}]},
                         {'check_suites': [{'id': 2, 'head_sha': 'a' * 40,
                                           'head_branch': 'tren/actual-ci-1'}]}]
-            return [[{'context': 'legacy', 'state': 'failure'}]]
+            return [[{'context': 'legacy', 'state': 'success'}]]
         lector.api = api
         self.assertEqual(lector.ci(REPO, 'a' * 40, 'tren/actual-ci-1').estado, 'verde')
 
     def test_status_solo_no_autoriza_solicitud_ni_con_ci_configurado_vacio(self):
-        for estado in ('success', 'failure'):
+        for estado in ('success', 'pending'):
             with self.subTest(estado=estado):
                 lector = GitHubGit({'checks_esperados': []}, activo=True)
                 lector.api = lambda endpoint, paginado=False: (
                     [{'check_runs': []}] if '/check-runs?' in endpoint else
                     [{'check_suites': []}] if '/check-suites?' in endpoint else
-                    [[{'context': 'legacy', 'state': estado}]])
+                    [[status(estado, 101)]])
                 self.assertEqual(lector.ci(REPO, 'a' * 40, 'tren/actual-ci-1').estado, 'pendiente')
+
+    def test_ultimo_status_de_cada_contexto_puede_bloquear_la_ref_sin_dar_rojo(self):
+        rama = 'tren/actual-ci-1'
+        head = 'a' * 40
+        lector = GitHubGit({}, activo=True)
+        for estado, por_sha, por_ref in (
+                ('failure', 'rojo', 'pendiente'), ('error', 'pendiente', 'pendiente'),
+                ('success', 'verde', 'verde'), ('pending', 'pendiente', 'pendiente'),
+                ('desconocido', 'pendiente', 'pendiente')):
+            with self.subTest(estado=estado):
+                def api(endpoint, paginado=False):
+                    if '/check-runs?' in endpoint:
+                        return [{'check_runs': [check('success')]}]
+                    if '/check-suites?' in endpoint:
+                        return [{'check_suites': [{'id': 1, 'head_sha': head, 'head_branch': rama}]}]
+                    return [[status(estado, 102), status('failure', 101)]]
+                lector.api = api
+                resultado = lector.ci(REPO, head, rama)
+                self.assertEqual(resultado.estado, por_ref)
+                self.assertEqual(resultado.rojos, ())
+                self.assertEqual(lector.ci(REPO, head).estado, por_sha)
+
+    def test_status_negativo_sin_fecha_bloquea_checks_verdes_de_la_ref(self):
+        rama = 'tren/actual-ci-1'
+        head = 'a' * 40
+        lector = GitHubGit({}, activo=True)
+        lector.api = lambda endpoint, paginado=False: (
+            [{'check_runs': [check('success')]}] if '/check-runs?' in endpoint else
+            [{'check_suites': [{'id': 1, 'head_sha': head, 'head_branch': rama}]}]
+            if '/check-suites?' in endpoint else [[{'context': 'Vercel', 'state': 'failure'}]])
+        resultado = lector.ci(REPO, head, rama)
+        self.assertEqual((resultado.estado, resultado.rojos), ('pendiente', ()))
 
     def leer(self, checks, datos=None, error=None):
         llamadas = []
