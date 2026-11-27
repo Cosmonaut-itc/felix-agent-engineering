@@ -32,12 +32,27 @@ En sombra no edites `heads_autorizados`.
    En alto riesgo exige también **Verificado**. La suite completa la corre
    el tren sobre C, el commit candidato del lote, sólo en modo activo.
 2. En modo activo, un PR de CI, gobierno, lockfiles o alto riesgo queda en
-   merge-ready hasta que Felix autorice ese head con AskUserQuestion.
-   Con su OK, añade el SHA40 a `repos["<owner/repo>"].heads_autorizados` en
-   `${XDG_STATE_HOME:-~/.local/state}/pao-tren/config.json`, la configuración
-   privada del tren. Conserva las demás claves y autorizaciones. Anota el
-   head y la cita de la decisión en el registro de tu programa. Después
-   entrega. El PR viaja solo salvo que `sensibles_en_lote` del repo
+   merge-ready hasta que su head esté en `heads_autorizados`. En Jale no le
+   pidas el OK a Felix: lo autorizó el 2026-11-27 por evidencia. El APTO de
+   la entrega debe ser un archivo local con ruta absoluta, no una URL de
+   comentario, y traer `verificado` y una lista `revisores`. Esa lista lleva
+   el veredicto de Sol y el de Opus, los dos en `high` y sobre el mismo head:
+
+   ```json
+   {"veredicto":"APTO","head":"<SHA40>","hallazgos_abiertos":0,"verificado":"Verificado",
+    "revisores":[{"modelo":"gpt-6.2-sol","esfuerzo":"high","veredicto":"APTO","head":"<SHA40>"},
+                 {"modelo":"opus-5.5","esfuerzo":"high","veredicto":"APTO","head":"<SHA40>"}]}
+   ```
+
+   `local.tren.ventanas-auto` añade el head a `heads_autorizados` en unos
+   2 min y deja la procedencia en su `state.json`. El tren sigue exigiendo
+   CI verde y, con migración, el journal sincronizado con `main`. No edites
+   `heads_autorizados` a mano. En otro repo activo, o sin `revisores`, el
+   head espera a que Felix lo autorice con AskUserQuestion. Con su OK, añade
+   el SHA40 a `repos["<owner/repo>"].heads_autorizados` en
+   `${XDG_STATE_HOME:-~/.local/state}/pao-tren/config.json` y conserva las
+   demás claves. Anota el head y la cita de la decisión en tu registro.
+   Después entrega. El PR viaja solo salvo que `sensibles_en_lote` del repo
    incluya todas sus categorías sensibles y, si es de alto riesgo, el repo
    tenga `alto_riesgo_en_lote`. Un head con ventana de migración siempre
    viaja solo. La autorización del head no cambia. Los demás límites de
