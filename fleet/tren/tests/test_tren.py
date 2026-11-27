@@ -16,9 +16,11 @@ from unittest.mock import patch
 RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ))
 from dominio import (Admitido, Armado, Candidato, Congelado, Corriendo,
-                     Entrada, Entrega, EsperandoCI, Estado, Motivo, Observacion,
-                     Pausa, Rechazado, Retenido, Terminal, VistaPR,
-                     datos, desde_datos, inicial, paso)
+                     Diagnosticando, Entrada, Entrega, EsperandoCI, Estado,
+                     Evidencia, Fallo, Intento, LIMITE_LOTE, Motivo, Observacion,
+                     Pausa, Rechazado, Repeticion, Reproduccion, Retenido, Terminal,
+                     UnidadRepetida, VistaPR, clave, datos, desde_datos, inicial, paso,
+                     recibo_ci)
 from ledger import Ledger, directorio_estado
 from observador import Falso, GitHubGit, categorias_sensibles, configuracion
 from sombra import paso_sombra
@@ -227,6 +229,133 @@ class DominioTests(Aislado):
         candidato = Candidato("e" * 40, (), HEAD, HEAD)
         nuevo, _ = paso(nuevo, replace(observacion(3), candidato=candidato))
         self.assertEqual(nuevo.pausa, Pausa("candidato-no-corresponde"))
+
+
+class RearmeCITests(unittest.TestCase):
+    def armar(self, nuevo, obs):
+        tren = nuevo.trenes[-1]
+        prs = {e.entrega.recibo: e.entrega.pr for e in nuevo.entradas}
+        eslabones = tuple((prs[r], HEAD, str(prs[r]) * 40) for r in tren.recibos)
+        candidato = Candidato(BASE, eslabones, eslabones[-1][2], "d" * 40)
+        armado, _ = paso(nuevo, replace(obs, candidato=candidato, tren_id=tren.id))
+        return paso(armado, obs)
+
+    def ci(self, nuevo, obs, conclusion="rojo"):
+        tren = nuevo.trenes[-1]
+        return paso(nuevo, replace(obs, tren_id=tren.id, ci_recibo=recibo_ci(tren),
+                                   ci_candidato=conclusion, ci_rojos=("gate",)))
+
+    def rearme(self, n=3):
+        obs = observacion(n)
+        lote, _ = paso(estado(n), obs)
+        espera, _ = self.armar(lote, obs)
+        rearmado, _ = self.ci(espera, obs)
+        lote_nuevo, _ = paso(rearmado, obs)
+        return lote_nuevo, obs
+
+    def test_primer_rojo_rearma_y_conserva_fifo(self):
+        lote, _ = paso(estado(3), observacion(3))
+        espera, _ = self.armar(lote, observacion(3))
+        original = espera.trenes[0]
+        obs = replace(observacion(3, ahora=101),
+                      prs=(vista(1, apto=False), vista(2), vista(3)))
+        rearmado, efectos = self.ci(espera, obs)
+        self.assertEqual(rearmado.trenes[0].fase, Terminal("REARMAR"))
+        self.assertIsNone(rearmado.pausa)
+        self.assertEqual(efectos, ())
+        self.assertEqual([e.admitida for e in rearmado.entradas], [100] * 3)
+        self.assertTrue(all(e.rearme_ci == original.id and not e.solo and e.tren is None
+                            for e in rearmado.entradas))
+        self.assertEqual(desde_datos(datos(rearmado)), rearmado)
+        nuevo, _ = paso(rearmado, observacion(3, ahora=102))
+        self.assertNotEqual(nuevo.trenes[-1].id, original.id)
+        self.assertEqual(nuevo.trenes[-1].recibos, original.recibos)
+
+    def test_rearme_verde_pide_suite_con_su_recibo_y_conserva_marca(self):
+        lote, obs = self.rearme()
+        espera, efectos = self.armar(lote, obs)
+        original, nuevo = espera.trenes
+        self.assertEqual(nuevo.fase.solicitud, 1)
+        self.assertEqual(efectos[0].clave, clave("ci", nuevo.id, 1))
+        self.assertEqual(efectos[0].tipo, "solicitar-ci")
+        anterior = replace(obs, tren_id=nuevo.id, ci_candidato="rojo", ci_rojos=("gate",),
+                           ci_recibo="github:" + nuevo.fase.candidato.C)
+        self.assertEqual(paso(espera, anterior), (espera, ()))
+        siguiente, efectos = self.ci(espera, obs, "verde")
+        self.assertEqual([e.tipo for e in efectos], ["iniciar-suite"])
+        self.assertTrue(all(e.rearme_ci == original.id for e in siguiente.entradas))
+
+    def test_rearme_rojo_parte_incluso_si_se_sumo_otra_entrega(self):
+        lote, _ = paso(estado(2), observacion(2))
+        espera, _ = self.armar(lote, observacion(2))
+        rearmado, _ = self.ci(espera, observacion(2))
+        rearmado = replace(rearmado, entradas=rearmado.entradas + estado(3).entradas[2:])
+        obs = observacion(3, ahora=101)
+        lote, _ = paso(rearmado, obs)
+        espera, _ = self.armar(lote, obs)
+        partido, efectos = self.ci(espera, obs)
+        tren = partido.trenes[-1]
+        self.assertEqual(tren.fase, Terminal("PARTIDO"))
+        self.assertEqual(efectos, ())
+        self.assertTrue(all(e.tren is None and e.solo and e.partida and e.particion == tren.id
+                            for e in partido.entradas))
+
+    def test_devuelto_individual_libera_su_particion_y_reagrupa_hasta_el_limite(self):
+        lote, obs = self.rearme(LIMITE_LOTE)
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        n = LIMITE_LOTE + 3
+        partido = replace(partido, entradas=partido.entradas + estado(n).entradas[LIMITE_LOTE:])
+        obs = observacion(n, ahora=200)
+        solo, _ = paso(partido, obs)
+        espera, _ = self.armar(solo, obs)
+        devuelto, efectos = self.ci(espera, obs)
+        self.assertEqual(devuelto.trenes[-1].fase, Terminal("DEVUELTO"))
+        self.assertEqual([e.tipo for e in efectos], ["devolver"])
+        self.assertIsNone(devuelto.entradas[0].rearme_ci)
+        liberadas = devuelto.entradas[1:LIMITE_LOTE]
+        self.assertTrue(all(not e.partida and not e.solo and e.particion is None for e in liberadas))
+        self.assertEqual([e.admitida for e in liberadas], [100] * (LIMITE_LOTE - 1))
+        lote, _ = paso(devuelto, obs)
+        self.assertEqual(lote.trenes[-1].recibos, tuple(entrega(i).recibo for i in range(2, LIMITE_LOTE + 2)))
+        self.assertIsNone(lote.entradas[LIMITE_LOTE + 1].tren)
+
+    def test_suite_roja_individual_atribuida_libera_a_su_particion(self):
+        lote, obs = self.rearme()
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        solo, _ = paso(partido, obs)
+        espera, _ = self.armar(solo, obs)
+        tren = espera.trenes[-1]
+        c = tren.fase.candidato
+        fallo = Fallo("test", "firma", "solo-candidato", duracion_s=1)
+        evidencias = []
+        for objetivo, sha, veredicto in (("C", c.C, "falla"), ("B", c.B, "pasa")):
+            unidad = UnidadRepetida("", fallo.unidad, "", "definición", tuple(
+                Intento(i, veredicto, fallo.firma, 1) for i in (1, 2)))
+            evidencias.append(Evidencia(Reproduccion(objetivo, fallo, objetivo),
+                Repeticion(sha, c.C, c.B, "evidencia", (unidad,))))
+        fase = Diagnosticando(c, (fallo,), "suite", presupuesto_s=10, evidencias=tuple(evidencias))
+        diagnosticando = replace(espera, trenes=espera.trenes[:-1] + (replace(tren, fase=fase),))
+        final, efectos = paso(diagnosticando, replace(obs, tren_id=tren.id))
+        self.assertEqual(final.trenes[-1].fase, Terminal("DEVUELTO"))
+        self.assertEqual([e.tipo for e in efectos], ["devolver"])
+        self.assertTrue(all(not e.partida for e in final.entradas[1:]))
+
+    def test_snapshot_partido_sin_id_conserva_el_aislamiento(self):
+        viejo = estado(3)
+        viejo = replace(viejo, entradas=tuple(replace(e, partida=True, solo=True) for e in viejo.entradas))
+        snapshot = datos(viejo)
+        self.assertTrue(all("particion" not in e and "rearme_ci" not in e for e in snapshot["entradas"]))
+        obs = observacion(3)
+        lote, _ = paso(desde_datos(snapshot), obs)
+        espera, _ = self.armar(lote, obs)
+        devuelto, efectos = self.ci(espera, obs)
+        self.assertEqual(devuelto.trenes[-1].fase, Terminal("DEVUELTO"))
+        self.assertEqual([e.tipo for e in efectos], ["devolver"])
+        siguiente, _ = paso(devuelto, obs)
+        self.assertEqual(siguiente.trenes[-1].recibos, (entrega(2).recibo,))
+        self.assertTrue(all(e.partida and e.solo for e in siguiente.entradas[1:]))
 
 
 class LedgerTests(Aislado):

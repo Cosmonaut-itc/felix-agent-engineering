@@ -990,11 +990,16 @@ La sombra y `tick --seco` mantienen su lectura histórica: únicamente
 La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
 
 - **Verde:** mantiene el camino existente de suite y promoción de C.
-- **Rojo con más de un miembro:** cierra el tren `PARTIDO`, sin comentario,
-  status rojo, consumo de suite especulativa ni escritura en main. En el mismo snapshot libera todas
-  las entregas con `partida=True` y `solo=True`. Los ticks posteriores forman
-  trenes individuales en su orden FIFO, cada uno sobre el main entonces
-  vigente, con candidato, CI y suite propios. No se atribuye el fallo del lote.
+- **Primer rojo con más de un miembro:** cierra el tren `REARMAR` y devuelve
+  sus entregas a la fila con su admisión FIFO y la marca `rearme_ci`. El
+  siguiente lote se arma sobre el main vigente. Si incluye alguna entrega
+  marcada, comienza con la solicitud 1 en su propia ref `tren/<id>-ci-1`.
+  Aunque el SHA de C coincida, sólo cuentan los checks de esa ref. Las suites
+  prelanzadas del tren cerrado quedan sin consumir.
+- **Rojo de un lote con alguna entrega ya marcada:** cierra el tren
+  `PARTIDO`, sin atribuir el fallo ni publicar feedback rojo. Devuelve sus
+  entregas a la fila con `partida=True`, `solo=True` y el ID de la partición
+  para probarlas individualmente sobre el main vigente.
 - **Rojo con un miembro:** cierra `DEVUELTO`, resuelve esa entrega y deja
   libre el carril inmediatamente. Un efecto `devolver` de U14 publica un
   comentario marcado con lote, B, C, head y `ci_rojos`, seguido de `failure`
@@ -1036,7 +1041,6 @@ Un proveedor que sólo publique statuses o no exponga la suite con esa ref
 queda pendiente hasta el plazo; debe publicar checks ligados a la solicitud
 para habilitar la suite. El recibo incluye la ref también en el buzón de
 recuperación; un recibo anterior no autoriza una suite de la nueva solicitud.
-No relanza automáticamente checks fallidos.
 `abortar` conserva el comportamiento U15: cierra `ABORTADO`, libera
 la custodia sin rojo y permite readmisión desde el tick siguiente.
 
@@ -1047,14 +1051,14 @@ no existe suite ni diagnóstico que absolver y omitir CI sería un certificado
 falso. El validador exige `EsperandoCI` para `ci-nuevo`; el expediente sólo
 ofrece las decisiones que pasan esa validación.
 
-La marca `partida` pertenece al recibo `(repo, PR, head)` y resiste cada
-readmisión, incluida una retención transitoria, conservando `recibida` y la
-primera `admitida`. Dura hasta resolver la entrega: formar un individual no
-la consume; si se aborta o rearma, vuelve a formar un tren de uno. Un head nuevo
-caduca la entrega anterior por las reglas existentes y **no hereda** la
-marca: no es la entrega que participó en el lote rojo y tendrá su propio
-APTO/dirigida/CI. Los atributos sensible y alto riesgo siguen imponiendo
-viaje individual por su propia política.
+La marca `rearme_ci` pertenece al recibo `(repo, PR, head)` y se borra al
+aterrizar, devolver o rechazar esa entrega. Un CI verde conserva la marca.
+La marca `partida` resiste cada readmisión y conserva la primera
+`admitida`. Formar un tren individual, abortarlo o rearmarlo conserva el
+aislamiento. Al devolver una entrega individual por CI rojo o por un fallo
+de suite atribuido, las entregas en fila de su misma partición vuelven al
+régimen normal de lotes con su admisión FIFO intacta. Sensibles, alto riesgo
+y ventanas siguen su propia política de viaje individual.
 
 El reductor ignora un rojo sin nombres válidos y lo trata como pendiente;
 no parte ni devuelve sin evidencia nominada. El escritor de feedback también
@@ -1066,8 +1070,9 @@ esta devolución por CI se reconcilia además el último status del contexto
 contra el payload y URL antes de repetir un POST tras perder su ACK. Las
 claves y el orden por PR impiden adelantar un `pending` posterior al feedback
 anterior incompleto. Los efectos de trabajo del tren terminal se cancelan
-sin cancelar su feedback. La extensión aditiva omite `partida=False` al
-serializar: custodia y eventos `sombra`, `sombra-doble-camino` y
+sin cancelar su feedback. La extensión aditiva omite `partida=False` y los
+IDs de partición y rearme ausentes. Las partidas históricas sin ID conservan
+su aislamiento. Custodia y eventos `sombra`, `sombra-doble-camino` y
 `admision-entrega` conservan su contrato. `tick --seco` usa la sombra sin
 consumir el CI operativo ni ejecutar efectos.
 

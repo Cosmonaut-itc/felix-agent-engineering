@@ -53,9 +53,11 @@ class RegresionesTests(u16.ContextoCI):
         c = antes.trenes[0].fase.candidato.C
         self.ci_en(lambda head: 'failure' if head == c else None)
         self.contexto.tick(1000)
+        if self.estado().trenes[0].fase == Terminal('REARMAR'):
+            self.contexto.tick(self.ci_del_lote_rearmado(1020))
+        self.assertEqual(self.estado().trenes[-1].fase, Terminal('PARTIDO'))
         self.contexto.tick(1100)
         individual = self.estado()
-        self.assertEqual(individual.trenes[0].fase, Terminal('PARTIDO'))
         self.assertEqual(individual.trenes[-1].recibos, (antes.entradas[0].entrega.recibo,))
         return antes
 
