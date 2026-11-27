@@ -3,8 +3,8 @@
 # `APTO vigente` confirma una mezcla limpia sin archivos compartidos o una
 # excepción de catálogos o Drizzle. Las excepciones comparan rutas por blob y modo.
 # Drizzle se detecta en la base común, el head revisado y la base nueva.
-# `Ronda` tiene prioridad ante diferencias no compartidas fuera de Drizzle.
-# `Ronda delta` lista rutas y resolución. Un conflicto no compartido fuera de Drizzle veta la excepción.
+# `Ronda` tiene prioridad ante diferencias no compartidas fuera de los directorios que se validan, aun sin excepción.
+# `Ronda delta` lista rutas y resolución. Sólo se eximen conflictos en rutas compartidas o en el journal y snapshots numerados de los directorios que se validan.
 # Sale con 2 si no puede decidir o si la base nueva es ambigua. Requiere git 2.38+ y python3.
 set -uo pipefail
 fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
@@ -409,14 +409,17 @@ dirs = tuple(sorted(prefix for prefix in migration_dirs
                     if any(path.startswith(prefix) for path in shared | different)))
 outside = {path for path in different if not path.startswith(dirs)}
 has_exception = bool(emptied or dirs or any(CATALOG.fullmatch(path) for path in shared))
-unshared_conflicts = {path for path in conflicts - shared if not path.startswith(migration_dirs)}
-full_round = has_exception and bool(outside)
+unshared_conflicts = {path for path in conflicts - shared
+                      if not any(path.startswith(prefix) and
+                                 (path[len(prefix):] == JOURNAL or NUMBERED_SNAPSHOT.fullmatch(path[len(prefix):]))
+                                 for prefix in dirs)}
+full_round = bool(outside)
 # La regla de mezcla limpia también cuenta las ediciones iguales en ambos lados.
 overlap = changes(trees[0], trees[1]) & changes(trees[0], trees[2])
 ordinary = merge_status == '0' and auto == tree and not overlap and not emptied and not full_round
 
 details, accepted = [], False
-if full_round:
+if full_round and has_exception:
     prefix = 'Excepción: '
     if dirs:
         prefix = 'Excepción de migraciones: punto 1: '

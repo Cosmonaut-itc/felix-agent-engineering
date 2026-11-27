@@ -2480,7 +2480,7 @@ apto_vigente_interactions() {
     output=$(apto "$repo" destino revisado rebasado)
     assert test "$output" = 'Ronda: el head nuevo no es la mezcla del head revisado con el destino'
 
-    # El destino renombra un archivo del parche: el rebase es limpio y el origen del rename cuenta.
+    # El rebase mueve la edición del parche a una ruta donde la referencia conserva el blob del destino.
     repo=$(apto_repo)
     git -C "$repo" checkout -q revisado
     printf 'x\nparche\n' > "$repo/otro.txt"
@@ -2491,7 +2491,7 @@ apto_vigente_interactions() {
     git -C "$repo" checkout -q -b rebasado revisado
     git -C "$repo" rebase -q destino
     output=$(apto "$repo" destino revisado rebasado)
-    assert test "$output" = "$(printf 'Ronda delta: el destino cambió archivos del parche\notro.txt')"
+    assert test "$output" = 'Ronda: el head nuevo no es la mezcla del head revisado con el destino'
 
     # Los dos lados cambian zonas distintas del mismo archivo y git los mezcla sin conflicto.
     repo=$(apto_repo)
@@ -2765,6 +2765,10 @@ cases = {
     'drizzle-revisado-borra-honra': (1, 'src/movido.ts'),
     'drizzle-renombre-diverge': ('conflicto-git', 'src/movido.ts'),
     'base-nueva-ambigua': None,
+    'control': ('conflicto-git', 'deploy/jobs/movido.sql'),
+    'journal-revisado': ('conflicto-git', 'deploy/jobs/movido.sql'),
+    'journal-destino': ('conflicto-git', 'deploy/jobs/movido.sql'),
+    'hacia-drizzle': ('conflicto-git', 'packages/db/schema-history/0001_primera.sql'),
 }
 for case, failure in cases.items():
     repo = Path(temporary) / ('migracion-' + case)
@@ -2783,6 +2787,8 @@ for case, failure in cases.items():
     directory_rename = split or case in ('renombre', 'renombre-conservado', 'renombre-fuera', 'vaciado-con-edicion')
     file_conflict = case in ('drizzle-destino-borra', 'drizzle-revisado-borra',
                              'drizzle-revisado-borra-honra', 'drizzle-renombre-diverge')
+    job_conflict = case in ('control', 'journal-revisado', 'journal-destino', 'hacia-drizzle')
+    jobs = repo / 'deploy/jobs'
     emptied_dir = root / 'aux' if case == 'vaciado-por-parche' else repo / 'vaciado'
     old_file = emptied_dir / 'anterior.txt'
     added_file = emptied_dir / 'nuevo.txt'
@@ -2835,6 +2841,10 @@ for case, failure in cases.items():
         (repo / 'src').mkdir()
         (repo / 'src/legado.ts').write_text('export const legado = 1;\n')
         (repo / 'src/index.ts').write_text('export {};\n')
+    if job_conflict:
+        jobs.mkdir(parents=True)
+        (jobs / 'conservar.txt').write_text('ancla\n')
+        (jobs / 'legado.sql').write_bytes(branch_sql if case == 'hacia-drizzle' else b'SELECT 99;\n')
     if case == 'base-nueva-ambigua':
         (repo / 'politica.txt').write_text('original\n')
     if case == 'journal-solo-nuevo':
@@ -2862,6 +2872,10 @@ for case, failure in cases.items():
     if case == 'solo-sql':
         branch_sql = b'UPDATE original SET id = 1 WHERE id IS NULL;\n'
     original_id = None if case in ('solo-sql', 'snapshot-agregado') else 'primera'
+    if job_conflict:
+        git(repo, 'mv', 'deploy/jobs/legado.sql', failure[1])
+    if case == 'journal-revisado':
+        write_journal(jobs, [])
     write_migration(root, first, branch_sql, original_id, original_parent, branch_tables)
     write_journal(root, [*original_entries, first])
     if clean:
@@ -2929,6 +2943,10 @@ for case, failure in cases.items():
         else:
             destination = 'src/alterno.ts' if case == 'drizzle-renombre-diverge' else 'src/movido.ts'
             git(repo, 'mv', 'src/legado.ts', destination)
+    if job_conflict:
+        git(repo, 'rm', 'deploy/jobs/legado.sql')
+    if case == 'journal-destino':
+        write_journal(jobs, [])
     if case == 'vaciado-por-parche':
         added_file.write_text('alta del destino\n')
     if case == 'vaciado-sin-alta':
@@ -3020,6 +3038,10 @@ for case, failure in cases.items():
     if case == 'journal-solo-nuevo':
         write_journal(repo / 'otro', [])
         (repo / 'otro/esquema.txt').write_text('edición extra\n')
+    if job_conflict and case != 'hacia-drizzle':
+        (jobs / 'movido.sql').write_text(git(repo, 'show', 'revisado:deploy/jobs/movido.sql').stdout)
+    if case == 'journal-revisado':
+        write_journal(jobs, [])
     if case == 'vaciado-por-parche':
         old_file.unlink()
     commit(repo, 'renumerado')
@@ -3078,7 +3100,7 @@ for case, failure in cases.items():
             added = reason if directory_rename else f'{directory}/{reason}'
             emptied = added.rpartition('/')[0]
             assert added in lines, (case, result)
-            assert lines[-1] == f'Directorio vaciado: {emptied}. Archivo añadido: {added}', (case, result)
+            assert f'Directorio vaciado: {emptied}. Archivo añadido: {added}' in lines, (case, result)
             assert lines[1].startswith('Resolución: git diff --no-relative '), (case, result)
         elif point == 'conflicto-git':
             assert reason in lines and lines[1].startswith('Resolución: git diff --no-relative '), result
@@ -3142,6 +3164,15 @@ apto_vigente_conflict() {
         output=$(cd "$repo/origen" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.relative GIT_CONFIG_VALUE_0=true git diff --name-only "${resolution[@]}")
         assert test "$kind relativo: $output" = "$kind relativo: otro.txt"
     done
+
+    # El journal introducido sólo en el candidato no activa una excepción.
+    printf 'edición independiente\n' >> "$repo/parche.js"
+    mkdir -p "$repo/otro/meta"
+    printf '{"entries":[]}\n' > "$repo/otro/meta/_journal.json"
+    git -C "$repo" add -A
+    git -C "$repo" commit -qm sin-excepcion
+    output=$(apto "$repo" destino revisado resuelto)
+    assert test "$output" = 'Ronda: el head nuevo no es la mezcla del head revisado con el destino'
 }
 
 # Corre apto-vigente con una clave de configuración de git del usuario, sin
