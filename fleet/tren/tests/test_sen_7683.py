@@ -176,14 +176,33 @@ with open({str(self.log)!r}, 'a') as log:
         self.assert_llamadas(self.reserva(lote, 100), self.liberacion(lote, 220),
                              self.liberacion(lote, 340), self.reserva(lote, 460))
 
-    def test_pausa_de_infraestructura_al_drenar_libera_despues_de_guardarla(self):
-        tren = self.guardar(EsperandoCI(CANDIDATO, 1))
+    def test_reanudar_reserva_antes_de_lanzar_la_suite(self):
+        lote = self.guardar(Corriendo(CANDIDATO, 'suite.json'),
+                            Pausa('infraestructura', detalle='cobertura-parcial-boat')).id
         self.tick()
-        self.ver_ci(tren, 'verde')
-        with patch.object(Jale, 'suite', side_effect=FalloSnapshot('prueba')):
+        self.cli('juicio', '--tren', lote, '--decision', 'reanudar', '--motivo', 'prueba')
+        llamadas_al_lanzar = []
+
+        def al_lanzar(*args, **kwargs):
+            llamadas_al_lanzar.extend(self.llamadas())
+
+        with patch.object(Jale, 'suite', side_effect=al_lanzar) as suite:
             self.tick(220)
+        suite.assert_called_once()
+        self.assertEqual(suite.call_args.args[1], lote)
+        self.assertTrue(suite.call_args.kwargs['permitir_lanzar'])
+        self.assertIsNone(self.estado().pausa)
+        self.assert_llamadas(self.liberacion(lote, 100), self.reserva(lote, 220))
+        self.assertEqual(llamadas_al_lanzar, self.llamadas())
+        self.assert_ultimo_estado_guardado()
+
+    def test_pausa_de_infraestructura_al_drenar_libera_despues_de_guardarla(self):
+        with patch.object(self.git, 'armar', side_effect=FalloSnapshot('prueba')):
+            self.tick()
+        lote = self.estado().trenes[0].id
         self.assertEqual(self.estado().pausa, Pausa('infraestructura', detalle='checkout-operador:prueba'))
-        self.assert_llamadas(self.reserva(tren.id, 100), self.liberacion(tren.id, 220))
+        self.assert_llamadas(self.reserva(lote, 100), self.liberacion(lote, 100))
+        self.assertIsNone(self.llamadas()[0][2]['pausa'])
         self.assert_ultimo_estado_guardado()
 
     def test_rearmar_libera_el_lote_viejo_y_reserva_el_nuevo(self):
@@ -207,6 +226,18 @@ with open({str(self.log)!r}, 'a') as log:
         self.assertEqual(estado.trenes[0].fase, Terminal('ABSUELTO'))
         self.assert_llamadas(self.liberacion(viejo, 100), self.reserva(estado.trenes[-1].id, 100))
 
+    def test_plazo_compartido_agotado_omite_el_segundo_proceso(self):
+        viejo = self.guardar(Corriendo(CANDIDATO, 'suite.json'),
+                             Pausa('necesita-juicio', detalle='sin-costo-de-suite-sana')).id
+        self.cli('juicio', '--tren', viejo, '--decision', 'absolver', '--motivo', 'prueba')
+        with patch('operativo.time') as reloj, patch('operativo.subprocess.run') as lanzar:
+            reloj.monotonic.side_effect = (0, 1, 10)
+            self.tick()
+        nuevo = self.estado().trenes[-1].id
+        lanzar.assert_called_once()
+        self.assertEqual(lanzar.call_args.args[0][1:], self.liberacion(viejo, 100)[0])
+        self.assertEqual(self.fallos(), [dict(lote=nuevo, comando='reservar', clase='TimeoutExpired')])
+
     def test_host_sin_boat_no_llama_al_pool(self):
         lote = self.guardar(EsperandoCI(CANDIDATO, 1)).id
         self.observador.config['host'] = 'desktop'
@@ -216,7 +247,7 @@ with open({str(self.log)!r}, 'a') as log:
         self.tick(220)
         self.assert_llamadas(self.reserva(lote, 220))
 
-    def test_aborto_incierto_sin_paso_guardado_no_llama_al_pool(self):
+    def test_aborto_incierto_libera_la_reserva_en_cada_tick_pausado(self):
         B, C, arbol = CANDIDATO.B, CANDIDATO.C, CANDIDATO.arbol
         tren = self.guardar(Promoviendo(Certificado(C, arbol, 'suite.json', 'verde', B)),
                             Pausa('infraestructura', detalle='pre-aterrizaje:prueba'))
@@ -225,7 +256,8 @@ with open({str(self.log)!r}, 'a') as log:
         self.git.reconciliar = Mock(return_value=Incierto(B, C, 'prueba'))
         self.tick(220)
         self.assertIsNotNone(self.registro.siguiente_decision(REPO))
-        self.assert_llamadas(self.liberacion(tren.id, 100))
+        # El falso registra el instante del último COMMIT, que sigue siendo 100.
+        self.assert_llamadas(self.liberacion(tren.id, 100), self.liberacion(tren.id, 100))
 
     def test_fallo_al_reservar_registra_evento_y_conserva_la_salida_del_tick(self):
         tren = self.guardar(EsperandoCI(CANDIDATO, 1))
