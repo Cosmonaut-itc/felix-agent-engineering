@@ -94,6 +94,9 @@ if trabajo['conexiones'] <= f.get('transportes', 0) + f.get('consultas_75', 0):
     sys.exit(75)
 if 'pendiente' in f and (f.get('pendiente_fijo') or
         trabajo['conexiones'] <= f.get('transportes', 0) + f.get('pendientes', 1)):
+    if 'log_anterior' in f:
+        log.write_text(f['log_anterior'])
+        os.utime(log, ns=(1, 1))
     sidecar.write_text(json.dumps(dict(run_id=run_id, cause=f['pendiente'], status='pending')))
     sys.exit(75)
 if f.get('fallback_75') and trabajo['conexiones'] == 1:
@@ -145,7 +148,8 @@ if f.get('interrumpida'):
 if host == 'boat':
     encabezado = 'HOST=desktop fallback=sin-lugar' if f.get('fallback') else 'HOST=boat fallback=none'
     linea = f'{encabezado} run_id={run_id}\n' + f.get('cobertura', '') + linea
-    sidecar.unlink(missing_ok=True)
+    if not f.get('conservar_pendiente'):
+        sidecar.unlink(missing_ok=True)
 if f.get('terminal'):
     codigo_suite = f.get('codigo_suite', codigo)
     linea += f'RESULT mode={modo} exit={codigo_suite}\nEXIT={codigo_suite}\n'
@@ -1115,21 +1119,24 @@ class JaleTests(Aislado):
         efecto = Efecto(clave('suite', tren.id), 'iniciar-suite', (tren.id,))
         return replace(inicial, trenes=(tren,)), obs, efecto
 
-    def comprobar_reanudacion_suite_75(self, host, plan_e2e, trabajos_e2e):
+    def comprobar_reanudacion_suite_75(self, host, plan_e2e, trabajos_e2e, *, reanudaciones=1):
         self.adaptador = self.Jale(self.lanzador, host=host)
         self.plan({'e2e': [plan_e2e, {}]})
         inicial, obs, efecto = self.preparar_suite_de_prueba()
-        llegada = esperar_resultado(ejecutar, efecto, inicial, obs, object(), self.adaptador)
-        self.assertIsInstance(llegada.observacion.resultado_suite, Incompleto)
-        actual, efectos = paso(inicial, llegada.observacion)
-        self.assertEqual(efectos, ())
-        obs = replace(obs, ahora=actual.trenes[0].fase.esperar_hasta)
-        actual, (efecto,) = paso(actual, obs)
-        self.assertEqual(efecto.tipo, 'reanudar-suite')
+        actual = inicial
+        for numero in range(1, reanudaciones + 1):
+            llegada = esperar_resultado(ejecutar, efecto, actual, obs, object(), self.adaptador)
+            self.assertIsInstance(llegada.observacion.resultado_suite, Incompleto)
+            self.comprobar_corridas_suite('e2e', (1, 1, numero))
+            actual, efectos = paso(actual, llegada.observacion)
+            self.assertEqual(efectos, ())
+            obs = replace(obs, ahora=actual.trenes[0].fase.esperar_hasta)
+            actual, (efecto,) = paso(actual, obs)
+            self.assertEqual(efecto.tipo, 'reanudar-suite')
         llegada = esperar_resultado(ejecutar, efecto, actual, obs, object(), self.adaptador)
         final, _ = paso(actual, llegada.observacion)
         self.comprobar_corridas_suite('contract', (1, 1, 1))
-        self.comprobar_corridas_suite('e2e', (trabajos_e2e, trabajos_e2e, 2))
+        self.comprobar_corridas_suite('e2e', (trabajos_e2e, trabajos_e2e, reanudaciones + 1))
         self.assertIsInstance(final.trenes[0].fase, Certificado)
 
     def comprobar_corridas_suite(self, modo, esperado):
@@ -1155,6 +1162,20 @@ class JaleTests(Aislado):
             'codigo': 75, 'sin_linea': True, 'fallback': True,
             'salida_pueue': 'PUEUE_STATE=Done\nPUEUE_EXIT=75\n',
         }, 2)
+
+    def test_r8_suite_75_confirmado_supera_pendiente_anterior(self):
+        self.comprobar_reanudacion_suite_75('boat', {
+            'pendiente': 'resultado o transporte no acreditado',
+            'codigo': 75, 'sin_linea': True, 'fallback': True, 'conservar_pendiente': True,
+            'salida_pueue': 'PUEUE_STATE=Done\nPUEUE_EXIT=75\n',
+        }, 2, reanudaciones=2)
+
+    def test_r8_suite_75_pendiente_posterior_conserva_clave(self):
+        self.comprobar_reanudacion_suite_75('boat', {
+            'pendiente': 'resultado o transporte no acreditado',
+            'log_anterior': 'HOST=desktop fallback=sin-lugar run_id=jale-prueba\n'
+                            'PUEUE_STATE=Done\nPUEUE_EXIT=75\n',
+        }, 1)
 
     def verificar_boat_terminal_sin_recibo(self, plan):
         self.adaptador = self.Jale(self.lanzador, host='boat')

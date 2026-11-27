@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 from itertools import chain, combinations, islice
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -64,14 +65,37 @@ def aviso_prelanzado(registro, tren_id, modo):
             'terminada': (registro / 'codigo.json').exists()}
 
 
-def leer_pendiente_boat(log):
+def leer_log_corrida(log, *, errores):
+    try:
+        with Path(log).open(encoding='utf-8', errors=errores) as archivo:
+            mtime = os.fstat(archivo.fileno()).st_mtime_ns
+            return archivo.read().splitlines(), mtime
+    except OSError:
+        return [], None
+    except UnicodeError:
+        raise ResultadoInvalido('recibo-malformado') from None
+
+
+def leer_evidencia_75(log):
+    lineas, mtime = leer_log_corrida(log, errores='replace')
     sidecar = log.with_name(log.name + '.boat-pendiente')
-    if not sidecar.exists():
-        return None
+    try:
+        mtime_pendiente = sidecar.stat().st_mtime_ns
+    except FileNotFoundError:
+        return lineas, None
+    # El fallback publica el log sin retirar el pendiente anterior. Un pendiente
+    # posterior (o de orden incierto) todavía puede corresponder a otra consulta.
+    if (mtime is not None and mtime > mtime_pendiente and es_fallback_desk(lineas) and
+            fin_75_pueue(lineas)):
+        return lineas, None
     pendiente = leer_json(sidecar)
     exigir(isinstance(pendiente, dict) and pendiente.get('status') == 'pending' and
            isinstance(pendiente.get('cause'), str), 'pendiente-boat-invalido')
-    return pendiente
+    return lineas, pendiente
+
+
+def es_fallback_desk(lineas):
+    return any(linea.startswith('HOST=desktop fallback=') for linea in lineas)
 
 
 def fin_75_pueue(lineas):
@@ -82,10 +106,7 @@ def fin_75_pueue(lineas):
     return False
 
 
-def identidad_boat_pendiente(registro):
-    codigo = registro / 'codigo.json'
-    if not codigo.exists() or leer_json(codigo) != 75:
-        return None
+def identidad_boat(registro):
     archivo = registro / 'entorno.json'
     if not archivo.exists():
         return None
@@ -95,21 +116,31 @@ def identidad_boat_pendiente(registro):
         return None
     exigir(isinstance(identidad, str) and re.fullmatch(
         r'[A-Za-z0-9][A-Za-z0-9_.-]{0,95}', identidad), 'pendiente-boat-invalido')
-    log = registro / 'corrida.log'
-    pendiente = leer_pendiente_boat(log)
+    return identidad
+
+
+def pendiente_boat_recuperable(pendiente):
+    # Boat conserva indefinidamente estas salidas sin un resultado recuperable.
+    return not re.search(
+        r'\b(?:interrupted|interrumpid[ao]s?|resultado desconocido|sin VM)\b|\bcancelaci',
+        pendiente['cause'], re.IGNORECASE)
+
+
+def identidad_boat_pendiente(registro):
+    codigo = registro / 'codigo.json'
+    if not codigo.exists() or leer_json(codigo) != 75:
+        return None
+    identidad = identidad_boat(registro)
+    if identidad is None:
+        return None
+    lineas, pendiente = leer_evidencia_75(registro / 'corrida.log')
     if pendiente is not None:
-        # Boat conserva indefinidamente estas salidas sin un resultado recuperable.
-        if re.search(r'\b(?:interrupted|interrumpid[ao]s?|resultado desconocido|sin VM)\b|\bcancelaci',
-                     pendiente['cause'], re.IGNORECASE):
-            return None
+        return identidad if pendiente_boat_recuperable(pendiente) else None
+    # Un 75 incierto del desk en el fallback puede no dejar pendiente ni recibo.
+    if (es_fallback_desk(lineas) and
+            not any(linea.startswith(('RECIBO ', 'RESULT ')) for linea in lineas) and
+            not fin_75_pueue(lineas)):
         return identidad
-    # Un 75 del desk en el fallback no deja sidecar ni RECIBO ni RESULT.
-    if log.exists():
-        lineas = log.read_text(encoding='utf-8', errors='replace').splitlines()
-        if (any(linea.startswith('HOST=desktop fallback=') for linea in lineas) and
-                not any(linea.startswith(('RECIBO ', 'RESULT ')) for linea in lineas) and
-                not fin_75_pueue(lineas)):
-            return identidad
     return None
 
 
@@ -122,25 +153,20 @@ def objeto(pares):
     return resultado
 
 
-def leer_recibo(log, codigo, commit, modo, filtros, *, host):
+def leer_recibo(log, codigo, commit, modo, filtros, *, host, lineas=None):
     exigir(type(codigo) is int, 'salida-no-utilizable')
     if codigo == 64:
         return RechazoLanzador(str(Path(log).with_name('coordinador.log')))
-    try:
+    if lineas is None:
         # Boat y un 75 del desk pueden traer salida de pruebas con bytes no UTF-8.
         errores = 'replace' if host == 'boat' or codigo == 75 else 'strict'
-        lineas = Path(log).read_text(encoding='utf-8', errors=errores).splitlines()
-    except OSError:
-        lineas = []
-    except UnicodeError:
-        raise ResultadoInvalido('recibo-malformado') from None
+        lineas, _ = leer_log_corrida(log, errores=errores)
     if any(re.fullmatch(r'PARTIAL: boat omitted=0*[1-9][0-9]*', linea) for linea in lineas):
         return RechazoLanzador(str(log), 'cobertura-parcial-boat')
     recibos = [linea for linea in lineas if linea.startswith('RECIBO')]
     if not recibos:
         if codigo == 75:
-            desk = (host in ('desktop', 'auto') or host == 'boat' and
-                    any(linea.startswith('HOST=desktop fallback=') for linea in lineas))
+            desk = host in ('desktop', 'auto') or host == 'boat' and es_fallback_desk(lineas)
             if desk and fin_75_pueue(lineas):
                 return FIN_PUEUE_75
             return None
@@ -201,16 +227,22 @@ def leer_recibo(log, codigo, commit, modo, filtros, *, host):
 
 
 def leer_salida(registro, log, codigo, commit, modo, filtros):
+    resultado, _ = leer_salida_con_pendiente(registro, log, codigo, commit, modo, filtros)
+    return resultado
+
+
+def leer_salida_con_pendiente(registro, log, codigo, commit, modo, filtros):
     estado = leer_json(codigo)
-    if estado == 75 and leer_pendiente_boat(log) is not None:
-        return None
+    lineas, pendiente = leer_evidencia_75(log) if estado == 75 else (None, None)
+    if pendiente is not None:
+        return None, pendiente
     host = leer_json(registro / 'solicitud.json')[2]
-    resultado = leer_recibo(log, estado, commit, modo, filtros, host=host)
+    resultado = leer_recibo(log, estado, commit, modo, filtros, host=host, lineas=lineas)
     # Tras un reenganche la tarea original puede seguir viva: un 64 no autoriza otra clave.
     if (isinstance(resultado, RechazoLanzador) and resultado.detalle == 'lanzador-rechazo' and
             any(registro.glob('codigo-reenganche-*.json'))):
-        return RechazoLanzador(resultado.evidencia, 'salida-sin-recibo')
-    return resultado
+        resultado = RechazoLanzador(resultado.evidencia, 'salida-sin-recibo')
+    return resultado, None
 
 
 def admite_relanzamiento(rechazo):
@@ -223,11 +255,12 @@ def corrida_puede_seguir_viva(registro, commit, modo, filtros, registro_absuelto
         return True
     log = registro / 'corrida.log'
     try:
-        resultado = leer_salida(registro, log, codigo, commit, modo, filtros)
+        resultado, pendiente = leer_salida_con_pendiente(registro, log, codigo, commit, modo, filtros)
         if resultado is FIN_PUEUE_75:
             return False
         if resultado is None:
-            return leer_pendiente_boat(log) is None or identidad_boat_pendiente(registro) is not None
+            return pendiente is None or (identidad_boat(registro) is not None and
+                                         pendiente_boat_recuperable(pendiente))
     except ResultadoInvalido:
         return True
     return (isinstance(resultado, RechazoLanzador) and resultado.detalle == 'salida-sin-recibo' and

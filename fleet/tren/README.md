@@ -851,6 +851,10 @@ recuperable. Para el desk, incluso si llegó por fallback de Boat,
 `PUEUE_STATE=Done` seguido de `PUEUE_EXIT=75` confirma el fin de la corrida
 y la siguiente reanudación abre otro registro y clave. Un 75 tras perder el
 contacto con el desk conserva su clave para recuperar el mismo trabajo.
+Si el fallback deja `corrida.log.boat-pendiente`, el fin confirmado sólo
+prevalece cuando `corrida.log` tiene una fecha de modificación estrictamente
+posterior. Con un pendiente recuperable más reciente o de la misma fecha,
+la reanudación conserva la clave.
 En un reenganche de la suite, el modo señalado por la pausa recupera su
 registro y clave. Los demás aplican la regla a su propia corrida y abren
 otro registro y clave si su fin está confirmado y hace falta volver a correrla.
