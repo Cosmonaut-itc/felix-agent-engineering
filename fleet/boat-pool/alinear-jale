@@ -1,4 +1,5 @@
 #!/usr/bin/python3 -IB
+from contextlib import suppress
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -11,8 +12,10 @@ import subprocess
 import sys
 
 
-PLAZO_ALINEAR = 2 * 60 * 60
+PLAZO_ALINEAR = 5 * 60 * 60
+GRACIA_ALINEAR = 120
 PLAZO_GIT = 120
+MAX_AVISADOS = 50
 
 
 class FalloGit(Exception):
@@ -63,7 +66,7 @@ def preparar_worktree(repo, worktree, sha):
         verificar_limpieza(worktree)
 
 
-def alinear(worktree):
+def alinear(worktree, *, plazo=PLAZO_ALINEAR, gracia=GRACIA_ALINEAR):
     try:
         proceso = subprocess.Popen(
             [sys.executable, '-I', '-B', 'scripts/test-hosts/boat-pilot.py', 'alinear'],
@@ -75,18 +78,23 @@ def alinear(worktree):
 
     with proceso:
         try:
-            salida, _ = proceso.communicate(timeout=PLAZO_ALINEAR)
+            salida, _ = proceso.communicate(timeout=plazo)
         except subprocess.TimeoutExpired:
+            with suppress(ProcessLookupError):
+                os.killpg(proceso.pid, signal.SIGTERM)
             try:
-                os.killpg(proceso.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            salida, _ = proceso.communicate()
-            return 'plazo', salida, 'El comando alinear superó el plazo de dos horas.'
+                salida, _ = proceso.communicate(timeout=gracia)
+            except subprocess.TimeoutExpired:
+                with suppress(ProcessLookupError):
+                    os.killpg(proceso.pid, signal.SIGKILL)
+                salida, _ = proceso.communicate()
+            return 'plazo', salida, f'El comando alinear superó el plazo de {plazo} s.'
 
     codigo = proceso.returncode
     if codigo == 0:
         return codigo, salida, ''
+    if codigo == 75:
+        return codigo, 'alinear-jale: código 75 (pendiente)\n' + salida, ''
     if codigo == 1:
         fallos = '\n'.join(linea for linea in salida.splitlines() if 'fallo:' in linea)
         return codigo, salida, fallos or 'El comando alinear salió con código 1.'
@@ -105,6 +113,12 @@ def guardar_estado(ruta, estado):
     temporal = ruta.with_suffix('.nuevo')
     temporal.write_text(json.dumps(estado, ensure_ascii=False) + '\n', encoding='utf-8')
     temporal.replace(ruta)
+
+
+def huella_resultado(estado):
+    salida = re.sub(r'\d+', '#', estado.get('salida', ''))
+    resultado = [estado.get('sha'), estado.get('etapa'), estado.get('codigo'), salida]
+    return hashlib.sha256(json.dumps(resultado).encode()).hexdigest()
 
 
 def pasada(directorio, repo, worktree):
@@ -132,23 +146,29 @@ def pasada(directorio, repo, worktree):
 
     salida = ocultar_ids(salida)
     ahora = datetime.now(timezone.utc)
-    log = directorio / f'{etapa}-{ahora:%Y%m%dT%H%M%S.%fZ}.log'
-    log.write_text(salida, encoding='utf-8')
-    avisados = anterior.get('avisados', [])
+    avisados = [] if codigo == 0 else anterior.get('avisados', [])[-MAX_AVISADOS:]
     estado = dict(origen=origen, sha=sha, etapa=etapa, codigo=codigo, salida=salida,
-                  hora=ahora.isoformat(), log=log.name, avisados=avisados)
+                  hora=ahora.isoformat(), log=None, avisados=avisados)
+    huella = huella_resultado(estado)
+    if etapa == 'alinear':
+        if huella == huella_resultado(anterior):
+            nombre = 'ultimo.log'
+        else:
+            nombre = f'alinear-{ahora:%Y%m%dT%H%M%S.%fZ}.log'
+        (directorio / nombre).write_text(salida, encoding='utf-8')
+        estado['log'] = nombre
     guardar_estado(ruta, estado)
 
-    if codigo == 0:
-        return 0
-    huella = hashlib.sha256(json.dumps([sha, etapa, codigo, salida]).encode()).hexdigest()
+    if codigo in (0, 75):
+        return codigo
     if huella not in avisados:
+        detalle = estado['log'] or ruta.name
         try:
-            notificar(ocultar_ids(f'{aviso}\nLog: {log.name}'))
+            notificar(ocultar_ids(f'{aviso}\nDetalle: {detalle}'))
         except (OSError, subprocess.SubprocessError):
             print('alinear-jale: no se pudo enviar la notificación de macOS', file=sys.stderr)
         else:
-            avisados.append(huella)
+            estado['avisados'] = (avisados + [huella])[-MAX_AVISADOS:]
             guardar_estado(ruta, estado)
     return 1 if codigo == 1 else 2
 

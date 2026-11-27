@@ -10,8 +10,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 PILOTO = '''\
+import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -22,9 +24,31 @@ sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
 with Path(os.environ['LLAMADAS_PRUEBA']).open('a') as llamadas:
     print(sha, file=llamadas)
 codigo = int(os.environ['CODIGO_PRUEBA'])
+
+def al_terminar(_senal, _marco):
+    time.sleep(0.2)
+    Path(os.environ['TERM_PRUEBA']).write_text('SIGTERM recibido')
+    print('arriendo soltado', flush=True)
+    sys.exit(75)
+
+if codigo == 9:
+    signal.signal(signal.SIGTERM, al_terminar)
+
 print('vm-uno ya-al-dia revision_vm=demo', flush=True)
-if codigo:
-    print('vm-dos fallo:preparacion revision_vm=demo ' + 'bx_' + 'falso123',
+if codigo == 1:
+    intentos = Path(os.environ['INTENTOS_PRUEBA'])
+    historial = json.loads(intentos.read_text()) if intentos.exists() else {}
+    hechos = historial.get(sha, 0)
+    if hechos >= 3:
+        print('vm-dos saltada:fallo-en-esta-revision revision_vm=demo')
+        sys.exit(0)
+    historial[sha] = hechos + 1
+    intentos.write_text(json.dumps(historial))
+if codigo == 75:
+    print('Boat: alineación en curso')
+elif codigo:
+    ms = os.environ.get('MS_PRUEBA', '1234')
+    print(f'vm-dos fallo:preparacion after {ms} ms revision_vm=demo ' + 'bx_' + 'falso123',
           file=sys.stderr, flush=True)
 if codigo == 9:
     time.sleep(4)
@@ -45,6 +69,8 @@ class AlinearJale(unittest.TestCase):
         self.worktree = self.estado / 'main'
         self.llamadas = self.base / 'llamadas.txt'
         self.avisos = self.base / 'avisos.txt'
+        self.intentos = self.base / 'intentos.json'
+        self.recibio_term = self.base / 'recibio-term.txt'
         osascript = self.base / 'osascript'
         osascript.write_text('#!/bin/sh\nprintf "%s\\n" "$3" >> "$AVISOS_PRUEBA"\n')
         osascript.chmod(0o700)
@@ -58,6 +84,7 @@ class AlinearJale(unittest.TestCase):
             'GIT_COMMITTER_NAME': 'Prueba', 'GIT_COMMITTER_EMAIL': 'prueba@example.org',
             'ALINEAR_JALE_OSASCRIPT': str(osascript),
             'LLAMADAS_PRUEBA': str(self.llamadas), 'AVISOS_PRUEBA': str(self.avisos),
+            'INTENTOS_PRUEBA': str(self.intentos), 'TERM_PRUEBA': str(self.recibio_term),
         }
         self.remoto, self.repo = self.base / 'remoto', self.base / 'clon de Jale'
         self.git(self.base, 'init', '-q', '-b', 'main', str(self.remoto))
@@ -131,9 +158,8 @@ class AlinearJale(unittest.TestCase):
 
     def test_reintenta_fallo_y_avisa_una_vez_con_ids_ocultos(self):
         self.configurar()
-        self.pasada(1)
-        self.pasada(1)
-        self.assertEqual(self.llamadas.read_text().splitlines(), [self.inicial, self.inicial])
+        for _ in range(3):
+            self.pasada(1)
         aviso = self.avisos.read_text()
         self.assertEqual(aviso.count('fallo:preparacion'), 1)
         self.assertNotIn('ya-al-dia', aviso)
@@ -141,11 +167,85 @@ class AlinearJale(unittest.TestCase):
         estado = self.ultimo_estado()
         self.assertEqual(estado['codigo'], 1)
         self.assertIn('ya-al-dia', estado['salida'])
-        logs = list(self.estado.glob('alinear-*.log'))
-        self.assertEqual(len(logs), 2)
+        self.assertEqual(estado['log'], 'ultimo.log')
+        self.assertEqual(len(list(self.estado.glob('alinear-*.log'))), 1)
+        logs = list(self.estado.glob('*.log'))
         for salida in (aviso, estado['salida'], *(log.read_text() for log in logs)):
             self.assertNotIn('bx_' + 'falso123', salida)
             self.assertIn('fallo:preparacion', salida)
+        self.pasada(1, esperado=0)
+        estado = self.ultimo_estado()
+        self.assertEqual(estado['codigo'], 0)
+        self.assertIn('saltada:fallo-en-esta-revision', estado['salida'])
+        self.pasada(1, esperado=0)
+        self.assertEqual(self.llamadas.read_text().splitlines(), [self.inicial] * 4)
+        self.assertEqual(json.loads(self.intentos.read_text()), {self.inicial: 3})
+        self.assertEqual(self.avisos.read_text(), aviso)
+
+    def test_pendiente_registra_75_y_vuelve_a_invocar_el_mismo_sha(self):
+        self.configurar()
+        self.pasada(75)
+        estado = self.ultimo_estado()
+        self.assertEqual(estado['sha'], self.inicial)
+        self.assertEqual(estado['codigo'], 75)
+        log = (self.estado / estado['log']).read_text()
+        self.assertIn('código 75 (pendiente)', log)
+        self.assertIn('alineación en curso', log)
+        self.assertFalse(self.avisos.exists())
+        self.pasada()
+        self.assertEqual(self.llamadas.read_text().splitlines(), [self.inicial] * 2)
+        self.assertEqual(self.ultimo_estado()['codigo'], 0)
+        self.assertFalse(self.avisos.exists())
+
+    def test_avisa_si_el_mismo_fallo_vuelve_despues_de_un_exito(self):
+        self.configurar()
+        ausente = str(self.base / 'ausente')
+        self.git(self.repo, 'remote', 'set-url', 'origin', ausente)
+        self.pasada(esperado=2)
+        self.assertEqual(len(self.ultimo_estado()['avisados']), 1)
+        self.git(self.repo, 'remote', 'set-url', 'origin', str(self.remoto))
+        self.pasada()
+        self.assertEqual(self.ultimo_estado()['avisados'], [])
+        self.git(self.repo, 'remote', 'set-url', 'origin', ausente)
+        self.pasada(esperado=2)
+        self.assertEqual(self.avisos.read_text().count('git fetch'), 2)
+
+    def test_milisegundos_distintos_conservan_la_huella_y_reescriben_ultimo_log(self):
+        self.configurar()
+        self.pasada(1, MS_PRUEBA='12')
+        inicial = self.estado / self.ultimo_estado()['log']
+        self.pasada(1, MS_PRUEBA='1234')
+        self.assertIn('after 1234 ms', (self.estado / 'ultimo.log').read_text())
+        self.pasada(1, MS_PRUEBA='123456')
+        self.assertEqual(self.avisos.read_text().count('fallo:preparacion'), 1)
+        self.assertEqual(set(self.estado.glob('*.log')), {inicial, self.estado / 'ultimo.log'})
+        self.assertIn('after 12 ms', inicial.read_text())
+        self.assertIn('after 123456 ms', (self.estado / 'ultimo.log').read_text())
+        self.assertEqual(self.ultimo_estado()['log'], 'ultimo.log')
+
+    def test_exito_con_el_mismo_sha_salta_la_pasada_sin_crear_logs(self):
+        self.configurar()
+        self.pasada()
+        logs = set(self.estado.glob('*.log'))
+        self.assertEqual(len(logs), 1)
+        self.pasada()
+        self.pasada()
+        self.assertEqual(set(self.estado.glob('*.log')), logs)
+        self.assertEqual(self.llamadas.read_text().splitlines(), [self.inicial])
+
+    def test_conserva_las_ultimas_50_huellas_avisadas(self):
+        self.configurar()
+        self.pasada(1)
+        estado = self.ultimo_estado()
+        historial = [f'{i:064x}' for i in range(51)] + estado['avisados']
+        estado['avisados'] = historial
+        (self.estado / 'estado.json').write_text(json.dumps(estado), encoding='utf-8')
+        self.avanzar_main()
+        self.pasada(1)
+        recientes = self.ultimo_estado()['avisados']
+        self.assertEqual(len(recientes), 50)
+        self.assertEqual(recientes[:-1], historial[-49:])
+        self.assertNotIn(recientes[-1], historial)
 
     def test_worktree_sucio_avisa_y_conserva_los_cambios(self):
         self.configurar()
@@ -165,9 +265,12 @@ class AlinearJale(unittest.TestCase):
         self.configurar()
         self.pasada(7, esperado=2)
         self.assertEqual(self.ultimo_estado()['codigo'], 7)
+        logs = set(self.estado.glob('*.log'))
         self.git(self.repo, 'remote', 'set-url', 'origin', str(self.base / 'ausente'))
         self.pasada(esperado=2)
         self.assertEqual(self.ultimo_estado()['etapa'], 'git')
+        self.assertIsNone(self.ultimo_estado()['log'])
+        self.assertEqual(set(self.estado.glob('*.log')), logs)
         self.assertEqual(self.llamadas.read_text().splitlines(), [self.inicial])
         aviso = self.avisos.read_text()
         self.assertIn('código 7', aviso)
@@ -176,17 +279,24 @@ class AlinearJale(unittest.TestCase):
         self.pasada(7, esperado=2)
         self.assertEqual(self.avisos.read_text(), aviso)
 
-    def test_vence_plazo_y_registra_salida_parcial(self):
+    def test_vence_plazo_envia_term_y_registra_salida_parcial(self):
         self.configurar()
         args = ['-c',
-                'import runpy, sys; main = runpy.run_path(sys.argv[1])["main"]; '
-                'main.__globals__["PLAZO_ALINEAR"] = 2; sys.exit(main())',
+                'from functools import partial\n'
+                'import runpy, sys\n'
+                'main = runpy.run_path(sys.argv[1])["main"]\n'
+                'funciones = main.__globals__\n'
+                'funciones["alinear"] = partial(funciones["alinear"], plazo=2, gracia=1)\n'
+                'sys.exit(main())',
                 str(ROOT / 'alinear-jale')]
         self.pasada(9, esperado=2, args=args)
         estado = self.ultimo_estado()
         self.assertEqual(estado['codigo'], 'plazo')
+        self.assertEqual(self.recibio_term.read_text(), 'SIGTERM recibido')
         self.assertIn('ya-al-dia', estado['salida'])
-        self.assertIn('fallo:preparacion', (self.estado / estado['log']).read_text())
+        salida = (self.estado / estado['log']).read_text()
+        self.assertIn('fallo:preparacion', salida)
+        self.assertIn('arriendo soltado', salida)
         self.assertIn('superó el plazo', self.avisos.read_text())
 
 

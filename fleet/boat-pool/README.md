@@ -30,12 +30,11 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
 ## Alineación automática de Jale
 
 `fleet/boat-pool/install-alinear-jale.sh` carga `local.pao.boat-alinear-jale`
-en la sesión gráfica y deja un ejemplo con `activo: false`. Con la
-alineación activa, el agente consulta `origin/main` al cargar y cada cinco
-minutos, actualiza un worktree dedicado con HEAD separado y ejecuta
-`boat-pilot.py alinear` cuando cambia el SHA o falla la última pasada. El
-comando de Jale espera las corridas vigentes antes de preparar una VM
-existente. Si el worktree está sucio, el agente avisa y conserva los cambios.
+en la sesión gráfica y deja un ejemplo con `activo: false` si falta la
+configuración. Con la alineación activa, el agente consulta `origin/main`
+al cargar y cada cinco minutos, actualiza un worktree dedicado con HEAD
+separado e invoca `boat-pilot.py alinear`. Si el worktree está sucio, avisa
+y conserva los cambios.
 
 Cuando `alinear` ya esté en `main` de Jale, copia el ejemplo a
 `~/.config/boat-pool/alinear-jale.json` y cambia `activo` a `true` para
@@ -43,15 +42,37 @@ permitir el uso de Boat. Puedes indicar `repo` si el clon vive fuera de
 `~/VSCODE/REPOS/SEN-CheckIn` y `worktree` para elegir otra ruta dedicada.
 El worktree predeterminado es `main/` dentro del directorio de estado
 `~/.local/state/boat-pool/alinear-jale/`. El agente usa `XDG_CONFIG_HOME` y
-`XDG_STATE_HOME` si están definidos en el entorno de launchd.
+`XDG_STATE_HOME` si están definidos en el entorno de launchd. Para apagar
+la alineación, pon `activo: false`. Surte efecto desde la siguiente pasada.
 
-El directorio de estado guarda `estado.json`, la salida de cada ejecución
-en `alinear-*.log`, los fallos de Git en `git-*.log` y el stderr del agente
-en `launchd.err.log`. `alinear` tiene un plazo de dos horas. Una salida 1
-se reintenta en la próxima pasada para recuperar fallos transitorios.
-Jale evita repetir una preparación fallida para la misma revisión y el
-agente avisa una vez por fallo con el mismo SHA y salida. Para apagarlo,
-pon `activo: false`. Surte efecto desde la siguiente pasada.
+Jale espera las corridas vigentes antes de preparar cada VM. Si falla una
+preparación, Jale la intenta hasta tres veces por revisión y después salta
+esa VM. El agente guarda el código de salida de `alinear` en `estado.json`.
+
+- **0** indica que las VMs quedaron alineadas o se saltaron sin un fallo
+  nuevo. El agente vacía el historial de avisos y omite `alinear` en las
+  siguientes pasadas para el mismo SHA.
+- **1** indica que falló alguna VM. El agente avisa con las líneas `fallo:`
+  y vuelve a invocar a Jale en la siguiente pasada, incluso con el mismo SHA.
+- **75** indica que la alineación quedó pendiente por otro proceso o una
+  interrupción. El agente lo registra en el log y vuelve a invocar a Jale
+  en la siguiente pasada sin avisar.
+
+La pasada de `alinear` tiene un plazo de cinco horas para las dos VMs en
+serie. Al vencer, el agente envía `SIGTERM` al grupo y le da 120 s de
+gracia. Jale ejecuta su limpieza al recibir `SIGTERM` o `SIGHUP`, suelta
+los arriendos y sale con 75. Si el comando sigue activo tras la gracia,
+el agente envía `SIGKILL`. El agente registra el plazo vencido como fallo
+y avisa incluso si Jale alcanza a salir con 75 durante la gracia.
+
+El directorio de estado guarda la salida de `alinear` en `alinear-*.log`.
+Si se repiten el código y la huella del resultado anterior, el agente
+reescribe `ultimo.log`. La huella incluye el SHA, la etapa, el código y
+la salida con los dígitos normalizados para ignorar variaciones de tiempo.
+El agente avisa ante fallos de Git, plazos vencidos y códigos inesperados,
+y recuerda hasta las últimas 50 huellas avisadas. Los fallos de Git quedan
+en `estado.json`. Las pasadas sin invocación a `alinear` no generan archivos
+de log. El stderr del agente queda en `launchd.err.log`.
 
 ## Operación
 
