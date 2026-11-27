@@ -645,6 +645,35 @@ class Harness(unittest.TestCase):
         self.assertEqual(json.loads(output)['reservas'], [
             {'repo': REPO, 'lote': 'lote', 'clases': ['e2e'], 'vence': pool.stamp(NOW + 3600)}])
 
+    def test_reserva_absoluta_no_se_extiende_con_un_epoch_posterior(self):
+        args = ('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e', '--vence')
+        self.assertEqual(self.run_cli(*args, str(NOW + 300))[0], 0)
+        self.api.now = NOW + 120
+        self.assertEqual(self.run_cli(*args, str(NOW + 420))[0], 0)
+        code, output, stderr = self.run_cli('estado', '--json')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual([r['vence'] for r in json.loads(output)['reservas']], [pool.stamp(NOW + 300)])
+
+    def test_reserva_absoluta_se_recorta_con_un_epoch_anterior(self):
+        args = ('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e', '--vence')
+        self.assertEqual(self.run_cli(*args, str(NOW + 420))[0], 0)
+        self.api.now = NOW + 120
+        self.assertEqual(self.run_cli(*args, str(NOW + 300))[0], 0)
+        code, output, stderr = self.run_cli('estado', '--json')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual([r['vence'] for r in json.loads(output)['reservas']], [pool.stamp(NOW + 300)])
+
+    def test_ttl_renueva_una_reserva_absoluta(self):
+        self.assertEqual(self.run_cli('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e',
+                                      '--vence', str(NOW + 300))[0], 0)
+        self.api.now = NOW + 120
+        self.reserve(ttl='1800')
+        code, output, stderr = self.run_cli('estado', '--json')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(output)['reservas'], [
+            {'repo': REPO, 'lote': 'lote', 'clases': ['contract', 'e2e'],
+             'vence': pool.stamp(NOW + 1920)}])
+
     def test_reserva_absoluta_vencida_libera_solo_su_lote(self):
         self.reserve()
         self.reserve('otro-lote')
