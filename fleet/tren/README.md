@@ -1355,6 +1355,25 @@ reanudación del mismo tren sin saltar la barrera, y aborto tras recuperar una
 lectura incierta del CAS sin perder el éxito. La suite comprueba además el
 aborto que espera acreditación y C contenido en un main posterior.
 
+## Adaptador de caja
+
+La configuración privada por repo admite `"adaptador": "caja"` con
+`"lanzador"`, la ruta absoluta a `scripts/tren/lanzador` del checkout de caja.
+Ese lanzador habla el contrato de Hasito: recibe los mismos argumentos y
+escribe recibos `suite-resultado@1` y `suite-repeticion@1`. Por eso PAO usa la
+clase `Hasito`. Sólo cambia el directorio de estado, que es
+`$XDG_STATE_HOME/pao-tren/caja`. A diferencia de Hasito, caja no acepta
+`lanzador_hasito`, y sin `lanzador` la selección falla. Esta selección no
+inscribe ni activa el repositorio.
+
+```json
+{
+  "remoto": "https://github.com/owner/caja.git",
+  "adaptador": "caja",
+  "lanzador": "/path/to/caja/scripts/tren/lanzador"
+}
+```
+
 ## Adaptador de Jale (U9)
 
 La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
