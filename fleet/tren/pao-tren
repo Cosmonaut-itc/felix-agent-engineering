@@ -89,6 +89,11 @@ def parser():
     medicion.add_argument("--repo", required=True, type=repositorio)
     medicion.add_argument("--desde", required=True, type=instante_iso)
     medicion.add_argument("--hasta", required=True, type=instante_iso)
+    latencia = comandos.add_parser("latencia", help="medir horas de espera y sus causas")
+    latencia.add_argument("--repo", required=True, type=repositorio)
+    latencia.add_argument("--desde", required=True, type=instante_iso)
+    latencia.add_argument("--hasta", type=instante_iso)
+    latencia.add_argument("--prs", type=Path, help="JSON de gh pr list con number,mergedAt,state")
     fases = comandos.add_parser("fases")
     fases.add_argument("--repo", required=True, type=repositorio)
     fases.add_argument("--desde", required=True, type=texto_iso)
@@ -116,6 +121,18 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
     if args.comando == "medir":
         requests, events = filas_medicion(args.repo)
         return 0, medir(requests, events, args.repo, args.desde, args.hasta)
+    if args.comando == "latencia":
+        from latencia import medir_latencia
+        from ledger import filas_latencia
+        hasta = args.hasta if args.hasta is not None else (time.time() if ahora is None else ahora)
+        prs = None
+        if args.prs is not None:
+            with args.prs.open(encoding="utf-8") as archivo:
+                prs = json.load(archivo)
+            if not isinstance(prs, list):
+                raise ValueError("--prs requiere un arreglo JSON")
+        with filas_latencia(args.repo, hasta) as filas:
+            return 0, medir_latencia(*filas, args.repo, args.desde, hasta, prs)
     if args.comando == "fases":
         from fases import medir_fases
         from ledger import filas_fases
