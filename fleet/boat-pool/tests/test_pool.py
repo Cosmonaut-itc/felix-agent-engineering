@@ -616,6 +616,47 @@ class Harness(unittest.TestCase):
         self.assertEqual([event['evento'] for event in pool.events(self.state / 'eventos.jsonl')],
                          ['reservado', 'reservado', 'reserva-liberada'])
 
+    def test_reserva_absoluta_conserva_el_vencimiento_al_repetirla(self):
+        self.reservation_vms()
+        until = NOW + 120.5
+        args = ('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'contract,e2e',
+                '--vence', str(until))
+        self.assertEqual(self.run_cli(*args)[0], 0)
+        self.api.now += 60
+        self.assertEqual(self.run_cli(*args)[0], 0)
+        events = list(pool.events(self.state / 'eventos.jsonl'))
+        self.assertEqual([(e['evento'], e['vence']) for e in events],
+                         [('reservado', pool.stamp(until))] * 2)
+        self.api.now = until - 0.25
+        self.assert_reservation_blocked(*self.args('ajena', 'e2e', '--prioridad', 'suite'))
+        self.api.now = until
+        self.get_lease('ajena', 'e2e', '--prioridad', 'suite')
+
+    def test_reserva_absoluta_mantiene_el_tope_original_al_reintentar(self):
+        args = ('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e',
+                '--vence', str(NOW + 3660))
+        self.assertEqual(self.run_cli(*args)[0], 0)
+        self.api.now += 120
+        self.assertEqual(self.run_cli(*args)[0], 0)
+        events = list(pool.events(self.state / 'eventos.jsonl'))
+        self.assertEqual([e['vence'] for e in events], [pool.stamp(NOW + 3600)] * 2)
+        code, output, stderr = self.run_cli('estado', '--json')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(output)['reservas'], [
+            {'repo': REPO, 'lote': 'lote', 'clases': ['e2e'], 'vence': pool.stamp(NOW + 3600)}])
+
+    def test_reserva_absoluta_vencida_libera_solo_su_lote(self):
+        self.reserve()
+        self.reserve('otro-lote')
+        for until in (NOW, NOW - 1):
+            self.assertEqual(self.run_cli('reservar', '--repo', REPO, '--lote', 'lote',
+                                          '--clases', 'e2e', '--vence', str(until))[0], 0)
+        code, output, stderr = self.run_cli('estado', '--json')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual([r['lote'] for r in json.loads(output)['reservas']], ['otro-lote'])
+        self.assertEqual([(e['evento'], e['lote']) for e in pool.events(self.state / 'eventos.jsonl')],
+                         [('reservado', 'lote'), ('reservado', 'otro-lote'), ('reserva-liberada', 'lote')])
+
     def test_reserva_rechaza_argumentos_invalidos(self):
         for flag, value in (('--repo', 'otro/proyecto'), ('--repo', '\t'), ('--lote', '\nlote'),
                             ('--clases', 'preparar'), ('--clases', 'e2e,contract,e2e'),
@@ -626,6 +667,11 @@ class Harness(unittest.TestCase):
                 options[flag] = value
                 args = [part for pair in options.items() for part in pair]
                 self.assertEqual(self.run_cli('reservar', *args)[0], 64)
+        args = ('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e')
+        for expiration in ((), ('--vence', 'nan'), ('--vence', 'inf'),
+                           ('--ttl', '300', '--vence', str(NOW + 300))):
+            with self.subTest(expiration=expiration):
+                self.assertEqual(self.run_cli(*args, *expiration)[0], 64)
         self.assertEqual(self.run_cli('liberar-reserva', '--repo', REPO, '--lote', '\t')[0], 64)
         self.reserve()
         self.assertFalse(self.api.calls)
