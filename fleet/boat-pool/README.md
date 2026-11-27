@@ -54,16 +54,18 @@ esa VM. El agente guarda el código de salida de `alinear` en `estado.json`.
   siguientes pasadas para el mismo SHA.
 - **1** indica que falló alguna VM. El agente avisa con las líneas `fallo:`
   y vuelve a invocar a Jale en la siguiente pasada, incluso con el mismo SHA.
-- **75** indica que la alineación quedó pendiente por otro proceso o una
-  interrupción. El agente lo registra en el log y vuelve a invocar a Jale
-  en la siguiente pasada sin avisar.
+- **75** indica que la alineación quedó pendiente porque otro proceso
+  tiene el candado o está preparando una VM. El agente lo registra en el
+  log y vuelve a invocar a Jale en la siguiente pasada sin avisar.
+- Cualquier otro código, como el **143** de una interrupción, se avisa y
+  se reintenta en la siguiente pasada.
 
 La pasada de `alinear` tiene un plazo de cinco horas para las dos VMs en
 serie. Al vencer, el agente envía `SIGTERM` al grupo y le da 120 s de
 gracia. Jale ejecuta su limpieza al recibir `SIGTERM` o `SIGHUP`, suelta
-los arriendos y sale con 75. Si el comando sigue activo tras la gracia,
+los arriendos y sale con 143. Si el comando sigue activo tras la gracia,
 el agente envía `SIGKILL`. El agente registra el plazo vencido como fallo
-y avisa incluso si Jale alcanza a salir con 75 durante la gracia.
+y avisa aunque Jale alcance a salir durante la gracia.
 
 El directorio de estado guarda la salida de `alinear` en `alinear-*.log`.
 Si se repiten el código y la huella del resultado anterior, el agente
