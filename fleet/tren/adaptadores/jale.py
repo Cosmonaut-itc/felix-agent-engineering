@@ -204,6 +204,10 @@ class Jale:
     def host_de(self, modo):
         return self.host[modo] if isinstance(self.host, dict) else self.host
 
+    @property
+    def clases_boat(self):
+        return tuple(modo for modo in self.modos if self.host_de(modo) == 'boat')
+
     def prelanzar(self, candidato, tren_id):
         if not self.prelanzar_habilitado:
             return
