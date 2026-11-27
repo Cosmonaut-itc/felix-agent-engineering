@@ -77,7 +77,38 @@ def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
     repo = estado.repo
     opciones_clases = ("--clases", ",".join(clases))
 
-    def acciones():
+    def registrar(tipo, instante, payload):
+        try:
+            ledger.evento(repo, tipo, instante, payload)
+        except sqlite3.Error:
+            # El paso ya se guardó. La reserva puede continuar sin este evento.
+            pass
+
+    # La espera del ledger no consume el plazo de los subprocesos.
+    restante = PLAZO_RESERVA_BOAT_S
+
+    def ejecutar_boat(comando, lote, *opciones):
+        nonlocal restante
+        inicio = time.monotonic()
+        try:
+            binario = os.path.expanduser(config.get("boat_pool", "~/.local/bin/boat-pool"))
+            argv = [binario, comando, "--repo", repo, "--lote", lote, *opciones]
+            if restante <= 0:
+                raise subprocess.TimeoutExpired(argv, PLAZO_RESERVA_BOAT_S)
+            subprocess.run(argv, check=True, timeout=restante, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError) as exc:
+            fallo = {"lote": lote, "comando": comando, "clase": type(exc).__name__}
+            if isinstance(exc, subprocess.CalledProcessError):
+                fallo["codigo"] = exc.returncode
+        else:
+            return True
+        finally:
+            restante -= time.monotonic() - inicio
+        registrar("fallo-reserva-boat", ahora, fallo)
+        return False
+
+    try:
         relevos = ledger.relevos_boat(repo) if terminales else {}
         cierre = anterior.id if anterior is not None else None
         historicos = set()
@@ -85,53 +116,38 @@ def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
             # Un ledger anterior a este contrato puede tener terminales sin evento.
             previo = ledger.estado_operativo_hasta(repo, ahora - PLAZO_RELEVO_BOAT_S)
             historicos = {t.id for t in previo.trenes if isinstance(t.fase, Terminal)}
-
-        recientes = []
-        for lote in terminales:
-            if lote in relevos:
-                hasta = relevos[lote]
-            elif lote not in historicos:
-                instante = time.time()
-                hasta = instante + PLAZO_RELEVO_BOAT_S
-                ledger.evento(repo, "relevo-boat", instante, {"lote": lote, "hasta": hasta})
-            else:
-                continue
-            if hasta is not None and hasta > time.time():
-                yield "reservar", lote, (*opciones_clases, "--vence", str(hasta))
-                recientes.append((lote, hasta))
-
-        if activo is not None:
-            if estado.pausa:
-                yield "liberar-reserva", activo.id, ()
-            else:
-                yield "reservar", activo.id, (*opciones_clases, "--ttl", str(PLAZO_LOTE_BOAT_S))
-        if activo is not None or estado.pausa:
-            for lote, hasta in recientes:
-                if hasta > time.time():
-                    yield "liberar-reserva", lote, ()
-
-    limite = time.monotonic() + PLAZO_RESERVA_BOAT_S
-    try:
-        for comando, lote, opciones in acciones():
-            try:
-                binario = os.path.expanduser(config.get("boat_pool", "~/.local/bin/boat-pool"))
-                argv = [binario, comando, "--repo", repo, "--lote", lote, *opciones]
-                restante = limite - time.monotonic()
-                if restante <= 0:
-                    raise subprocess.TimeoutExpired(argv, PLAZO_RESERVA_BOAT_S)
-                subprocess.run(argv, check=True, timeout=restante, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except (OSError, subprocess.SubprocessError, TypeError, ValueError) as exc:
-                fallo = {"lote": lote, "comando": comando, "clase": type(exc).__name__}
-                if isinstance(exc, subprocess.CalledProcessError):
-                    fallo["codigo"] = exc.returncode
-                ledger.evento(repo, "fallo-reserva-boat", ahora, fallo)
-                break
-            if comando == "liberar-reserva" and (activo is None or lote != activo.id):
-                ledger.evento(repo, "relevo-boat-liberado", ahora, {"lote": lote})
     except sqlite3.Error:
-        # La reserva es de mejor esfuerzo. El paso ya se guardó y puede drenar.
         return
+
+    pendientes = []
+    for lote in terminales:
+        if lote in relevos:
+            hasta = relevos[lote]
+        elif lote not in historicos:
+            instante = time.time()
+            hasta = instante + PLAZO_RELEVO_BOAT_S
+            registrar("relevo-boat", instante, {"lote": lote, "hasta": hasta})
+        else:
+            continue
+        if hasta is None:
+            continue
+        pendientes.append((lote, hasta))
+        if hasta > time.time():
+            ejecutar_boat("reservar", lote, *opciones_clases, "--vence", str(hasta))
+
+    if activo is not None:
+        if estado.pausa:
+            ejecutar_boat("liberar-reserva", activo.id)
+        elif not ejecutar_boat("reservar", activo.id, *opciones_clases, "--ttl", str(PLAZO_LOTE_BOAT_S)):
+            return
+
+    for lote, hasta in pendientes:
+        instante = time.time()
+        if instante >= hasta + PLAZO_LOTE_BOAT_S:
+            continue
+        if estado.pausa or activo is not None or instante >= hasta:
+            if ejecutar_boat("liberar-reserva", lote):
+                registrar("relevo-boat-liberado", ahora, {"lote": lote})
 
 
 def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,

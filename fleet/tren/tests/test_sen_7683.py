@@ -17,9 +17,9 @@ from test_hasito import GitFalso
 from test_tren import Aislado, BASE, HEAD, REPO, cli, entrega, observacion
 from adaptadores import seleccionar
 from adaptadores.jale import Jale
-from dominio import (Admitido, Aterrizado, Candidato, Certificado, Corriendo, Entrada, EsperandoCI,
-                     Estado, Incierto, Pausa, Promoviendo, Terminal, Tren, datos, recibo_ci,
-                     separar_devueltos)
+from dominio import (Admitido, Aterrizado, Candidato, Certificado, Corriendo, Entrada,
+                     EscritorExterno, EsperandoCI, Estado, Incierto, Pausa, Promoviendo,
+                     Terminal, Tren, datos, recibo_ci, separar_devueltos)
 from observador import Falso
 from operador import FalloSnapshot
 
@@ -211,7 +211,10 @@ with open({str(self.log)!r}, 'a') as log:
         proceso.run = Mock(wraps=ejecutar_pool)
         with patch('operativo.subprocess', proceso):
             self.tick(520)
-        proceso.run.assert_not_called()
+            pool.api.now = inicio + 540
+            self.tick(640)
+        proceso.run.assert_called_once()
+        self.assertEqual(proceso.run.call_args.args[0][1:], self.liberacion(tren.id, 520)[0])
 
     def test_devuelto_por_ci_rojo_acorta_la_reserva(self):
         tren = self.guardar(EsperandoCI(CANDIDATO, 1))
@@ -328,6 +331,18 @@ with open({str(self.log)!r}, 'a') as log:
         return SimpleNamespace(
             run=ejecutar_pool, DEVNULL=subprocess.DEVNULL, SubprocessError=subprocess.SubprocessError,
             CalledProcessError=subprocess.CalledProcessError, TimeoutExpired=subprocess.TimeoutExpired)
+
+    def proceso_pool_viejo(self, pool):
+        self.escribir_pool(self.binario, "if '--vence' in sys.argv[1:]:\n    sys.exit(64)")
+        proceso = self.proceso_pool(pool)
+        ejecutar_pool = proceso.run
+
+        def ejecutar_viejo(argv, **opciones):
+            subprocess.run(argv, **opciones)
+            ejecutar_pool(argv, **opciones)
+
+        proceso.run = ejecutar_viejo
+        return proceso
 
     def reservas_pool(self, pool):
         codigo, salida, error = self.comando_pool(pool, 'estado', '--json')
@@ -463,12 +478,13 @@ with open({str(self.log)!r}, 'a') as log:
         self.assertEqual(codigo, 0, resultado)
         self.assert_vencimiento_cierre_lento(pool, inicio, lote)
 
-    def test_sqlite_ocupado_al_guardar_el_relevo_difiere_el_recorte(self):
+    def test_sqlite_ocupado_al_guardar_el_relevo_conserva_el_primer_vencimiento(self):
         pool, inicio, lote = self.iniciar_cierre_lento()
         proceso = self.proceso_pool(pool)
         proceso.run = Mock(wraps=proceso.run)
         clase_ledger = type(self.registro)
         evento = clase_ledger.evento
+        self.reloj.monotonic.return_value = 0
 
         with self.escritor_sqlite() as otro:
             def ocupar_al_guardar(ledger, repo, tipo, instante, payload):
@@ -479,23 +495,30 @@ with open({str(self.log)!r}, 'a') as log:
                     return evento(ledger, repo, tipo, instante, payload)
                 finally:
                     otro.execute('ROLLBACK')
+                    self.reloj.monotonic.return_value = 30
 
             with patch.object(clase_ledger, 'evento', autospec=True, side_effect=ocupar_al_guardar):
                 codigo, resultado = self.cerrar_lento(pool, proceso)
         self.assertEqual(codigo, 0, resultado)
         self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
-        proceso.run.assert_not_called()
+        self.assertEqual(self.registro.relevos_boat(REPO), {})
+        proceso.run.assert_called_once()
+        self.assertEqual(proceso.run.call_args.args[0][1:], self.recorte(lote, 220, inicio + 510)[0])
         self.assert_pool(pool, {lote}, 75)
 
+        proceso.run.reset_mock()
         self.observador.observacion = replace(observacion(2), prs=())
         pool.api.now = inicio + 240
         with patch('operativo.subprocess', proceso):
             self.tick(340)
         proceso.run.assert_called_once()
         self.assertEqual(proceso.run.call_args.args[0][1:], self.recorte(lote, 340, inicio + 540)[0])
-        pool.api.now = inicio + 539.75
+        pool.api.now = inicio + 509.75
         self.assert_pool(pool, {lote}, 75)
-        pool.api.now = inicio + 540
+        pool.api.now = inicio + 510
+        self.assertEqual(self.reservas_pool(pool), set())
+        with patch('operativo.subprocess', proceso):
+            self.tick(610)
         self.assert_pool(pool, set(), 0)
 
     def test_sqlite_ocupado_al_registrar_el_fallo_conserva_la_salida_del_tick(self):
@@ -542,7 +565,7 @@ with open({str(self.log)!r}, 'a') as log:
         pool.api.now = inicio + 420
         self.assert_pool(pool, set(), 0)
 
-    def test_pool_caido_hasta_vencer_el_relevo_conserva_el_ttl_del_vivo(self):
+    def test_pool_caido_hasta_vencer_el_relevo_libera_al_recuperarse(self):
         pool, inicio = self.preparar_pool()
         tren = self.guardar_lote_doble()
         with patch('operativo.subprocess', self.proceso_pool(pool)):
@@ -558,18 +581,140 @@ with open({str(self.log)!r}, 'a') as log:
                 self.tick(ahora)
         self.assertEqual(len(self.fallos()), 3)
 
-        proceso = self.proceso_pool(pool)
+        pool.api.now = inicio + 420
+        with patch('operativo.subprocess', self.proceso_pool(pool, ('liberar-reserva', tren.id))):
+            self.tick(520)
+        self.assertEqual(self.fallos()[0], dict(lote=tren.id, comando='liberar-reserva',
+                                               clase='CalledProcessError', codigo=1))
+        self.assert_pool(pool, {tren.id}, 75)
+
+        pool.api.now = inicio + 480
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
+            self.tick(580)
+        self.assert_pool(pool, set(), 0)
+        self.assertEqual(self.registro.relevos_boat(REPO), {tren.id: None})
+
+    def test_deja_de_reintentar_la_liberacion_al_cumplirse_el_ttl_largo(self):
+        pool, inicio = self.preparar_pool()
+        tren = self.guardar(Terminal('DEVUELTO'))
+        self.registro.evento(REPO, 'relevo-boat', inicio + 120,
+                             {'lote': tren.id, 'hasta': inicio + 420})
+        self.observador.observacion = replace(observacion(), prs=())
+        proceso = self.proceso_pool(pool, ('liberar-reserva', tren.id))
         proceso.run = Mock(wraps=proceso.run)
         with patch('operativo.subprocess', proceso):
-            for ahora in (520, 580):
+            pool.api.now = inicio + 2219
+            self.tick(2319)
+            pool.api.now = inicio + 2220
+            self.tick(2320)
+        proceso.run.assert_called_once()
+        self.assertEqual(proceso.run.call_args.args[0][1:], self.liberacion(tren.id, 2319)[0])
+
+    def test_el_sucesor_libera_el_terminal_vencido_al_recuperar_pool(self):
+        pool, inicio = self.preparar_pool()
+        anterior = self.guardar_lote_doble()
+        sano = self.proceso_pool(pool)
+        with patch('operativo.subprocess', sano):
+            self.tick(100)
+
+        with patch('operativo.subprocess', self.proceso_pool(pool, ('reservar', anterior.id))):
+            pool.api.now = inicio + 120
+            self.ver_ci(anterior, 'rojo', n=2)
+            self.tick(220)
+            self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+            self.observador.observacion = replace(observacion(2), base='')
+            for ahora in (340, 460):
                 pool.api.now = inicio + ahora - 100
                 self.tick(ahora)
-        proceso.run.assert_not_called()
-        self.assert_pool(pool, {tren.id}, 75)
-        pool.api.now = inicio + 1799.75
-        self.assert_pool(pool, {tren.id}, 75)
-        pool.api.now = inicio + 1800
+        self.assertEqual(self.reservas_pool(pool), {anterior.id})
+
+        self.observador.observacion = observacion(2)
+        with patch('operativo.subprocess', sano):
+            pool.api.now = inicio + 480
+            self.tick(580)
+            sucesor = self.estado().trenes[-1]
+            self.assertNotEqual(sucesor.id, anterior.id)
+            self.assertNotIsInstance(sucesor.fase, Terminal)
+            self.assertEqual(self.reservas_pool(pool), {sucesor.id})
+            self.cli('pausa', '--motivo', 'prueba', ahora=581)
+            pool.api.now = inicio + 600
+            self.tick(700)
         self.assert_pool(pool, set(), 0)
+
+    def test_pool_viejo_renueva_al_sucesor_aunque_rechace_el_recorte(self):
+        pool, inicio = self.preparar_pool()
+        anterior = self.guardar_lote_doble()
+        with patch('operativo.subprocess', self.proceso_pool_viejo(pool)):
+            self.tick(100)
+            nuevo, efectos = separar_devueltos(self.estado(), anterior, BASE, {2}, ())
+            pool.api.now = inicio + 120
+            with patch('operativo.paso', return_value=(nuevo, efectos)):
+                self.tick(220)
+            sucesor = self.estado().trenes[-1]
+            self.assertNotIsInstance(sucesor.fase, Terminal)
+            self.assertEqual(self.reservas_pool(pool), {sucesor.id})
+            pool.api.now = inicio + 240
+            self.tick(340)
+
+        self.assertEqual(self.reservas_pool(pool), {sucesor.id})
+        self.assertEqual(self.fallos(), [dict(lote=anterior.id, comando='reservar',
+                                              clase='CalledProcessError', codigo=64)])
+
+    def test_pool_viejo_libera_en_la_pausa_por_escritor_externo(self):
+        pool, inicio = self.preparar_pool()
+        C, arbol, B = CANDIDATO.C, CANDIDATO.arbol, CANDIDATO.B
+        tren = self.guardar(Promoviendo(Certificado(C, arbol, 'suite.json', 'verde', B)))
+        main_ajeno = 'f' * 40
+        with patch('operativo.subprocess', self.proceso_pool_viejo(pool)):
+            self.tick(100)
+            self.assertEqual(self.reservas_pool(pool), {tren.id})
+            pool.api.now = inicio + 120
+            self.observador.observacion = observacion(
+                main=EscritorExterno(B, C, main_ajeno), tren_id=tren.id, intento_promocion=1)
+            self.tick(220)
+
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
+        self.assertEqual(self.estado().pausa, Pausa('escritor-externo', main=main_ajeno))
+        self.assert_pool(pool, set(), 0)
+        self.assertEqual(self.fallos(), [dict(lote=tren.id, comando='reservar',
+                                              clase='CalledProcessError', codigo=64)])
+
+    def comprobar_cierre_sin_sucesor(self, viejo, pausar):
+        pool, inicio = self.preparar_pool()
+        tren = self.guardar(EsperandoCI(CANDIDATO, 1))
+        proceso = self.proceso_pool_viejo(pool) if viejo else self.proceso_pool(pool)
+        with patch('operativo.subprocess', proceso):
+            self.tick(100)
+            self.ver_ci(tren, 'rojo')
+            pool.api.now = inicio + 120
+            self.tick(220)
+            self.assertEqual(self.estado().trenes[0].fase, Terminal('DEVUELTO'))
+            self.observador.observacion = replace(self.observador.observacion, prs=())
+            if pausar:
+                self.cli('pausa', '--motivo', 'prueba', ahora=221)
+            for ahora in (340, 460, 580, 700):
+                pool.api.now = inicio + ahora - 100
+                self.tick(ahora)
+                if ahora == 460 and not pausar:
+                    self.assert_pool(pool, {tren.id}, 75)
+                if ahora == 340 and pausar:
+                    self.assertEqual(self.reservas_pool(pool), set())
+
+        if pausar:
+            self.assertEqual(self.estado().pausa, Pausa('manual', detalle='prueba'))
+        self.assert_pool(pool, set(), 0)
+
+    def test_sin_sucesor_pool_viejo(self):
+        self.comprobar_cierre_sin_sucesor(viejo=True, pausar=False)
+
+    def test_sin_sucesor_control(self):
+        self.comprobar_cierre_sin_sucesor(viejo=False, pausar=False)
+
+    def test_pausa_pool_viejo(self):
+        self.comprobar_cierre_sin_sucesor(viejo=True, pausar=True)
+
+    def test_pausa_control(self):
+        self.comprobar_cierre_sin_sucesor(viejo=False, pausar=True)
 
     def relevo_devueltos_con_fallo(self, pool, inicio, comando):
         anterior = self.guardar_lote_doble()
@@ -705,7 +850,7 @@ with open({str(self.log)!r}, 'a') as log:
         self.cli('juicio', '--tren', viejo, '--decision', 'absolver', '--motivo', 'prueba')
         with patch('operativo.time') as reloj, patch('operativo.subprocess.run') as lanzar:
             reloj.time.return_value = 100
-            reloj.monotonic.side_effect = (0, 1, 10)
+            reloj.monotonic.side_effect = (0, 10, 10, 10)
             self.tick()
         nuevo = self.estado().trenes[-1].id
         lanzar.assert_called_once()

@@ -18,6 +18,21 @@ El instalador copia el programa a `~/.local/lib/boat-pool`, lo enlaza en
 fleet/boat-pool/install.sh
 ```
 
+Si el tren usa Boat, actualiza ambos desde el checkout instalado bajo el
+candado del programa. Antes de ejecutar el comando, asigna a `checkout`
+la ruta absoluta del checkout y a `sha` el SHA ya descargado.
+
+```sh
+pao-tren candado -- sh -c '
+  git -C "$1" merge --ff-only "$2" &&
+  "$1/fleet/boat-pool/install.sh"
+' sh "$checkout" "$sha"
+```
+
+El instalador copia el pool y recarga `vigilar` bajo el candado. El tick
+siguiente ya puede usar el pool nuevo. Véase
+[Instalar una versión nueva](../tren/README.md#instalar-una-versión-nueva).
+
 El LaunchAgent ejecuta `vigilar` al cargar y cada cinco minutos. Cada VM
 puede indicar su propio `inactividad_min` o usar el valor global. Con
 `inactividad_min: null`, `vigilar` conserva la VM encendida.
@@ -86,8 +101,10 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
   para las clases pendientes. Los arriendos vivos del tren cubren sus clases.
   Si la reserva impide la concesión hasta vencer la espera, `pedir` devuelve `sin_lugar`.
 - `reservar --repo R --lote ID --clases C1,C2 --vence EPOCH` usa un instante
-  Unix en segundos, con un máximo de 3600 s desde la primera aplicación.
-  Repetir el mismo instante para una reserva vigente conserva su vencimiento.
+  Unix en segundos, limitado a 3600 s desde la aplicación. Para una reserva
+  del mismo repo y lote ya fijada con `--vence`, Boat conserva el menor
+  vencimiento. Guarda el vencimiento 3600 s tras caducar para descartar
+  reintentos tardíos. `--ttl` sigue renovando desde el reloj de Boat.
   Un instante alcanzado libera la reserva del lote y devuelve 0. Usa sólo
   una de las opciones `--vence` y `--ttl`.
 - `liberar-reserva --repo R --lote ID` quita la reserva del lote.

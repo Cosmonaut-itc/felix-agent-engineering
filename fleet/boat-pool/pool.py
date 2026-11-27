@@ -47,6 +47,7 @@ POWER_TIMEOUT = 90
 RESUME_TIMEOUT = 420
 POWER_UNCONFIRMED = 'Boat no confirmó el cambio de estado'
 SUITE_MAX = 7200
+RESERVATION_TTL_MAX = 3600
 AUTO_STOP_CLOCK_TOLERANCE = 60
 RENEW_BEFORE = 48 * 3600
 RENEW_FOR = 7 * 86400
@@ -853,7 +854,7 @@ class Pool:
     def reservation_data(reservation):
         return {key: reservation[key] for key in ('repo', 'lote', 'clases', 'vence')}
 
-    def reservations(self, now):
+    def reservations(self, now, *, include_expired=False):
         # El lector y las escrituras de reservas comparten espera.lock.
         try:
             data = read_json(self.state / 'reservas.json')
@@ -861,15 +862,20 @@ class Pool:
             return []
         if data.get('eventos_pendientes'):
             self.flush_reservation_events(data, recover=True)
-        live, expired = [], []
+        kept, expired = [], []
         for item in data['reservas']:
-            if epoch(item['vence']) > now:
-                live.append(item)
-            else:
+            end = epoch(item['vence'])
+            if end > now and not item.get('vencida'):
+                kept.append(item)
+                continue
+            if not item.get('vencida'):
                 expired.append(('reserva-vencida', item['vence'], item))
-        if expired:
-            self.write_reservations(live, expired)
-        return live
+            # Un reintento tardío de --vence puede traer un EPOCH posterior.
+            if 'vence_solicitado' in item and end + RESERVATION_TTL_MAX > now:
+                kept.append({**item, 'vencida': True})
+        if expired or len(kept) != len(data['reservas']):
+            self.write_reservations(kept, expired)
+        return kept if include_expired else [item for item in kept if not item.get('vencida')]
 
     def reservation_command(self, repo, batch, classes=None, ttl=None, *, until=None):
         with lock(self.state / 'espera.lock'):
@@ -877,21 +883,24 @@ class Pool:
             reserve = classes is not None and (until is None or until > now)
             if reserve and not any(vm.repo == repo for vm in self.vms.values()):
                 raise InvalidUse('repositorio sin VMs en el pool')
-            live = self.reservations(now)
-            previous = next((item for item in live if (item['repo'], item['lote']) == (repo, batch)), None)
+            reservations = self.reservations(now, include_expired=True)
+            previous = next((item for item in reservations if (item['repo'], item['lote']) == (repo, batch)), None)
+            if previous is not None and previous.get('vencida') and (not reserve or until is not None):
+                return
             if previous is not None:
-                live.remove(previous)
+                reservations.remove(previous)
             if reserve:
-                end = now + ttl if until is None else min(until, now + 3600)
+                end = now + ttl if until is None else min(until, now + RESERVATION_TTL_MAX)
+                if until is not None and previous is not None and 'vence_solicitado' in previous:
+                    end = min(end, epoch(previous['vence']))
+                    until = min(until, previous['vence_solicitado'])
                 reservation = {'repo': repo, 'lote': batch, 'clases': classes, 'vence': stamp(end)}
-                if until is not None and previous is not None and previous.get('vence_solicitado') == until:
-                    reservation.update(vence=previous['vence'], vence_solicitado=until)
-                elif until is not None and end < until:
+                if until is not None:
                     reservation['vence_solicitado'] = until
-                live.append(reservation)
-                self.write_reservations(live, [('reservado', stamp(now), reservation)])
+                reservations.append(reservation)
+                self.write_reservations(reservations, [('reservado', stamp(now), reservation)])
             elif previous is not None:
-                self.write_reservations(live, [('reserva-liberada', stamp(now), previous)])
+                self.write_reservations(reservations, [('reserva-liberada', stamp(now), previous)])
 
     def reservation_loads(self, repo, now):
         pending = Counter(kind for item in self.reservations(now) if item['repo'] == repo
