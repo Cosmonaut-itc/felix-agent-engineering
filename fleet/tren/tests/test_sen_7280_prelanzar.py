@@ -63,7 +63,8 @@ if predecesor.exists():
     for ruta in json.loads(predecesor.read_text()):
         with Path(ruta, 'candado').open('rb') as candado:
             try:
-                fcntl.flock(candado, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # Compartido: el lanzador hermano sondea el mismo candado a la vez.
+                fcntl.flock(candado, fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError:
                 activos.append(ruta)
     (registro / 'predecesoras-activas.json').write_text(json.dumps(activos))
