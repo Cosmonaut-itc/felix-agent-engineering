@@ -941,6 +941,20 @@ por U16.
 
 ## CI sobre el candidato y salida del carril (U16)
 
+La promoción vuelve a observar el CI del candidato en `Certificado` y
+`Promoviendo`. El verde vigente permite pedir la promoción. Un rojo aplica
+las salidas de CI del lote y un pendiente espera otro tick. El primer
+pendiente abre el plazo `PLAZO_CI` de 60 minutos. Un verde limpia el plazo.
+Al vencer, el tren pausa en `infraestructura` con detalle
+`pre-aterrizaje:ci-sin-resultado`, que admite `reanudar` para reiniciar la
+espera o `abortar`.
+
+El ejecutor reconcilia intentos anteriores y consulta de nuevo el CI del
+mismo candidato justo antes del push CAS, también cuando el repo no usa
+gancho. Si hay gancho, la lectura de CI ocurre después de que éste autorice
+seguir. Si el CI deja de estar verde en esa lectura, el efecto espera otro
+tick sin empujar ni gastar un intento CAS.
+
 `GitHubGit.ci` devuelve `ResultadoCI(estado, rojos)`: tres valores y los
 nombres de checks/statuses rojos, ordenados y sin duplicados. La admisión
 sigue exigiendo verde en cada head. La solicitud 0 consulta el CI por SHA de

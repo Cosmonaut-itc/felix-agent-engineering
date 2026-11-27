@@ -11,8 +11,8 @@ import time
 from typing import Protocol
 from urllib.parse import urlparse
 
-from dominio import (Diagnosticando, EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
-                     VistaPR, rama_ci, recibo_ci)
+from dominio import (Certificado, Diagnosticando, EsperandoCI, Observacion, Promoviendo, Rechazado,
+                     ResultadoCI, Terminal, VistaPR, certificado_de, recibo_ci)
 from git_ops import FalloGit, identidad_commits
 from preaterrizaje import autorizaciones
 
@@ -487,13 +487,15 @@ class GitHubGit:
         return next((t for t in estado.trenes if isinstance(t.fase, EsperandoCI)), None)
 
     def ci_candidato(self, estado):
-        tren = self.tren_en_ci(estado)
+        tren = next((t for t in estado.trenes
+                     if isinstance(t.fase, (EsperandoCI, Certificado, Promoviendo))), None)
         if tren is None:
             return None
-        # GitHub no conoce un C aún no publicado: CI pendiente.
+        cert = certificado_de(tren.fase)
+        commit = cert.C if cert is not None else tren.fase.candidato.C
+        _, _, rama = recibo_ci(tren).partition(":tren/")
         try:
-            ci = self.ci(estado.repo, tren.fase.candidato.C,
-                         "tren/" + rama_ci(tren) if tren.fase.solicitud else None)
+            ci = self.ci(estado.repo, commit, "tren/" + rama if rama else None)
         except ERRORES_LECTURA:
             ci = ResultadoCI("pendiente")
         return tren, ci

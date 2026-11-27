@@ -324,7 +324,8 @@ class RearmeCITests(unittest.TestCase):
             c = tren.fase.candidato
             cert, _ = self.ci(estado, replace(obs, suite="suite",
                                                resultado_suite=Completo("verde")), "verde")
-            prom, _ = paso(cert, obs)
+            prom, _ = paso(cert, replace(obs, tren_id=tren.id, ci_candidato="verde",
+                                        ci_recibo=recibo_ci(tren)))
             fin, _ = paso(prom, replace(obs, tren_id=tren.id, intento_promocion=1,
                                         main=Aterrizado(c.B, c.C, c.arbol)))
             self.assertEqual(fin.trenes[-1].fase, Terminal("ATERRIZADO"))
@@ -392,7 +393,8 @@ class RearmeCITests(unittest.TestCase):
         certificado, _ = self.ci(espera, replace(
             obs, ahora=101, suite="suite", resultado_suite=Completo("verde")), "verde")
         cierre = replace(obs, ahora=102, prs=(vista(1), vista(2, abierto=False), vista(3)))
-        promoviendo, _ = paso(certificado, cierre)
+        promoviendo, _ = paso(certificado, replace(
+            cierre, tren_id=tren.id, ci_candidato="verde", ci_recibo=recibo_ci(tren)))
         base_nueva = replace(cierre, ahora=103, base="f" * 40)
         fila, _ = paso(promoviendo, replace(
             base_nueva, tren_id=tren.id, intento_promocion=1,

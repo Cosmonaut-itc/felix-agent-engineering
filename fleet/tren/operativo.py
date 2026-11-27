@@ -11,9 +11,9 @@ import os
 import subprocess
 import time
 
-from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
+from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EscritorExterno, EsperandoCI, Incierto,
                      Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, base_vieja, clave,
-                     datos, desde_datos, paso, recibo_ci)
+                     datos, desde_datos, lectura_ci, paso, recibo_ci)
 from efectos import EfectoFallido, ejecutar, prelanzar_ci, suite_autorizada
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
@@ -236,7 +236,8 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     resultado = escritor.ejecutar_feedback(efecto, estado, frontera)
                     completo = True
                 else:
-                    ejecucion = ejecutar(efecto, estado, observacion, git, adaptador, previo)
+                    ejecucion = ejecutar(efecto, estado, observacion, git, adaptador, previo,
+                                         leer_ci=getattr(observador, "ci_candidato", None))
                     if ejecucion.aviso is not None:
                         ledger.evento(repo, "prelanzamiento-fallido", ahora, ejecucion.aviso)
                     if ejecucion.en_curso:
@@ -391,6 +392,19 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     k: desde_datos(v) for k, v in recibida.items()})
                 consumido = fila["clave"]
                 break
+    if (not estado.pausa and activo is not None and isinstance(activo.fase, Promoviendo)
+            and observacion.main is None and observacion.base != activo.fase.certificado.B
+            and lectura_ci(activo, observacion) != "verde"):
+        # Un push anterior pudo aterrizar antes de perder el ACK.
+        cert = activo.fase.certificado
+        heads = tuple(e.entrega.head for e in estado.entradas
+                      if e.entrega.recibo in activo.recibos)
+        lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
+        if isinstance(lectura, (Aterrizado, EscritorExterno)):
+            observacion = replace(observacion, main=lectura, tren_id=activo.id,
+                                  intento_promocion=activo.fase.intentos)
+        elif isinstance(lectura, Incierto):
+            observacion = replace(observacion, ci_candidato="pendiente", ci_rojos=())
     nuevo, efectos = paso(estado, observacion)
     nuevo = limpiar(nuevo)
     guardar_paso(nuevo, efectos, consumido, fallo)

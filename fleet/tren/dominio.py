@@ -331,6 +331,7 @@ class Certificado:
     ci: str
     # Defaults keep snapshots/events written by U1 readable.
     B: str = ""
+    ci_pendiente_desde: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -359,6 +360,7 @@ class Promoviendo:
     intentos: int = 1
     # EnBase ya recibido; la admisión puede diferir el siguiente intento.
     reintento_pendiente: bool = False
+    reintento_autorizado: bool = False
 
 
 @dataclass(frozen=True)
@@ -607,8 +609,26 @@ def rama_ci(tren):
 
 def recibo_ci(tren):
     """Identidad durable de C y, al reanudar, de la solicitud publicada."""
+    cert = certificado_de(tren.fase)
+    if cert is not None:
+        inicial = "github:" + cert.C
+        prefijo = inicial + ":tren/" + tren.id + "-ci-"
+        numero = cert.ci[len(prefijo):] if cert.ci.startswith(prefijo) else ""
+        return cert.ci if numero.isascii() and numero.isdigit() and numero[0] != "0" else inicial
     return "github:" + tren.fase.candidato.C + (
         ":tren/" + rama_ci(tren) if tren.fase.solicitud else "")
+
+
+def certificado_de(fase):
+    if isinstance(fase, Promoviendo):
+        return fase.certificado
+    return fase if isinstance(fase, Certificado) else None
+
+
+def cambiar_plazo_ci_promocion(estado, tren, desde):
+    cert = replace(certificado_de(tren.fase), ci_pendiente_desde=desde)
+    fase = replace(tren.fase, certificado=cert) if isinstance(tren.fase, Promoviendo) else cert
+    return cambiar_fase(estado, tren, fase)
 
 
 def solo_por_vista(vista):
@@ -631,6 +651,55 @@ SALIDAS_CI = {"verde": "suite", "rojo": "separar-o-devolver", "pendiente": "espe
 PLAZO_CI = 3600
 
 
+def lectura_ci(tren, observacion):
+    if observacion.tren_id != tren.id or observacion.ci_recibo != recibo_ci(tren):
+        return "pendiente"
+    if observacion.ci_candidato == "rojo" and not (
+            isinstance(observacion.ci_rojos, (tuple, list)) and observacion.ci_rojos and
+            all(isinstance(n, str) and n.strip() for n in observacion.ci_rojos)):
+        return "pendiente"
+    return observacion.ci_candidato
+
+
+def cerrar_por_ci_rojo(estado, tren, B, C, rojos):
+    if len(tren.recibos) > 1:
+        if not any(e.rearme_ci for e in estado.entradas if e.entrega.recibo in tren.recibos):
+            return rearmar(estado, tren, temprano=True, rojo_ci=True), ()
+        estado = cambiar_fase(estado, tren, Terminal("PARTIDO"))
+        return replace(estado, entradas=tuple(
+            replace(e, tren=None, solo=True, partida=True, particion=tren.id)
+            if e.entrega.recibo in tren.recibos else e for e in estado.entradas)), ()
+    entrada = next(e for e in estado.entradas if e.entrega.recibo == tren.recibos[0])
+    entrega = entrada.entrega
+    payload = json.dumps({"lote": tren.id, "B": B, "C": C,
+        "pr": entrega.pr, "head": entrega.head, "fallos": [], "ci_rojos": rojos}, sort_keys=True)
+    efecto = Efecto(clave("devolver", tren.id, entrega.recibo), "devolver",
+                    (tren.id, entrega.recibo, payload))
+    estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
+    estado = replace(estado, entradas=tuple(
+        replace(e, terminal=Terminal("DEVUELTO"), rearme_ci=None) if e == entrada else e
+        for e in estado.entradas))
+    return liberar_particiones(estado, (entrada,)), (efecto,)
+
+
+def avanzar_ci_promocion(estado, tren, observacion):
+    cert = certificado_de(tren.fase)
+    lectura = lectura_ci(tren, observacion)
+    if lectura == "verde":
+        if cert.ci_pendiente_desde is not None:
+            estado = cambiar_plazo_ci_promocion(estado, tren, None)
+        return estado, (), True
+    if lectura == "rojo":
+        nuevo, efectos = cerrar_por_ci_rojo(estado, tren, cert.B, cert.C, observacion.ci_rojos)
+        return nuevo, efectos, False
+    if cert.ci_pendiente_desde is None:
+        estado = cambiar_plazo_ci_promocion(estado, tren, observacion.ahora)
+    elif observacion.ahora - cert.ci_pendiente_desde >= PLAZO_CI:
+        estado = replace(estado, pausa=Pausa("infraestructura",
+                                            detalle="pre-aterrizaje:ci-sin-resultado"))
+    return estado, (), False
+
+
 def avanzar_ci(estado, tren, observacion):
     """Salida pura de EsperandoCI; el rojo exige identidad de tren y C."""
     fase = tren.fase
@@ -638,34 +707,10 @@ def avanzar_ci(estado, tren, observacion):
         # Snapshots anteriores a U16: empezar el plazo al primer tick nuevo.
         fase = replace(fase, desde=observacion.ahora)
         estado = cambiar_fase(estado, tren, fase)
-    ligada = (observacion.tren_id == tren.id and
-              observacion.ci_recibo == recibo_ci(tren))
-    lectura = observacion.ci_candidato if ligada else "pendiente"
-    if lectura == "rojo" and not (isinstance(observacion.ci_rojos, (tuple, list)) and
-            observacion.ci_rojos and all(
-            isinstance(n, str) and n.strip() for n in observacion.ci_rojos)):
-        lectura = "pendiente"
+    lectura = lectura_ci(tren, observacion)
     salida = SALIDAS_CI.get(lectura, "esperar")
     if salida == "separar-o-devolver":
-        if len(tren.recibos) > 1:
-            if not any(e.rearme_ci for e in estado.entradas if e.entrega.recibo in tren.recibos):
-                return rearmar(estado, tren, temprano=True, rojo_ci=True), ()
-            estado = cambiar_fase(estado, tren, Terminal("PARTIDO"))
-            return replace(estado, entradas=tuple(
-                replace(e, tren=None, solo=True, partida=True, particion=tren.id)
-                if e.entrega.recibo in tren.recibos else e for e in estado.entradas)), ()
-        entrada = next(e for e in estado.entradas if e.entrega.recibo == tren.recibos[0])
-        entrega = entrada.entrega
-        payload = json.dumps({"lote": tren.id, "B": fase.candidato.B,
-            "C": fase.candidato.C, "pr": entrega.pr, "head": entrega.head,
-            "fallos": [], "ci_rojos": observacion.ci_rojos}, sort_keys=True)
-        efecto = Efecto(clave("devolver", tren.id, entrega.recibo), "devolver",
-                        (tren.id, entrega.recibo, payload))
-        estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
-        estado = replace(estado, entradas=tuple(
-            replace(e, terminal=Terminal("DEVUELTO"), rearme_ci=None) if e == entrada else e
-            for e in estado.entradas))
-        return liberar_particiones(estado, (entrada,)), (efecto,)
+        return cerrar_por_ci_rojo(estado, tren, fase.candidato.B, fase.candidato.C, observacion.ci_rojos)
     if (salida == "esperar" and not observacion.suite_de_ci_vigente and
             observacion.ahora - fase.desde >= PLAZO_CI):
         return replace(estado, pausa=Pausa("infraestructura", detalle="ci-sin-resultado")), ()
@@ -957,6 +1002,9 @@ def paso(estado, observacion):
     if not estado.pausa and activos and isinstance(activos[0].fase, Promoviendo):
         tren = activos[0]
         fase = tren.fase
+        if observacion.main is None and not fase.reintento_pendiente:
+            nuevo, efectos, _ = avanzar_ci_promocion(estado, tren, observacion)
+            return nuevo, efectos
         if not (fase.reintento_pendiente and observacion.main is None):
             estado, efectos = aterrizaje(estado, tren, observacion)
             # Sólo EnBase del intento vigente permite readmitir y reintentar.
@@ -1082,13 +1130,22 @@ def paso(estado, observacion):
             return estado, tuple(efectos)
         if isinstance(tren.fase, Congelado) and isinstance(fase, Armado):
             return estado, tuple(efectos)
+        if isinstance(fase, Certificado) and not fase.B:
+            return aterrizaje(estado, tren, observacion)
+        if certificado_de(fase) is not None:
+            estado, ci_efectos, verde = avanzar_ci_promocion(estado, tren, observacion)
+            if not verde:
+                return estado, tuple(efectos) + ci_efectos
+            tren = next(t for t in estado.trenes if t.id == tren.id)
+            fase = tren.fase
         if isinstance(fase, Certificado):
             nuevo, promocion = aterrizaje(estado, tren, observacion)
             return nuevo, tuple(efectos) + promocion
         if isinstance(fase, Promoviendo) and fase.reintento_pendiente:
-            if fase.intentos >= LIMITE_PROMOCION:
+            if fase.intentos >= LIMITE_PROMOCION and not fase.reintento_autorizado:
                 return replace(estado, pausa=Pausa("promocion-rechazada")), tuple(efectos)
-            fase = replace(fase, intentos=fase.intentos + 1, reintento_pendiente=False)
+            fase = replace(fase, intentos=fase.intentos + 1, reintento_pendiente=False,
+                           reintento_autorizado=False)
             efectos.append(efecto_promover(tren.id, fase.intentos))
         elif isinstance(fase, Armado):
             # C puede ser idéntico al del tren anterior. Pedir evidencia de esta ref.
@@ -1149,7 +1206,11 @@ def datos(valor):
                                    "partida", "rearmada", "particion", "rearme_ci")
                                and not getattr(valor, f.name))
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
-                                and valor.ventana is None)})
+                                and valor.ventana is None)
+                       and not (isinstance(valor, Certificado) and f.name == "ci_pendiente_desde"
+                                and valor.ci_pendiente_desde is None)
+                       and not (isinstance(valor, Promoviendo) and f.name == "reintento_autorizado"
+                                and not valor.reintento_autorizado)})
     if isinstance(valor, tuple):
         return [datos(v) for v in valor]
     return valor.value if isinstance(valor, Enum) else valor

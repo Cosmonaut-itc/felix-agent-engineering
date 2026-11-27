@@ -207,7 +207,8 @@ class MedicionTests(Aislado):
         tren = replace(inicial.trenes[0], fase=cert)
         ledger.guardar_paso(replace(inicial, trenes=(tren,)), (), 220)
         recibo2 = ledger.entregar(entrega(2), 230)
-        promocion = self.operativo(ledger, observacion(2, 280))
+        promocion = self.operativo(ledger, observacion(
+            2, 280, tren_id=tren.id, ci_candidato="verde", ci_recibo="github:" + cert.C))
         self.assertIsInstance(promocion.trenes[0].fase, Promoviendo)
         self.assertEqual(promocion.entradas[1].admitida, 280)
         obs = replace(observacion(2, 340), base=cert.C, tren_id=tren.id, intento_promocion=1,
