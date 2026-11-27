@@ -4,14 +4,14 @@ import subprocess
 
 
 GRUPOS_DESK = ('pesadas', 'jale')
-COMANDO = 'NO_COLOR=1 ~/.local/bin/pueue status && cat /proc/loadavg && nproc'
+COMANDO = 'NO_COLOR=1 ~/.local/bin/pueue group && cat /proc/loadavg && nproc'
 
 
 def sondear(host, grupos, ejecutar):
     salud = dict(sano=False, carga_1m=None, nproc=None)
     try:
         salida = ejecutar(['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
-                           host, COMANDO], timeout=10, text=True,
+                           host, COMANDO], timeout=6, text=True,
                           stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return dict(salud, motivo='plazo-agotado')
