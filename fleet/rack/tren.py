@@ -28,8 +28,9 @@ def _require(condition, field):
         raise ValueError('Tren inválido: ' + field)
 
 
-def _keys(row, fields):
-    _require(type(row) is dict and set(row) == set(fields.split()), fields)
+def _keys(row, fields, optional=''):
+    required = set(fields.split())
+    _require(type(row) is dict and required <= row.keys() <= required | set(optional.split()), fields)
 
 
 def _matches(value, pattern, field):
@@ -159,10 +160,16 @@ def valid_tren(data, repos, now):
     def optional_date(value):
         return None if value is None else date(value)
 
+    def deadline(value):
+        return _date(value, taken - 30 * 86400, taken + 7200 + 300)
+
     def pause(row):
-        _keys(row, 'motivo pr desde')
-        return dict(motivo=_matches(row['motivo'], r'[a-z0-9][a-z0-9-]{0,47}', 'motivo'),
-                    pr=None if row['pr'] is None else _int(row['pr'], 1), desde=date(row['desde']))
+        _keys(row, 'motivo pr desde', 'hasta')
+        result = dict(motivo=_matches(row['motivo'], r'[a-z0-9][a-z0-9-]{0,47}', 'motivo'),
+                      pr=None if row['pr'] is None else _int(row['pr'], 1), desde=date(row['desde']))
+        if 'hasta' in row:
+            result['hasta'] = deadline(row['hasta'])
+        return result
 
     def suite(row):
         _keys(row, 'modo intento estado inicio fin resultado fallas lugar')
@@ -205,7 +212,7 @@ def valid_tren(data, repos, now):
     clean = []
     seen = set()
     for row in _rows(data['repos'], 1, 4):
-        _keys(row, 'repo modo pausa lote espera recientes')
+        _keys(row, 'repo modo pausa lote espera recientes', 'hueco')
         name = _repo(row['repo']).lower()
         _require(name in configured and name not in seen, 'repo no permitido o repetido')
         seen.add(name)
@@ -215,6 +222,9 @@ def valid_tren(data, repos, now):
                           lote=None if row['lote'] is None else batch(row['lote']),
                           espera=[waiting(pr) for pr in _rows(row['espera'], 0, 50)],
                           recientes=[recent(item, repo) for item in _rows(row['recientes'], 0, 10)]))
+        if 'hueco' in row:
+            _keys(row['hueco'], 'hasta')
+            clean[-1]['hueco'] = dict(hasta=deadline(row['hueco']['hasta']))
     return dict(schema='tren-host@1', taken=taken, repos=clean,
                 errors=[_problem(row) for row in _rows(data['errors'], 0, 16)])
 

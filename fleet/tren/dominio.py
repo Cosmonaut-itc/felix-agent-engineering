@@ -85,6 +85,16 @@ class Pausa:
     main: str = ""
     archivos: Tuple[str, ...] = ()
     detalle: str = ""
+    hasta: Optional[float] = None
+
+
+MAX_MINUTOS_PAUSA = 120
+
+
+@dataclass(frozen=True)
+class Hueco:
+    hasta: float
+    motivo: str
 
 
 @dataclass(frozen=True)
@@ -98,6 +108,11 @@ class Decision:
     instante: float
     pausa_id: str
     pausa: Optional[Pausa]
+    minutos: Optional[int] = None
+
+    def vencimiento(self):
+        defecto = 60 if self.decision == "abrir-hueco" else MAX_MINUTOS_PAUSA
+        return self.instante + 60 * (defecto if self.minutos is None else self.minutos)
 
 
 @dataclass(frozen=True)
@@ -384,6 +399,10 @@ class Estado:
     trenes: Tuple[Tren, ...] = ()
     pausa: Optional[Pausa] = None
     costo_suite_sana_s: float = 0
+    hueco: Optional[Hueco] = None
+
+    def promocion_retenida(self, ahora):
+        return self.hueco is not None and ahora < self.hueco.hasta
 
 
 def inicial(repo):
@@ -1083,9 +1102,13 @@ def paso(estado, observacion):
         if isinstance(tren.fase, Congelado) and isinstance(fase, Armado):
             return estado, tuple(efectos)
         if isinstance(fase, Certificado):
+            if estado.promocion_retenida(observacion.ahora):
+                return estado, tuple(efectos)
             nuevo, promocion = aterrizaje(estado, tren, observacion)
             return nuevo, tuple(efectos) + promocion
         if isinstance(fase, Promoviendo) and fase.reintento_pendiente:
+            if estado.promocion_retenida(observacion.ahora):
+                return estado, tuple(efectos)
             if fase.intentos >= LIMITE_PROMOCION:
                 return replace(estado, pausa=Pausa("promocion-rechazada")), tuple(efectos)
             fase = replace(fase, intentos=fase.intentos + 1, reintento_pendiente=False)
@@ -1132,7 +1155,7 @@ def paso(estado, observacion):
 
 # Tagged encoding keeps the SQLite/event contract explicit and round-trippable.
 _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrada,
-          Pausa, Decision, Candidato, ConflictoCadena, RamaOcupada, Aterrizado, EnBase, EscritorExterno,
+          Pausa, Hueco, Decision, Candidato, ConflictoCadena, RamaOcupada, Aterrizado, EnBase, EscritorExterno,
           Incierto, EsperaPrevia, BloqueoPrevia, VentanaAutorizada, Fallo, Completo, Incompleto, RechazoLanzador, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
           Promoviendo, Terminal, Tren, Estado, Efecto, Intento, UnidadRepetida,
@@ -1149,7 +1172,9 @@ def datos(valor):
                                    "partida", "rearmada", "particion", "rearme_ci")
                                and not getattr(valor, f.name))
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
-                                and valor.ventana is None)})
+                                and valor.ventana is None)
+                       and not (f.name in ("hasta", "hueco", "minutos")
+                                and getattr(valor, f.name) is None)})
     if isinstance(valor, tuple):
         return [datos(v) for v in valor]
     return valor.value if isinstance(valor, Enum) else valor

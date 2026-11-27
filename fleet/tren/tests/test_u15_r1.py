@@ -47,7 +47,7 @@ class RegresionesTests(ContextoPausa):
         for ahora in (3000, 3100, 3200):
             self.contexto.tick(ahora)
             pausado = self.estado()
-            self.assertEqual(pausado.pausa, Pausa("manual", detalle="mantenimiento"))
+            self.assertEqual((pausado.pausa.motivo, pausado.pausa.detalle), ("manual", "mantenimiento"))
             self.assertEqual(pausado.trenes, antes.trenes)
             self.assertEqual(pausado.entradas, antes.entradas)
             self.assertEqual(self.posts("/comments"), [])

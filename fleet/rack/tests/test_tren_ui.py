@@ -98,8 +98,13 @@ def documents():
     exited = copy.deepcopy(running)
     exited['repos'][0]['lote']['suite'][0].update(estado='pendiente-75', inicio=NOW-1800)
 
+    controls = copy.deepcopy(running)
+    controls['repos'][0].update(hueco=dict(hasta=NOW+3600))
+    controls['repos'][1].update(modo='activo', pausa=dict(motivo='manual', pr=None,
+                                                       desde=NOW-60, hasta=NOW+7200))
     return dict(rojo=red, verde=green, suite=running, pausa=paused, vacio=empty, etapas=errors,
-                extremo=worst, texto=hostile, absuelto=absolved, cola=queued, reentrega=resent, salida75=exited)
+                extremo=worst, texto=hostile, absuelto=absolved, cola=queued, reentrega=resent,
+                salida75=exited, controles=controls)
 
 
 def finished_member(pr, result):
@@ -138,7 +143,8 @@ def scenarios():
         projection = {}
         for name in ('rojo', 'verde', 'suite', 'pausa', 'vacio', 'etapas', 'extremo', 'texto',
                      'error', 'datos-antiguos', 'historial-antiguo', 'sin-repos',
-                     'absuelto', 'disperso', 'cola', 'turno', 'reentrega', 'sin-lectura', 'salida75'):
+                     'absuelto', 'disperso', 'cola', 'turno', 'reentrega', 'sin-lectura', 'salida75',
+                     'controles'):
             source = {'historial-antiguo': 'extremo', 'disperso': 'suite', 'turno': 'suite', 'sin-lectura': 'cola'}.get(name, name)
             data = raw.get(source, raw['pausa'])
             validated = contract.tren.valid_tren(data, rack.tren_repos, NOW)
@@ -286,6 +292,11 @@ class TrenUITests(unittest.TestCase):
         self.assertIn('Sin dato del host', mini['text'])
         self.assertNotRegex(mini['text'], r'\d+ min')
         self.assertEqual(nodes(mini, cls='bar'), [])
+
+    def test_promotion_hold_and_manual_pause_show_deadlines(self):
+        section = self.section('controles')
+        self.assertRegex(section['text'], r'Suite corriendo[^\n]+Promoción retenida hasta \d\d:\d\d')
+        self.assertRegex(section['text'], r'En pausa · manual hasta \d\d:\d\d')
 
     def test_pause_stale_server_error_and_partial_read(self):
         paused = self.section('pausa')['text']

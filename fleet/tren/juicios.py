@@ -3,8 +3,8 @@ from dataclasses import replace
 import json
 import shlex
 
-from dominio import (Armado, Congelado, Corriendo, Diagnosticando,
-                     Efecto, EsperandoCI, Pausa, Promoviendo, Rechazado, Terminal, Tren,
+from dominio import (MAX_MINUTOS_PAUSA, Armado, Congelado, Corriendo, Diagnosticando,
+                     Efecto, EsperandoCI, Hueco, Pausa, Promoviendo, Rechazado, Terminal, Tren,
                      argv_reproduccion, cambiar_fase, clave, datos, efecto_diagnostico,
                      efecto_promover, efecto_reanudar_suite, efectos_status, separar_devueltos)
 
@@ -85,11 +85,31 @@ def base_y_commit(tren):
     return getattr(evidencia, "B", ""), getattr(evidencia, "C", "")
 
 
-def error_decision(estado, decision, pausa_id):
+def error_decision(estado, decision, pausa_id, ahora=None):
     """También valida el CLI; el reductor repite la validación al consumir."""
     if decision.repo != estado.repo or not decision.motivo.strip():
         return "repo-o-motivo-invalido"
-    if decision.pausa_id != pausa_id or decision.pausa != estado.pausa:
+    accion = decision.decision
+    ahora = decision.instante if ahora is None else ahora
+    if accion in ("pausar", "abrir-hueco"):
+        minutos = decision.minutos
+        if minutos is not None and (type(minutos) is not int or not 1 <= minutos <= MAX_MINUTOS_PAUSA):
+            return "minutos-invalidos"
+        if ahora >= decision.vencimiento():
+            return "plazo-vencido"
+    if accion in ("abrir-hueco", "cerrar-hueco"):
+        if decision.tren is not None or decision.pr is not None:
+            return "alcance-invalido"
+        vigente = estado.promocion_retenida(ahora)
+        if accion == "abrir-hueco":
+            return "hueco-ya-abierto" if vigente else ""
+        return "" if vigente else "hueco-no-vigente"
+    pausa = estado.pausa
+    if (accion == "levantar" and pausa and pausa.motivo == "manual" and
+            decision.pausa and decision.pausa.hasta is None):
+        # Una decisión anterior al vencimiento añadido conserva su identidad.
+        pausa = replace(pausa, hasta=None)
+    if decision.pausa_id != pausa_id or decision.pausa != pausa:
         return "pausa-no-vigente"
     if decision.decision == "pausar":
         return "carril-ya-pausado" if estado.pausa else (
@@ -152,13 +172,19 @@ def error_decision(estado, decision, pausa_id):
 
 def resolver(estado, observacion):
     decision = observacion.decision
-    error = error_decision(estado, decision, observacion.pausa_id)
+    error = error_decision(estado, decision, observacion.pausa_id, observacion.ahora)
     resultado = Efecto(clave("resolver-juicio", decision.id), "resolver-juicio",
         (decision.id, "rechazada" if error else "aplicada", error))
     if error:
         return estado, (resultado,)
     if decision.decision == "pausar":
-        return replace(estado, pausa=Pausa("manual", detalle=decision.motivo)), (resultado,)
+        pausa = Pausa("manual", detalle=decision.motivo, hasta=decision.vencimiento())
+        return replace(estado, pausa=pausa), (resultado,)
+    if decision.decision == "abrir-hueco":
+        hueco = Hueco(decision.vencimiento(), decision.motivo)
+        return replace(estado, hueco=hueco), (resultado,)
+    if decision.decision == "cerrar-hueco":
+        return replace(estado, hueco=None), (resultado,)
     tren = tren_pausado(estado)
     # El detalle manual es texto humano; no es una clave de política.
     operacion = politica(estado.pausa)[decision.decision]
