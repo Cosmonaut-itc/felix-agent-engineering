@@ -3,6 +3,7 @@ from dataclasses import replace
 from itertools import count
 import json
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -24,6 +25,7 @@ from dominio import (Armado, Certificado, Corriendo, Diagnosticando, Efecto, Esc
                      efecto_promover, efecto_reanudar_suite)
 from efectos import EfectoFallido, ejecutar
 from git_ops import ErrorGit, Publicado, RamaOcupada
+from ledger import Ledger
 from operador import FalloSnapshot, lanzamiento_activo
 
 REPO = activo.REPO
@@ -589,6 +591,76 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assert_sucesor_sin_candados(sucesor)
         self.assertFalse(aplazado.exists())
 
+    def test_reintento_del_aborto_tras_fallo_sqlite_conserva_los_avisos(self):
+        tren, registros, efecto = self.lote_con_confirmadas()
+        self.abortar_con_head_cambiado(tren)
+        guardar_evento = Ledger.evento
+
+        def fallar_al_guardar_paso(ledger, repo, tipo, ahora, payload):
+            if tipo == 'operativo':
+                raise sqlite3.OperationalError('fallo al guardar el cierre')
+            guardar_evento(ledger, repo, tipo, ahora, payload)
+
+        with patch.object(Ledger, 'evento', fallar_al_guardar_paso), \
+                patch('adaptadores.jale.PLAZO_CANCELACION_S', 3):
+            with self.assertRaisesRegex(sqlite3.OperationalError, 'guardar el cierre'):
+                self.tick()
+        self.assert_canceladas(registros)
+        self.assertNotIsInstance(self.estado().trenes[0].fase, Terminal)
+        self.assertEqual(self.eventos('suite-sin-leer'), [])
+        with self.ledger() as ledger:
+            self.assertEqual(ledger.siguiente_decision(REPO).tren, tren.id)
+
+        self.tick()
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('ABORTADO'))
+        self.assert_avisos_cancelacion(tren, 2, True, 'suite-sin-leer')
+        avisos = self.eventos('suite-sin-leer')
+        self.assertCountEqual([a['modo'] for a in avisos], ['contract', 'e2e'])
+        for aviso in avisos:
+            self.assertFalse(aviso['terminada'])
+            self.assertNotIn('error_cancelacion', aviso)
+        self.assert_outbox_cancelado(efecto)
+        self.assert_sucesor_sin_candados(self.esperar_sucesor_ci(tren))
+        self.assertEqual(self.eventos('suite-sin-leer'), avisos)
+
+    def test_reintento_del_aborto_tras_las_marcas_reconstruye_la_barrera(self):
+        tren, registros, _ = self.lote_con_confirmadas()
+        (self.raiz / 'retener-cancelacion').touch()
+        self.abortar_con_head_cambiado(tren)
+        adaptador = Jale(self.lanzador)
+        adaptador.operador = SimpleNamespace(repo=REPO)
+
+        def guardar_y_cortar(ruta, valor):
+            guardar(ruta, valor)
+            if ruta == registros[-1] / 'cancelar.json':
+                raise RuntimeError('corte tras la última marca')
+
+        with patch('adaptadores.jale.guardar', side_effect=guardar_y_cortar):
+            with self.assertRaisesRegex(RuntimeError, 'corte tras la última marca'):
+                self.tick()
+        self.assertNotIsInstance(self.estado().trenes[0].fase, Terminal)
+        self.assertFalse(adaptador.archivo_cancelaciones().exists())
+        for registro in registros:
+            self.assertTrue((registro / 'cancelar.json').exists())
+            self.esperar_archivo(registro / 'term')
+
+        with patch('adaptadores.jale.PLAZO_CANCELACION_S', .5):
+            self.tick()
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('ABORTADO'))
+        sucesor = self.esperar_sucesor_ci(tren)
+        aplazado = adaptador.archivo_prelanzamiento_aplazado(sucesor.id)
+        self.assertEqual((sum(lanzamiento_activo(r / 'candado') for r in registros),
+                          sum(r.exists() for r in self.registros_de_suite(sucesor)),
+                          aplazado.exists()), (2, 0, True))
+        self.assertEqual(adaptador.cancelaciones_en_curso(),
+                         {str(r.relative_to(adaptador.estado)) for r in registros})
+        self.assert_avisos_cancelacion(tren, 2, False, 'suite-sin-leer')
+        self.liberar_lanzadores()
+        self.assert_canceladas(registros)
+        self.tick()
+        self.assert_sucesor_sin_candados(sucesor)
+        self.assertFalse(aplazado.exists())
+
     def test_confirmadas_de_tren_activo_siguen_en_curso(self):
         tren, registros, _ = self.lote_con_confirmadas()
         self.tick()
@@ -742,6 +814,30 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assert_sin_leer_por_modo(tren)
         self.assertTrue(all(not (r / 'cancelar.json').exists() for r in
                             self.registros_de_suite(tren)))
+
+    def test_codigo_aparece_entre_la_captura_del_aviso_y_la_marca(self):
+        tren, registros, efecto = self.lote_con_confirmadas()
+        self.abortar_con_head_cambiado(tren)
+
+        def terminar_antes_de_marcar(registro):
+            self.liberar_lanzadores()
+            self.assertTrue((registro / 'codigo.json').exists())
+            return False
+
+        with patch('adaptadores.jale.con_candado', side_effect=terminar_antes_de_marcar) as sondeo:
+            self.tick()
+        self.assertEqual(sondeo.call_count, 2)
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('ABORTADO'))
+        for registro in registros:
+            self.assertFalse((registro / 'cancelar.json').exists())
+        avisos = self.eventos('suite-sin-leer')
+        self.assertCountEqual([a['modo'] for a in avisos], ['contract', 'e2e'])
+        for aviso in avisos:
+            self.assertFalse(aviso['terminada'])
+            self.assertFalse(aviso['cancelacion_pedida'])
+            self.assertFalse(aviso['cancelacion_confirmada'])
+            self.assertNotIn('error_cancelacion', aviso)
+        self.assert_outbox_cancelado(efecto)
 
     def test_coordinador_ausente_deja_marca_y_registra_el_error(self):
         tren, _ = self.hasta(EsperandoCI)

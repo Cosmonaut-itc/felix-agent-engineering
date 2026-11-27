@@ -336,21 +336,34 @@ class Jale:
                        for corrida in self.prelanzadas_sin_leer(tren.id, tren.fase)]
         activas = {}
         for registro, aviso in chain(prelanzadas, confirmadas):
-            if aviso['terminada']:
-                continue
+            codigo = registro / 'codigo.json'
+            pedido = registro / CANCELAR
             try:
+                if pedido.exists():
+                    # La marca se escribe antes de la salida. El reintento
+                    # conserva el aviso y vuelve a comprobar el candado.
+                    aviso['terminada'] = False
+                    if (lanzamiento_activo(registro / 'candado') or codigo.exists() or
+                            (registro / ACUSE_CANCELACION).exists()):
+                        activas[registro] = aviso
+                        aviso['cancelacion_pedida'] = True
+                    else:
+                        aviso['error_cancelacion'] = 'coordinador-ausente'
+                    continue
+                if aviso['terminada']:
+                    continue
                 activa = con_candado(registro)
-                if (registro / 'codigo.json').exists():
+                if codigo.exists():
                     continue
                 if activa:
                     activas[registro] = aviso
                 # La marca impide el arranque incluso si el coordinador
                 # todavía no tomó el candado o el tick muere tras pedirlo.
-                guardar(registro / CANCELAR, True)
+                guardar(pedido, True)
                 if activa or con_candado(registro):
                     activas[registro] = aviso
                     aviso['cancelacion_pedida'] = True
-                elif not (registro / 'codigo.json').exists():
+                elif not codigo.exists():
                     aviso['error_cancelacion'] = 'coordinador-ausente'
             except OSError as error:
                 aviso['error_cancelacion'] = type(error).__name__
@@ -404,12 +417,11 @@ class Jale:
             intento = efecto.datos[1] if efecto.tipo == 'reanudar-suite' else '0'
         for corrida in corridas:
             registro = raiz / corrida / intento
-            if (especulativa(registro) or (registro / CANCELAR).exists() or
-                    (registro.parent / 'completo.json').exists()):
+            if especulativa(registro) or (registro.parent / 'completo.json').exists():
                 continue
             viva = lanzamiento_activo(registro / 'candado')
             terminada = (registro / 'codigo.json').exists()
-            if not (viva or terminada):
+            if not (viva or terminada or (registro / CANCELAR).exists()):
                 continue
             modo = corrida
             if efecto.tipo == 'repetir':
