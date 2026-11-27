@@ -62,9 +62,14 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
   la rechaza con `Boat no confirmó el cambio de estado`. Si otro proceso
   tiene el candado al vencer el plazo o tras limpiar la marca, un pedido
   que siguió la reanudación tiene hasta 10 s de margen para observar la VM.
+  Tras limpiar la marca, el margen se cuenta desde la primera contención
+  sin marca. Si el último sondeo encuentra un intento iniciado después
+  del vencimiento del que seguía el pedido, rechaza esa candidata.
   Un pedido nuevo puede iniciar otra reanudación de una VM detenida con
-  una marca ya vencida. Estados como `error` o `cancelled` provocan el
-  rechazo inmediato. Si `pedir` no consigue un arriendo, sale con 75.
+  una marca ya vencida cuando se cumplan 90 s desde el último POST. Hasta
+  entonces puede seguir sondeando dentro de su `--esperar` y probar
+  otras candidatas. Estados como `error` o `cancelled` provocan el rechazo
+  inmediato. Si `pedir` no consigue un arriendo, sale con 75.
 - `pedir --repo R --corrida ID --clase preparar --vm NOMBRE` reserva toda
   la VM para el repositorio dueño aunque el registro indique `apta: false`.
   Mientras el turno espera, la VM deja de otorgar lugares. Una vez que los

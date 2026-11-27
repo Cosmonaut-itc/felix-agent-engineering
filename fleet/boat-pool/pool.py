@@ -108,6 +108,11 @@ def resume_deadline(operation):
     return None
 
 
+def resume_replaced(followed_until, until):
+    # El inicio de la marca nueva cae fuera del intento que seguía este pedido.
+    return followed_until is not None and until is not None and until - RESUME_TIMEOUT >= followed_until
+
+
 def creation_midnight(created):
     midnight = round(created / 86400) * 86400
     if abs(created - midnight) < INCIERTO:
@@ -667,12 +672,13 @@ class Pool:
         if action == 'resume':
             until = resume_deadline(previous)
             operation['inicio'] = operation['desde']
-            if until is not None and not restart:
-                if now >= until:
+            if until is not None:
+                if not restart and now >= until:
                     raise BoatError(POWER_UNCONFIRMED)
                 if now - epoch(previous['desde']) < POWER_TIMEOUT:
                     raise BoatError('reanudación anterior sin confirmar')
-                operation['inicio'] = previous.get('inicio', previous['desde'])
+                if not restart:
+                    operation['inicio'] = previous.get('inicio', previous['desde'])
             if before_resume is not None:
                 before_resume(resume_deadline(operation))
         if action == 'stop' and previous and (previous['accion'] == 'resume' or previous.get('credenciales')):
@@ -702,18 +708,25 @@ class Pool:
         if state in READY and resume_deadline(pending) is not None:
             self.check_resumed(vm, info, pending, wait=wait)
 
-    def resume_step(self, vm, state, pending, *, send, requested_at, before_resume=None):
+    def resume_step(self, vm, state, pending, *, send, requested_at, deadline, before_resume=None):
         until = resume_deadline(pending)
         can_restart = False
         if until is not None:
             now = self.now()
-            # Una marca vencida antes del pedido no impide encender de nuevo una VM detenida.
-            can_restart = send and state in STOPPED and requested_at > until
-            if state not in STARTING | STOPPED or (now >= until and not can_restart):
+            retry_at = epoch(pending['desde']) + POWER_TIMEOUT
+            if state not in STARTING | STOPPED:
                 raise BoatError(POWER_UNCONFIRMED)
-            if not can_restart and (
-                state in STARTING or not send or now - epoch(pending['desde']) < POWER_TIMEOUT
-            ):
+            if now >= until:
+                can_restart = send and state in STOPPED and requested_at > until and now >= retry_at
+                if until < requested_at < retry_at:
+                    remaining = deadline - time.monotonic()
+                    if not can_restart and remaining > 0:
+                        # El último POST aún puede confirmarse dentro de la espera del pedido.
+                        return None
+                    can_restart = can_restart and remaining >= 0
+                if not can_restart:
+                    raise BoatError(POWER_UNCONFIRMED)
+            elif state in STARTING or not send or now < retry_at:
                 return until
         if state in STOPPED and send:
             with lock(self.state / 'arranques.lock'):
@@ -732,9 +745,18 @@ class Pool:
         if state in STOPPING and resume_deadline(pending) is None:
             self.wait_power(vm, STOPPED, STOPPING)
             state = 'archived'
-        until = self.resume_step(vm, state, pending, send=True, requested_at=self.now())
-        timeout = RESUME_TIMEOUT if until is None else until - self.now()
-        info = self.wait_power(vm, READY, STARTING | STOPPED, timeout=timeout)
+        requested_at = self.now()
+        deadline = time.monotonic() + RESUME_TIMEOUT
+        while state not in READY:
+            until = self.resume_step(vm, state, pending, send=True, requested_at=requested_at, deadline=deadline)
+            if until is not None or resume_deadline(pending) is None:
+                timeout = RESUME_TIMEOUT if until is None else until - self.now()
+                info = self.wait_power(vm, READY, STARTING | STOPPED, timeout=timeout)
+                break
+            self.sleep(min(1, max(0, deadline - time.monotonic())))
+            info = self.sandbox_info(vm)
+            state = self.observe(vm, info)
+            pending = self.power_operation(vm)
         pending = self.power_operation(vm)
         self.check_start_credentials(vm, 'ready', info, pending, wait=True)
         return info
@@ -810,7 +832,7 @@ class Pool:
             pass  # La validación con el candado registra y avisa de las marcas ilegibles.
         return None
 
-    def claim(self, candidates, turn, path, followed, ready_by, locks):
+    def claim(self, candidates, turn, path, followed, reclaim_by, locks):
         contended = False
         eligible = False
         locked_until = -math.inf
@@ -822,11 +844,14 @@ class Pool:
                     contended = True
                     until = self.registered_resume_deadline(vm)
                     if until is not None:
-                        if until > self.now():
-                            followed.add(vm.id)
+                        followed_until = followed.get(vm.id)
+                        if resume_replaced(followed_until, until):
+                            until = followed_until
+                        elif until > self.now():
+                            followed[vm.id] = until
                         locked_until = max(locked_until, until + LOCK_WAIT)
                     elif vm.id in followed:
-                        until = ready_by.setdefault(vm.id, self.now() + LOCK_WAIT)
+                        until = reclaim_by.setdefault(vm.id, self.now() + LOCK_WAIT)
                         locked_until = max(locked_until, until)
                     continue
                 try:
@@ -874,7 +899,7 @@ class Pool:
                 locks.close()
         return None, [], False, False, contended, eligible, locked_until
 
-    def ask_resume(self, vm, state, pending, waits, *, send, requested_at, before_resume):
+    def ask_resume(self, vm, state, pending, waits, *, send, requested_at, deadline, before_resume):
         if resume_deadline(pending) is None and state in STARTING | STOPPING:
             # Boat también puede iniciar una transición sin una marca local.
             timeout = RESUME_TIMEOUT if state in STARTING else POWER_TIMEOUT
@@ -882,7 +907,7 @@ class Pool:
             if self.now() >= until:
                 raise BoatError(POWER_UNCONFIRMED)
             return until
-        return self.resume_step(vm, state, pending, send=send, requested_at=requested_at,
+        return self.resume_step(vm, state, pending, send=send, requested_at=requested_at, deadline=deadline,
                                 before_resume=before_resume)
 
     def extend_turn(self, turn, path, expiry, resuming):
@@ -919,20 +944,22 @@ class Pool:
         last_error = None
         rechecked = False
         waits = {}
-        followed = set()
+        followed = {}
         ready_by = {}
+        reclaim_by = {}
         try:
             while candidates:
                 ordered = iter(self.ask_order(candidates, turn['clase']))
                 contended = eligible = False
                 resume_until = turn_until = -math.inf
                 wait_before_resume = -math.inf
+                waiting_to_restart = False
                 adopted = None
                 while True:
                     error = None
                     with ExitStack() as locks:
                         vm, leases, can_grant, can_resume, busy, accepted, locked_until = self.claim(
-                            ordered, turn, path, followed, ready_by, locks)
+                            ordered, turn, path, followed, reclaim_by, locks)
                         contended |= busy
                         eligible |= accepted
                         resume_until = max(resume_until, locked_until)
@@ -945,12 +972,15 @@ class Pool:
                             info = self.sandbox_info(vm)
                             state = self.observe(vm, info)
                             pending = self.power_operation(vm)
+                            pending_until = resume_deadline(pending)
+                            if resume_replaced(followed.get(vm.id), pending_until):
+                                raise BoatError(POWER_UNCONFIRMED)
                             if can_grant or (can_resume and state not in READY):
                                 if leases and state not in READY:
                                     raise BoatError('VM con arriendos vivos fuera de servicio')
                                 self.check_start_credentials(vm, state, info, pending, wait=False)
                             if state in READY:
-                                if (not can_grant and (resume_deadline(pending) is not None or vm.id in followed)
+                                if (not can_grant and (pending_until is not None or vm.id in followed)
                                         and vm.fits(leases, turn['clase'])):
                                     # El primero de la fila también tiene que observar READY.
                                     until = ready_by.setdefault(vm.id, self.now() + LOCK_WAIT)
@@ -961,16 +991,18 @@ class Pool:
                                     resuming = None
                             else:
                                 ready_by.pop(vm.id, None)
-                                send = can_resume and (self.now() >= wait_before_resume
-                                                       or resume_deadline(pending) is not None)
+                                send = can_resume and (self.now() >= wait_before_resume or pending_until is not None)
                                 until = self.ask_resume(
-                                    vm, state, pending, waits, send=send, requested_at=requested_at,
-                                    before_resume=lambda deadline: self.extend_turn(
-                                        turn, path, deadline + LOCK_WAIT, vm.name),
+                                    vm, state, pending, waits, send=send, requested_at=requested_at, deadline=deadline,
+                                    before_resume=lambda expiry: self.extend_turn(
+                                        turn, path, expiry + LOCK_WAIT, vm.name),
                                 )
                                 if until is not None:
                                     if state in STARTING | STOPPED:
-                                        followed.add(vm.id)
+                                        if pending_until is not None or state in STOPPED:
+                                            followed[vm.id] = until
+                                        else:
+                                            followed.setdefault(vm.id, None)
                                         if can_resume:
                                             resuming = vm.name
                                         elif adopted is None:
@@ -980,8 +1012,10 @@ class Pool:
                                         wait_before_resume = max(wait_before_resume, until)
                                     resume_until = max(resume_until, until)
                                     turn_until = max(turn_until, until + LOCK_WAIT)
-                                elif resuming == vm.name:
-                                    resuming = None
+                                else:
+                                    waiting_to_restart |= pending_until is not None
+                                    if resuming == vm.name:
+                                        resuming = None
                         except JournalError as rejected:
                             self.reject(str(rejected), nombre=vm.name, repo=args.repo, corrida=args.corrida)
                             error = rejected
@@ -1025,7 +1059,7 @@ class Pool:
                 remaining = max(attempt_until - time.monotonic(), resume_remaining)
                 if remaining <= 0:
                     break
-                self.sleep(min(1 if resume_remaining > 0 else 0.25, remaining))
+                self.sleep(min(1 if resume_remaining > 0 or waiting_to_restart else 0.25, remaining))
                 rechecked = False
             if last_error is not None:
                 raise last_error

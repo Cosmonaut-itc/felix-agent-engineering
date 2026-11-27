@@ -874,6 +874,28 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.api.now, NOW + 423)
         self.assertEqual(len(self.resume_posts()), 1)
 
+    def test_pedir_rechaza_un_intento_nuevo_en_el_ultimo_sondeo(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        marker = self.state / 'vms' / NAME / 'operacion.json'
+
+        with contextlib.ExitStack() as held:
+            def occupy_vm():
+                self.assertTrue(held.enter_context(pool.lock(marker.parent / 'lock', wait=False)))
+
+            def publish_restart():
+                pool.atomic_json(marker, {**pool.read_json(marker), 'id': 'reanudacion-nueva',
+                                          'inicio': pool.stamp(self.api.now), 'desde': pool.stamp(self.api.now)})
+
+            with self.resume_clock({420: occupy_vm, 421: publish_restart, 423: held.close,
+                                    424: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+                code, output, stderr = self.run_cli(*self.args())
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: Boat no confirmó el cambio de estado\n')
+        self.assertEqual(self.api.now, NOW + 423)
+        self.assertEqual(pool.read_json(marker)['inicio'], pool.stamp(NOW + 421))
+
     def test_pedir_rechaza_en_cuanto_boat_informa_error_al_reanudar(self):
         code, output, stderr = self.request_archived_vm(transition_at=120, state='error')
 
@@ -992,7 +1014,7 @@ class Harness(unittest.TestCase):
     def test_dos_pedidos_adoptan_el_arranque_con_espera_del_tren(self):
         self.check_two_requests_resume(180)
 
-    def test_segundo_pedido_espera_el_candado_si_el_primero_ya_limpio_la_marca(self):
+    def check_second_request_after_marker_cleanup(self, *, see_ready_first=False):
         self.config['vms'][0]['lugares'] = 2
         self.api.sandbox(FAKE_ID, state='archived')
         self.api.resume_fields['state'] = 'resuming'
@@ -1016,12 +1038,20 @@ class Harness(unittest.TestCase):
 
                 self.api.now = NOW + 213
                 self.api.sandbox(FAKE_ID, state='ready')
+                if see_ready_first:
+                    second_gate.set()
+                    second_gate = paused('segundo')
+                    self.api.now = NOW + 220
                 first_gate.set()
                 self.assertTrue(granting.wait(5))
                 self.assertFalse((self.state / 'vms' / NAME / 'operacion.json').exists())
                 second_gate.set()
                 second_contended = paused('segundo')
 
+                if see_ready_first:
+                    self.api.now = NOW + 223
+                    second_contended.set()
+                    second_contended = paused('segundo')
                 self.api.now += 1
                 release_grant.set()
                 first_grant = first.result(timeout=5)
@@ -1033,6 +1063,12 @@ class Harness(unittest.TestCase):
         self.assertEqual((first_grant['vm'], second_grant['vm']), (NAME, NAME))
         self.assertNotEqual(first_grant['arriendo'], second_grant['arriendo'])
         self.assertEqual(len(self.resume_posts()), 1)
+
+    def test_segundo_pedido_espera_el_candado_si_el_primero_ya_limpio_la_marca(self):
+        self.check_second_request_after_marker_cleanup()
+
+    def test_segundo_pedido_conserva_el_margen_del_candado_tras_esperar_fifo(self):
+        self.check_second_request_after_marker_cleanup(see_ready_first=True)
 
     def test_dos_modos_del_tren_reanudan_en_paralelo_una_vm_cada_uno(self):
         other, other_id = 'vm-otra', fake_id('efgh2345')
@@ -1135,14 +1171,18 @@ class Harness(unittest.TestCase):
         self.assertEqual(started['en'], pool.stamp(NOW + 120))
         self.assertEqual(self.api.now, NOW + 213)
 
-    def test_pedir_inicia_otra_reanudacion_si_la_marca_ya_habia_vencido(self):
+    def expired_resume(self, last_post):
         self.api.sandbox(FAKE_ID, state='archived')
         self.api.resume_fields['state'] = 'resuming'
         marker = self.state / 'vms' / NAME / 'operacion.json'
         self.mark_resume()
         pool.atomic_json(marker, {**pool.read_json(marker), 'inicio': pool.stamp(NOW),
-                                  'desde': pool.stamp(NOW + 360)})
+                                  'desde': pool.stamp(NOW + last_post)})
         self.api.now = NOW + 421
+        return marker
+
+    def test_pedir_inicia_otra_reanudacion_si_la_marca_ya_habia_vencido(self):
+        marker = self.expired_resume(331)
 
         def ready():
             operation = pool.read_json(marker)
@@ -1154,6 +1194,45 @@ class Harness(unittest.TestCase):
             self.assertEqual(self.get_grant('nuevo-arranque')['vm'], NAME)
 
         self.assertEqual(len(self.resume_posts()), 1)
+
+    def check_restart_waits_for_last_post(self, *args):
+        marker = self.expired_resume(360)
+
+        def still_waiting():
+            self.assertFalse(self.resume_posts())
+            self.assertEqual(pool.read_json(marker)['inicio'], pool.stamp(NOW))
+
+        def ready():
+            operation = pool.read_json(marker)
+            self.assertEqual(operation['inicio'], pool.stamp(NOW + 450))
+            self.assertEqual(operation['desde'], operation['inicio'])
+            self.api.sandbox(FAKE_ID, state='ready')
+
+        with self.resume_clock({449: still_waiting, 451: ready}):
+            code, output, stderr = self.run_cli(*args)
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(len(self.resume_posts()), 1)
+        self.assertEqual(self.api.now, NOW + 451)
+        return output
+
+    def test_pedir_espera_90_s_desde_el_ultimo_post_antes_de_reiniciar(self):
+        output = self.check_restart_waits_for_last_post(*self.args('nuevo-arranque', 'contract', '--esperar', '60'))
+        self.assertEqual(json.loads(output)['vm'], NAME)
+
+    def test_encender_espera_90_s_desde_el_ultimo_post_antes_de_reiniciar(self):
+        self.check_restart_waits_for_last_post('encender', NAME)
+
+    def test_pedir_agota_su_espera_si_el_reinicio_aun_no_puede_enviar(self):
+        self.expired_resume(360)
+
+        with self.resume_clock({435: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            code, output, stderr = self.run_cli(*self.args('nuevo-arranque', 'contract', '--esperar', '9'))
+
+        self.assertEqual((code, output), (75, ''), stderr)
+        self.assertEqual(stderr, 'boat-pool: api: Boat no confirmó el cambio de estado\n')
+        self.assertFalse(self.resume_posts())
+        self.assertEqual(self.api.now, NOW + 430)
 
     def test_pedir_reenvia_solo_al_cumplir_90_s_si_boat_vuelve_a_archivada(self):
         self.api.sandbox(FAKE_ID, state='resuming', holdsCreatorLogins=False)
