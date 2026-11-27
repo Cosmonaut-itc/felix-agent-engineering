@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from test_client_actions import a, c, control, stock_engine
-from test_slots import SlotsTests
+import test_slots
 
 
 REF = '20261118-120000-abcdef'
@@ -112,7 +112,7 @@ class Fixture:
 
 class RemoteRunTests(unittest.TestCase):
     def setUp(self):
-        SlotsTests.setUp(self)
+        test_slots.SlotsTests.setUp(self)
         self.fixture = Fixture(self.root, self.gen)
         self.tasks = {'77': dict(id=77, created_at=CREATED, group='suites',
                                 status={'Queued': dict(enqueued_at=ATTEMPT)})}
@@ -469,7 +469,17 @@ class RemoteRunTests(unittest.TestCase):
         path = self.fixture.run / 'pueue.client.json'
         path.unlink()
         path.mkdir(mode=0o600)
-        self.assertEqual(self.act(self.hold)['reason'], 'identity')
+        original, ino = os.fstat, path.stat().st_ino
+
+        def fstat(fd):
+            info = original(fd)
+            if info.st_ino != ino:
+                return info
+            fields = ('st_mode', 'st_uid', 'st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+            return SimpleNamespace(st_nlink=1, **{field: getattr(info, field) for field in fields})
+
+        with patch.object(os, 'fstat', fstat):
+            self.assertEqual(self.act(self.hold)['reason'], 'identity')
 
     def test_hardlink_original_is_rejected(self):
         self.active()

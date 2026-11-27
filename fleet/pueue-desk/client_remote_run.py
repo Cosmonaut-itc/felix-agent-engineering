@@ -64,13 +64,14 @@ def directory(path, *, parent=None, private=False):
 
 def read_file(path, *, parent=None, limit, private=True):
     fd = os.open(path, FILE_FLAGS, dir_fd=parent)
-    with os.fdopen(fd, 'rb') as stream:
+    try:
         info = os.fstat(fd)
         match(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
               and (stat.S_IMODE(info.st_mode) == 0o600 if private else not info.st_mode & 0o022))
         if info.st_size > limit:
             raise Unavailable('evidence_missing')
-        raw = stream.read(limit + 1)
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            raw = stream.read(limit + 1)
         after = os.fstat(fd)
         current = os.stat(path, dir_fd=parent, follow_symlinks=False)
         match(inode(current) == inode(info) and after.st_nlink == 1
@@ -78,6 +79,8 @@ def read_file(path, *, parent=None, limit, private=True):
         if len(raw) > limit:
             raise Unavailable('evidence_missing')
         return raw
+    finally:
+        os.close(fd)
 
 
 def installed(engine, record, reservation):
@@ -282,7 +285,8 @@ class RemoteRun:
     def generation(self, originals, state):
         raw = state['generation']
         if (originals.identity['generation'] != hashlib.sha256(raw.encode()).hexdigest()
-                or state.get('startup', {}).get('phase') not in (None, 'ready')):
+                or state.get('startup', {}).get('phase') not in (None, 'ready')
+                or state.get('mini_handoff', {}).get('phase') not in (None, 'done', 'withdrawn', 'aborted')):
             raise Unavailable('startup')
 
     def selected(self, originals, request):
@@ -292,10 +296,11 @@ class RemoteRun:
 
     def selected_reservation(self, originals):
         try:
-            selected = originals.selection()['request']
+            selection = originals.selection()
         except FileNotFoundError:
             raise Unavailable('identity') from None
-        return selected, self.reservation(dict(selected, launcher='remote-run'))
+        selected = dict(selection['request'], launcher='remote-run', phase=selection['phase'])
+        return selected, self.reservation(selected)
 
     def phase_record(self, originals, request, reservation):
         key = dict(request, phase=reservation['phase'])
@@ -326,10 +331,11 @@ class RemoteRun:
 
     def project(self, request, originals, group, daemon, reservation, posterior):
         identity = originals.identity
-        task = daemon['tasks'].get(str(identity['task_id']))
+        tasks, key = daemon['tasks'], str(identity['task_id'])
         absent = dict(identity, state='Absent', enqueued_at=None, enqueue_at=None, started_at=None)
-        if task is None:
+        if key not in tasks:
             return absent
+        task = tasks[key]
         c.integer(task['id'])
         match(task['id'] == identity['task_id'])
         created = timestamp(task['created_at'])
