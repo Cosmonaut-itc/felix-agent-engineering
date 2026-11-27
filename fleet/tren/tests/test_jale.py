@@ -1268,7 +1268,9 @@ class JaleTests(Aislado):
         llegada = esperar_resultado(ejecutar, repetir, diagnostico, obs, object(), self.adaptador)
         siguiente, efectos = paso(diagnostico, llegada.observacion)
         self.assertIsNone(siguiente.pausa)
-        self.assertEqual(len(efectos), 1)
+        self.assertEqual([e.tipo for e in efectos],
+                         ['registrar-relanzamiento-automatico', 'repetir'])
+        self.assertEqual(efectos[0].datos[3], 'salida-sin-recibo')
         fase = siguiente.trenes[0].fase
         self.assertEqual(fase.reenganches, 1)
         # Se reengancha el intento sin recibo, no el interrumpido.
