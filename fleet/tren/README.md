@@ -943,10 +943,11 @@ por U16.
 
 `GitHubGit.ci` devuelve `ResultadoCI(estado, rojos)`: tres valores y los
 nombres de checks/statuses rojos, ordenados y sin duplicados. La admisión
-sigue exigiendo verde en cada head; la lectura del candidato consulta su C
-exacto y liga el resultado a `tren_id` y `ci_recibo=github:<C>`. Un rojo de
-otro tren o de otro C no produce partición ni devolución. Al reanudar, el
-recibo incluye además `:tren/<id>-ci-<n>` y sólo acepta esa solicitud.
+sigue exigiendo verde en cada head. La solicitud 0 consulta el CI por SHA de
+C y usa `ci_recibo=github:<C>`. Las solicitudes positivas, tanto al rearmar
+como al reanudar, filtran los checks por la ref propia y añaden
+`:tren/<id>-ci-<n>` al recibo. El reductor exige el ID del tren y el recibo
+vigentes.
 
 | Fuente | Conclusión / estado | Lectura |
 |---|---|---|
@@ -960,7 +961,9 @@ recibo incluye además `:tren/<id>-ci-<n>` y sólo acepta esa solicitud.
 | Check terminado | conclusión ausente o desconocida | `pendiente` |
 | Commit status | `success` | `verde` |
 | Commit status | `failure` | `rojo` |
-| Commit status | `error`, `pending`, estado desconocido | `pendiente` |
+| Commit status, solicitud 0 | `error`, `pending`, estado desconocido | `pendiente` |
+| Commit status, solicitud positiva | `failure`, `error` | `rojo` |
+| Commit status, solicitud positiva | `success`, `pending`, estado desconocido | Sin efecto |
 
 En modo activo, `success` acredita aprobación; `skipped` y `neutral` son
 conclusiones aceptadas por GitHub, incluso si el check figura en
@@ -968,7 +971,7 @@ conclusiones aceptadas por GitHub, incluso si el check figura en
 emite su check sigue pendiente. `failure` y `timed_out` informan el resultado
 negativo observado, sin afirmar una causa de producto D5. Una cancelación
 humana o por concurrencia, una intervención requerida, un fallo de arranque,
-evidencia vencida o un status `error` no acreditan un fallo del cambio:
+evidencia vencida o un status `error` en la solicitud 0 no acreditan un fallo del cambio:
 esperan hasta el plazo de infraestructura. Valores desconocidos también
 esperan sin inventar éxito ni culpa.
 
@@ -1005,8 +1008,9 @@ La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
   sus entregas a la fila con su admisión FIFO y la marca `rearme_ci`. El
   siguiente lote se arma sobre el main vigente. Si incluye alguna entrega
   marcada, comienza con la solicitud 1 en su propia ref `tren/<id>-ci-1`.
-  Aunque el SHA de C coincida, sólo cuentan los checks de esa ref. Las suites
-  prelanzadas del tren cerrado quedan sin consumir.
+  Aunque el SHA de C coincida, sólo cuentan los checks de esa ref, y un
+  commit status negativo puede vetar C. Las suites prelanzadas del tren
+  cerrado quedan sin consumir.
 - **Rojo de un lote con alguna entrega ya marcada:** cierra el tren
   `PARTIDO`, sin atribuir el fallo ni publicar feedback rojo. Devuelve sus
   entregas a la fila con `partida=True`, `solo=True` y el ID de la partición
@@ -1029,7 +1033,9 @@ La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
   vuelve a pendiente se cuenta desde la entrada original. Una pausa manual
   tampoco descuenta tiempo. Un recibo durable de suite sí permite recuperar
   su lanzamiento con el CI verde guardado y salir de `EsperandoCI`, aunque
-  la lectura fresca haya vuelto a pendiente.
+  la lectura fresca haya vuelto a pendiente. Una suite en curso iniciada con
+  el verde vigente mantiene suspendido ese plazo. Si recuperar su recibo
+  falla, se vuelve a evaluar el vencimiento.
 
 `reanudar` conserva el tren y C, reinicia `desde` al consumir el juicio y
 emite `solicitar-ci` con contador/clave nuevos. Publica una ref
@@ -1044,13 +1050,13 @@ la API garantiza `head_branch`, `head_sha` e `id` en cada suite, mientras el
 sólo garantiza `check_suite.id`. Se piden los checks con `filter=all` (el
 default `latest` filtra por `completed_at`), se cruzan por ese id y se exigen C y la ref
 publicada exactos **antes** de elegir el mayor id por nombre. Un check de la
-ref anterior, aunque termine después de reanudar, no sirve. Hasta observar
-checks de la solicitud vigente, la lectura es pendiente y corre el plazo
-nuevo, incluso con `checks_esperados: []`. Los commit statuses no informan
-la ref solicitante: al reanudar no se consumen, ni como verde ni como rojo.
-Un proveedor que sólo publique statuses o no exponga la suite con esa ref
-queda pendiente hasta el plazo; debe publicar checks ligados a la solicitud
-para habilitar la suite. El recibo incluye la ref también en el buzón de
+ref anterior, aunque termine después de reanudar, no sirve. Sin checks de
+la solicitud vigente ni evidencia negativa, la lectura es pendiente y
+corre el plazo nuevo, incluso con `checks_esperados: []`. Los commit statuses
+no informan la ref solicitante. El último `failure` o `error` de cada
+contexto veta C y los demás estados se ignoran en solicitudes positivas.
+Habilitar la suite exige checks ligados a la solicitud. El recibo incluye
+la ref también en el buzón de
 recuperación; un recibo anterior no autoriza una suite de la nueva solicitud.
 `abortar` conserva el comportamiento U15: cierra `ABORTADO`, libera
 la custodia sin rojo y permite readmisión desde el tick siguiente.
@@ -1064,12 +1070,15 @@ ofrece las decisiones que pasan esa validación.
 
 La marca `rearme_ci` pertenece al recibo `(repo, PR, head)` y se borra al
 aterrizar, devolver o rechazar esa entrega. Un CI verde conserva la marca.
+La entrega marcada conserva su admisión FIFO entre el rearme y la solicitud
+de CI del próximo lote, incluso si una retención coincide con otro avance de main.
 La marca `partida` resiste cada readmisión y conserva la primera
 `admitida`. Formar un tren individual, abortarlo o rearmarlo conserva el
-aislamiento. Al devolver una entrega individual por CI rojo o por un fallo
-de suite atribuido, las entregas en fila de su misma partición vuelven al
-régimen normal de lotes con su admisión FIFO intacta. Sensibles, alto riesgo
-y ventanas siguen su propia política de viaje individual.
+aislamiento. Cuando una entrega de la partición aterriza, se devuelve por
+CI, suite atribuida o expulsión, o se rechaza por caducidad u otra causa,
+las demás entradas en fila de esa partición recuperan el régimen habitual
+de lotes con su admisión FIFO y su marca de rearme intactas. Sensibles, alto
+riesgo y ventanas siguen su propia política de viaje individual.
 
 El reductor ignora un rojo sin nombres válidos y lo trata como pendiente;
 no parte ni devuelve sin evidencia nominada. El escritor de feedback también

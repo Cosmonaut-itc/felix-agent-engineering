@@ -134,18 +134,19 @@ class RegresionesTests(ContextoCI):
         self.assertEqual(self.posts('/comments'), [])
         self.assertFalse(any(p['payload']['state'] == 'failure' for p in self.posts('/statuses/')))
         self.assertEqual(self.remoto(), self.B)
-        final = self.siguiente_hasta(lambda e: len(e.trenes) == 5 and
+        final = self.siguiente_hasta(lambda e: len(e.trenes) == 6 and
                                     all(isinstance(t.fase, Terminal) for t in e.trenes), 1030)
+        uno, dos, tres = (e.entrega.recibo for e in antes.entradas)
         self.assertEqual([t.recibos for t in final.trenes[2:]],
-                         [(e.entrega.recibo,) for e in antes.entradas])
+                         [(uno,), (dos, tres), (dos,), (tres,)])
         self.assertEqual([t.fase.resultado for t in final.trenes],
-                         ['REARMAR', 'PARTIDO', 'ATERRIZADO', 'DEVUELTO', 'ATERRIZADO'])
+                         ['REARMAR', 'PARTIDO', 'ATERRIZADO', 'PARTIDO', 'DEVUELTO', 'ATERRIZADO'])
         self.assertEqual(len(self.lineas('trabajos.log')), 2)
         self.assertEqual(len(self.posts('/comments')), 1)
         self.assertEqual(sum(p['payload']['state'] == 'failure' for p in self.posts('/statuses/')), 1)
         self.assertEqual(sum(p.endswith(':refs/heads/main') for p in self.lineas('pushes.log')), 2)
         ramas = self.comando(self.origen, 'for-each-ref', '--format=%(refname)', 'refs/heads/tren/').splitlines()
-        self.assertEqual(len(ramas), 5)
+        self.assertEqual(len(ramas), 6)
         for tren in final.trenes[2:]:
             c = self.remoto('refs/heads/tren/' + tren.id + '-ci-1')
             self.assertNotEqual(c, candidato.C)
@@ -329,9 +330,10 @@ class InvariantesTests(ContextoCI):
             ledger.guardar_paso(replace(actual, pausa=None), (), 1500)
         self.contexto.tick(1501)
         actual = self.estado()
-        self.assertEqual(actual.trenes[-1].recibos, (actual.entradas[1].entrega.recibo,))
-        self.assertTrue(actual.entradas[1].partida)
-        self.assertTrue(actual.entradas[2].partida)
+        self.assertEqual(actual.entradas[0].admision.motivo.value, 'head-cambiado')
+        self.assertEqual(actual.trenes[-1].recibos,
+                         tuple(actual.entradas[i].entrega.recibo for i in (1, 2, 3)))
+        self.assertTrue(all(not e.partida and e.rearme_ci for e in actual.entradas[1:3]))
         self.assertEqual(desde_datos(datos(actual)), actual)
 
     def test_abortar_timeout_libera_sin_feedback_rojo(self):
