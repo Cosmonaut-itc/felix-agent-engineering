@@ -6,8 +6,10 @@ import itertools
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -275,9 +277,24 @@ class CadenaActivaTests(unittest.TestCase):
         with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.raiz / "sin-estado")}):
             cli.anotar_corte(REPO, self.CORTE)
         self.assertFalse((self.raiz / "sin-estado").exists())
-        with patch.object(cli, "Ledger", side_effect=OSError("sin ledger")):
+        self.retener_ci_del_candidato()
+        self.cadena(itertools.count(100))
+        with patch.object(cli.sqlite3, "connect", side_effect=sqlite3.OperationalError("roto")):
             cli.anotar_corte(REPO, self.CORTE)
         self.assertEqual(self.cortes(), [])
+
+    def test_con_el_ledger_ocupado_el_corte_se_pierde_tras_un_plazo_corto(self):
+        self.retener_ci_del_candidato()
+        self.cadena(itertools.count(100))
+        with self.ledger() as otro_carril, patch.object(cli, "PLAZO_ANOTAR_S", 0.2):
+            otro_carril.db.execute("BEGIN IMMEDIATE")
+            inicio = time.monotonic()
+            cli.anotar_corte(REPO, self.CORTE)
+            self.assertLess(time.monotonic() - inicio, 5)
+            otro_carril.db.execute("ROLLBACK")
+        self.assertEqual(self.cortes(), [])
+        cli.anotar_corte(REPO, self.CORTE)
+        self.assertEqual(len(self.cortes()), 1)
 
     def test_leer_la_huella_no_crea_el_ledger(self):
         with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.raiz / "sin-estado")}):

@@ -329,7 +329,9 @@ disparo de launchd más por paso, y el evento dice por qué. Su payload trae
 
 El tick consulta la cuota y el programa también cuando la huella no cambió,
 antes de sondear el CI del candidato, y escribe el mismo evento. El evento no
-cambia la huella ni el estado del carril. Un paso que sale con error, una
+cambia la huella ni el estado del carril. `pao-tren estado` lo muestra entre
+sus diez últimos eventos. Si otro carril tiene ocupado el ledger más de 2 s,
+el evento se pierde y el tick termina igual. Un paso que sale con error, una
 huella ilegible y el tope de ocho ticks no escriben evento: el error lo dice
 la línea del tick en `stdout.log`, y el tope se ve como ocho pasos seguidos
 en `events`.

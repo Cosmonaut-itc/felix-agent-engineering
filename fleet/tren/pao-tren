@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entrega durable, planificación en sombra y tick de repos inscritos activos."""
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from datetime import datetime, timezone
 import importlib
 import json
@@ -309,6 +309,8 @@ PLAZO_ESPERA_CI_S = 100
 # Reserva 10 s del intervalo de launchd para cerrar el paso y sus efectos.
 PLAZO_TICK_CANCELACION_S = 110
 INTERVALO_SONDEO_CI_S = 20
+# Anotar un corte es diagnóstico: no espera los 30 s del ledger si otro carril escribe.
+PLAZO_ANOTAR_S = 2
 # Quien instala conserva el candado este tiempo: cubre el arranque de un proceso.
 GRACIA_INSTALACION_S = 5
 PEREZOSOS = ("adaptadores.hasito", "adaptadores.jale", "atribucion", "feedback", "git_ops",
@@ -367,18 +369,19 @@ def corte_cuota(ejecutar=subprocess.run, reloj=time.monotonic):
 def anotar_corte(repo, corte):
     """Deja en el ledger por qué el tick no encadenó, si hay un lote vivo y sin pausa."""
     try:
-        if not (directorio_estado() / "ledger.sqlite3").exists():
-            return
-        ledger = Ledger()
-        try:
+        # mode=rw no crea el ledger: un repo sin estado no lo abre.
+        ruta = (directorio_estado() / "ledger.sqlite3").resolve().as_uri() + "?mode=rw"
+        with closing(sqlite3.connect(ruta, uri=True, isolation_level=None,
+                                     timeout=PLAZO_ANOTAR_S)) as db:
+            # Ledger() prepara el esquema con su propio plazo; aquí sólo se lee y se anexa.
+            ledger = Ledger.__new__(Ledger)
+            ledger.db = db
             with ledger.transaccion():
                 estado = ledger.estado(repo, operativo=True)
                 fases = [type(t.fase).__name__ for t in estado.trenes
                          if not isinstance(t.fase, Terminal)]
                 if estado.pausa is None and fases:
                     ledger.evento(repo, "cadena-cortada", time.time(), {**corte, "fases": fases})
-        finally:
-            ledger.close()
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         # Anotar es diagnóstico: un fallo aquí no cambia el resultado del tick.
         pass
