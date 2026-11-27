@@ -338,10 +338,13 @@ que demuestra:
   [procedimiento de merge](references/merge.md).
 - **Par de Jale.** El paso 2 de
   [Entrega al tren](references/merge.md#entrega-al-tren) puede pedir, justo
-  antes de entregar, una ronda delta con dos revisores, gpt-6.2-sol en `high`
-  y opus-5.5 en `high`, sobre el SHA que entregas. Es la única excepción al
-  revisor único de **Normal** y de **Ronda delta**, y la única ronda que
-  corre aunque `apto-vigente` imprima `APTO vigente`.
+  antes de entregar, el veredicto que falte de gpt-6.2-sol en `high` o de
+  opus-5.5 en `high` sobre el SHA que entregas. Un revisor que no revisó el
+  cambio hace una ronda completa sobre el diff completo, con el brief
+  original. Uno que revisó un head anterior hace una ronda delta desde ese
+  head. Es la única excepción al revisor único de **Normal** y de **Ronda
+  delta**, y la única ronda que corre aunque `apto-vigente` imprima `APTO
+  vigente`. Un NO APTO de cualquiera de los dos sigue **Rondas**.
 - **Hallazgos.** El brief de todo revisor pide critical y warning. En nivel
   normal pide también los nits de gravedad alta, que son riesgos asumidos.
   Pide cerrar el reporte con `Nits descartados: <n>`, la cuenta de los
