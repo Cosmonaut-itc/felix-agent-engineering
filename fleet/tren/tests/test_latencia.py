@@ -108,6 +108,10 @@ class LatenciaTests(Aislado):
         self.assertEqual([fila["total"] for fila in informe["por_pr"]], [1, (HORA + 30) / HORA])
         self.assertAlmostEqual(informe["por_pr"][1]["tren"], (HORA + 30) / HORA)
         self.assertEqual(self.informe(hasta=3 * HORA, prs=[])["por_pr"], [])
+        solo_externo = self.informe(hasta=3 * HORA, prs=prs[1:])
+        horas_pr = sum(fila["horas_pr"] for fila in solo_externo["horas_pr_por_causa"].values())
+        # El conteo va por minuto: el merge a HORA + 30 s cierra el minuto 61.
+        self.assertAlmostEqual(horas_pr, 2 + 61 / 60)
 
     def test_latencia_decisiones_mide_pausas_levantadas_con_su_duracion_completa(self):
         infra = Pausa("infraestructura", detalle="salida-sin-recibo")

@@ -247,17 +247,18 @@ def medir_latencia(requests, events, effects, repo, desde, hasta, prs=None):
             recibo_de[pr, fila["head"]] = recibo
             recibos[pr].guardar(fila["recibida"], recibo)
     admisiones, lotes, pausas, levantadas = proyectar(events, repo, hasta, pr_de, recibo_de)
-    merges = {}
-    if prs is None:
-        for lote in lotes:
-            if lote.resultado == "ATERRIZADO":
-                for pr in lote.miembros:
-                    merges[pr] = min(merges.get(pr, lote.fin), lote.fin)
-    else:
-        merges = {pr["number"]: instante_iso(pr["mergedAt"]) for pr in prs
-                  if pr["state"] == "MERGED" and pr["mergedAt"]}
+    aterrizados = {}
+    for lote in lotes:
+        if lote.resultado == "ATERRIZADO":
+            for pr in lote.miembros:
+                aterrizados[pr] = min(aterrizados.get(pr, lote.fin), lote.fin)
+    merges = aterrizados if prs is None else {
+        pr["number"]: instante_iso(pr["mergedAt"]) for pr in prs
+        if pr["state"] == "MERGED" and pr["mergedAt"]}
+    # Un PR que el ledger da por aterrizado deja de esperar aunque --prs no lo traiga.
     carril = carril_por_instante(lotes)
-    causas = causa_por_minuto(recibos, admisiones, merges, pausas, carril, desde, hasta)
+    causas = causa_por_minuto(recibos, admisiones, {**aterrizados, **merges},
+                              pausas, carril, desde, hasta)
     devueltos = devoluciones(effects, repo, pr_de)
     por_pr = horas_por_pr(recibos, admisiones, merges, pausas, carril, devueltos, desde, hasta)
     horas_tren = sorted(fila["tren"] for fila in por_pr)
