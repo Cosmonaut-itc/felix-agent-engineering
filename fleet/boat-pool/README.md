@@ -44,19 +44,27 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
   La VM vuelve al orden por carga.
   Los valores predeterminados son prioridad `otra`, espera de cero segundos
   para un lugar y arriendo de 900 segundos. La espera admite de 0 a 7200 s
-  y el arriendo de 300 a 3600 s. Una VM está arrancando cuando hay una marca
-  de reanudación de su ID en `operacion.json` con menos de 420 s y Boat la
-  muestra en arranque o detenida. Cualquier pedido que la tenga como
-  candidata puede adoptar esa reanudación y deja libre el candado de la VM
-  entre consultas. Si Boat aún la muestra detenida a los 90 s, `pedir` puede
-  reenviar el `resume` y renovar la marca. Si Boat la muestra en arranque,
-  sigue consultando su estado.
-  Mientras alguna candidata arranca, el turno puede durar más que `--esperar`
-  y se extiende hasta el mayor plazo de esas reanudaciones. Si a los 420 s
-  de la marca Boat sigue sin confirmar que la VM está lista, el pedido la
-  rechaza con `Boat no confirmó el cambio de estado`. Estados como `error` o
-  `cancelled` provocan el rechazo inmediato. Si `pedir` no consigue un
-  arriendo, sale con 75.
+  y el arriendo de 300 a 3600 s. Una VM está arrancando cuando Boat la
+  muestra en arranque o detenida y su marca en `operacion.json` para ese ID
+  registra un `inicio` de hace menos de 420 s. Para marcas anteriores se
+  toma `desde` como `inicio`. Cualquier pedido que tenga la VM como candidata
+  puede adoptar esa reanudación y deja libre el candado de la VM entre
+  consultas. Si a los 90 s del último POST Boat aún la muestra detenida,
+  `pedir` puede reenviar el `resume` y renovar `desde`. Los reenvíos
+  conservan `inicio`. Si Boat la muestra en arranque, `pedir` sigue
+  consultando su estado. Un pedido que sigue una reanudación permite al
+  siguiente turno elegible arrancar otra VM detenida. Las concesiones
+  cuando una VM queda lista siguen el orden de la fila.
+  `pedir` publica el plazo del turno antes de enviar el POST. Mientras alguna
+  candidata arranca, el turno puede durar más que `--esperar` y se extiende
+  hasta el mayor plazo de esas reanudaciones. Si a los 420 s
+  del primer POST Boat sigue sin confirmar que la VM está lista, el pedido
+  la rechaza con `Boat no confirmó el cambio de estado`. Si otro proceso
+  tiene el candado al vencer el plazo o tras limpiar la marca, un pedido
+  que siguió la reanudación tiene hasta 10 s de margen para observar la VM.
+  Un pedido nuevo puede iniciar otra reanudación de una VM detenida con
+  una marca ya vencida. Estados como `error` o `cancelled` provocan el
+  rechazo inmediato. Si `pedir` no consigue un arriendo, sale con 75.
 - `pedir --repo R --corrida ID --clase preparar --vm NOMBRE` reserva toda
   la VM para el repositorio dueño aunque el registro indique `apta: false`.
   Mientras el turno espera, la VM deja de otorgar lugares. Una vez que los
