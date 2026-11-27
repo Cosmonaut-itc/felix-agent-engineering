@@ -750,6 +750,7 @@ class Jale:
         impedimento = SIN_IMPEDIMENTO
         en_curso = False
         rechazos = []
+        sin_confirmar = False
         for n, cache, cache_disponible, desde_base, ultimo, proceso in lanzadas:
             try:
                 if desde_base:
@@ -771,6 +772,8 @@ class Jale:
                 if not paralelo:
                     break
                 continue
+            # Un 75 no confirma que su trabajo terminó: relanzar podría duplicarlo.
+            sin_confirmar = sin_confirmar or r is None or isinstance(r, dict) and r['codigo'] == 75
             if impedimento is not SIN_IMPEDIMENTO:
                 continue
             if isinstance(r, dict) and r['codigo'] != 75:
@@ -796,7 +799,8 @@ class Jale:
         if isinstance(impedimento, RechazoLanzador):
             # Como en la suite: el envío incierto primero, para reengancharlo con su clave.
             elegido = next((r for r in rechazos if r.detalle == 'salida-sin-recibo'), impedimento)
-            if any(not admite_relanzamiento(r) for r in rechazos if r is not elegido):
+            if sin_confirmar or any(not admite_relanzamiento(r)
+                                    for r in rechazos if r is not elegido):
                 return replace(elegido, relanzable=False)
             return elegido
         if impedimento is not SIN_IMPEDIMENTO:

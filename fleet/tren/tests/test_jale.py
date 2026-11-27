@@ -1256,6 +1256,11 @@ class JaleTests(Aislado):
             {'codigo': 75, 'sin_linea': True}, {'codigo': 64, 'sin_linea': True},
             'lanzador-rechazo')
 
+    def test_repeticiones_paralelas_interrumpida_y_75_pausan_sin_relanzar(self):
+        self.verificar_repeticiones_paralelas_sin_relanzar(
+            {'codigo': 125, 'sin_linea': True, 'interrumpida': True},
+            {'codigo': 75, 'sin_linea': True}, 'corrida-interrumpida')
+
     def test_repeticiones_paralelas_interrumpida_y_sin_recibo_reenganchan_el_incierto(self):
         self.adaptador = self.Jale(self.lanzador, host='desktop', repeticiones_paralelas=2)
         parte = {'por_intento': {'1': {'codigo': 125, 'sin_linea': True, 'interrumpida': True},
