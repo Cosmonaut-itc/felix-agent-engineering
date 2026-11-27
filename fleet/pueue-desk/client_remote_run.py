@@ -331,6 +331,14 @@ class RemoteRun:
             selected, reservation = self.selected_reservation(originals)
             if reservation is not None:
                 request = dict(selected, launcher='remote-run', mode=reservation['mode'])
+        if reservation is not None and not reservation['open'] and reservation['phase'] == 'finish':
+            # CC2 may close before the remote-run waiter publishes its result.
+            # Keep the same confirmed force-start visible to that waiter.
+            recorded = self.record(dict(request, phase='finish'))
+            match(recorded is not None and recorded['response']['status'] == 'finished'
+                  and recorded['request']['proof']['kind'] == 'no-payload'
+                  and reservation['identity'] == recorded['response']['identity'] == current)
+            return
         match(reservation is not None and reservation['phase'] == 'cancel-no-payload'
               and stable(reservation['identity']) == originals.identity)
         recorded = self.phase_record(originals, request, reservation)

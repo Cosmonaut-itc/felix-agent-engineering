@@ -225,6 +225,7 @@ class RemoteRunTests(unittest.TestCase):
         self.assertEqual((finish['status'], finish['reservation']), ('finished', 'closed'))
         self.assertEqual(self.actions.record(request)['response']['status'], 'started')
         self.assertFalse(self.actions.reservation(request)['open'])
+        self.assertEqual(self.act(self.cap)['identity'], self.fixture.done)
         self.assertEqual(self.effects, ['stash', 'start'])
 
     def test_completion_cannot_settle_a_queue_phase(self):
