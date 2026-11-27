@@ -10,6 +10,7 @@ import test_activo as activo
 from test_u16 import ContextoCI, REPO
 from adaptadores.hasito import ResultadoInvalido
 from dominio import Certificado, EsperandoCI, Pausa, Terminal, paso
+from git_ops import ErrorGit
 from observador import GitHubGit
 
 
@@ -139,7 +140,7 @@ class RearmeCIRefTests(CasosCI):
         self.assertTrue(all(e.rearme_ci is None for e in aterrizado.entradas))
         self.assertEqual(len(self.lineas('trabajos.log')), 1)
 
-    def test_status_pendiente_vigente_bloquea_la_suite_y_el_rojo_parte(self):
+    def test_status_no_verde_bloquea_el_lanzamiento_sin_partir(self):
         _, nuevo, datos = self.rearmar_con_rojo()
         datos['statuses'] = [status('pending', 1019)]
         self.nueva(datos, nuevo, 'success')
@@ -149,18 +150,41 @@ class RearmeCIRefTests(CasosCI):
         datos['statuses'].insert(0, status('failure', 1021))
         self.guardar_ci(datos)
         self.contexto.tick(1021)
+        self.assertEqual(self.estado().trenes[-1].fase, nuevo.fase)
+        self.assertEqual(self.remoto(), self.B)
+
+    def test_suite_terminada_espera_verde_fresco_y_check_rojo_parte(self):
+        _, nuevo, datos = self.rearmar_con_rojo()
+        self.nueva(datos, nuevo, 'success')
+        self.contexto.tick(1020)
+        self.assertEqual(len(self.lineas('trabajos.log')), 1)
+        datos['statuses'] = [status('pending', 1021)]
+        self.guardar_ci(datos)
+        self.contexto.tick(1021)
+        self.assertEqual(self.estado().trenes[-1].fase, nuevo.fase)
+        datos['statuses'].insert(0, status('failure', 1022))
+        self.guardar_ci(datos)
+        self.contexto.tick(1022)
+        self.assertEqual(self.estado().trenes[-1].fase, nuevo.fase)
+        datos['checks'][1]['conclusion'] = 'failure'
+        self.guardar_ci(datos)
+        self.contexto.tick(1023)
         self.assertEqual(self.estado().trenes[-1].fase, Terminal('PARTIDO'))
         self.assertEqual(self.remoto(), self.B)
 
-    def test_rojo_vigente_gana_al_verde_guardado_con_la_suite(self):
+    def test_suite_terminada_con_status_bloqueante_vence_el_plazo_de_ci(self):
         _, nuevo, datos = self.rearmar_con_rojo()
         self.nueva(datos, nuevo, 'success')
         self.contexto.tick(1020)
         self.assertEqual(len(self.lineas('trabajos.log')), 1)
         datos['statuses'] = [status('failure', 1021)]
         self.guardar_ci(datos)
-        self.contexto.tick(1021)
-        self.assertEqual(self.estado().trenes[-1].fase, Terminal('PARTIDO'))
+        vence = nuevo.fase.desde + 3600
+        self.contexto.tick(vence - 1)
+        self.assertIsNone(self.estado().pausa)
+        self.contexto.tick(vence)
+        self.assertEqual(self.estado().pausa, Pausa('infraestructura', detalle='ci-sin-resultado'))
+        self.assertEqual(self.estado().trenes[-1].fase, nuevo.fase)
         self.assertEqual(self.remoto(), self.B)
 
     def perder_ack_suite(self):
@@ -181,11 +205,13 @@ class RearmeCIRefTests(CasosCI):
         return nuevo, datos, nuevo.fase.desde + 3600
 
     def test_fallo_transitorio_al_leer_recibo_se_recupera_sin_juicio(self):
-        _, _, vencimiento = self.perder_ack_suite()
+        _, datos, vencimiento = self.perder_ack_suite()
         with patch.object(self.contexto.hasito, 'suite',
                           side_effect=ResultadoInvalido('resultado-ilegible')):
             self.contexto.tick(vencimiento)
         self.assertIsNone(self.estado().pausa)
+        datos['checks'][1].update(status='completed', conclusion='success')
+        self.guardar_ci(datos)
         self.contexto.tick(vencimiento + 120)
         self.assertIsInstance(self.estado().trenes[-1].fase, Certificado)
         self.assertIsNone(self.estado().pausa)
@@ -276,7 +302,7 @@ ContextoR1(sys.argv[3]).tick(int(sys.argv[4]), frontera)
 
 
 class ContratoTests(CasosCI):
-    def test_status_anterior_a_la_solicitud_no_devuelve_el_individual(self):
+    def test_status_anterior_a_la_solicitud_espera_hasta_que_el_contexto_publica_verde(self):
         anterior, datos, ahora = self.anterior('success')
         datos['statuses'] = [status('failure', ahora - 1)]
         self.guardar_ci(datos)
@@ -284,8 +310,29 @@ class ContratoTests(CasosCI):
         self.nueva(datos, anterior.trenes[0], 'success')
         self.contexto.tick(ahora + 1)
         self.contexto.tick(ahora + 2)
+        self.assertIsInstance(self.estado().trenes[-1].fase, EsperandoCI)
+        self.assertEqual(self.lineas('trabajos.log'), [])
         self.assertEqual(self.posts('/comments'), [])
+        datos['statuses'].insert(0, status('success', ahora + 3))
+        self.guardar_ci(datos)
+        self.contexto.tick(ahora + 3)
+        self.contexto.tick(ahora + 4)
         self.assertIsInstance(self.estado().trenes[-1].fase, Certificado)
+
+    def test_status_tardio_con_ref_aun_sin_publicar_no_devuelve_el_individual(self):
+        anterior, datos, ahora = self.anterior('success')
+        ref = 'refs/heads/tren/' + anterior.trenes[0].id + '-ci-1'
+        with patch.object(self.contexto.git, 'publicar',
+                          return_value=ErrorGit('publicacion-rechazada')) as publicar:
+            self.contexto.tick(ahora)
+            publicar.assert_called_once()
+        self.assertFalse(self.contexto.git.leer_ref(ref))
+        datos['statuses'] = [status('failure', ahora + 1)]
+        self.guardar_ci(datos)
+        self.contexto.tick(ahora + 2)
+        self.assertIsInstance(self.estado().trenes[-1].fase, EsperandoCI)
+        self.assertEqual(self.posts('/comments'), [])
+        self.assertEqual(self.remoto(), self.B)
 
     def test_recibo_antiguo_no_autoriza_verde_en_reductor_ni_ejecutor(self):
         from efectos import ejecutar
@@ -348,32 +395,39 @@ class LecturaActionsTests(unittest.TestCase):
                     [{'check_runs': []}] if '/check-runs?' in endpoint else
                     [{'check_suites': []}] if '/check-suites?' in endpoint else
                     [[status(estado, 101)]])
-                self.assertEqual(lector.ci(REPO, 'a' * 40, 'tren/actual-ci-1',
-                                           desde=100).estado, 'pendiente')
+                self.assertEqual(lector.ci(REPO, 'a' * 40, 'tren/actual-ci-1').estado, 'pendiente')
 
-    def test_status_negativo_veta_check_verde_de_la_ref_vigente(self):
+    def test_ultimo_status_de_cada_contexto_puede_bloquear_la_ref_sin_dar_rojo(self):
         rama = 'tren/actual-ci-1'
         head = 'a' * 40
         lector = GitHubGit({}, activo=True)
         for estado, por_sha, por_ref in (
-                ('failure', 'rojo', 'rojo'), ('error', 'pendiente', 'rojo'),
-                ('success', 'verde', 'verde'), ('pending', 'pendiente', 'pendiente')):
+                ('failure', 'rojo', 'pendiente'), ('error', 'pendiente', 'pendiente'),
+                ('success', 'verde', 'verde'), ('pending', 'pendiente', 'pendiente'),
+                ('desconocido', 'pendiente', 'pendiente')):
             with self.subTest(estado=estado):
                 def api(endpoint, paginado=False):
                     if '/check-runs?' in endpoint:
                         return [{'check_runs': [check('success')]}]
                     if '/check-suites?' in endpoint:
                         return [{'check_suites': [{'id': 1, 'head_sha': head, 'head_branch': rama}]}]
-                    return [[status(estado, 102), status('failure', 101),
-                             dict(status('failure', 99), context='viejo')]]
+                    return [[status(estado, 102), status('failure', 101)]]
                 lector.api = api
-                resultado = lector.ci(REPO, head, rama, desde=100)
+                resultado = lector.ci(REPO, head, rama)
                 self.assertEqual(resultado.estado, por_ref)
-                self.assertEqual(resultado.rojos, ('Vercel',) if por_ref == 'rojo' else ())
-                self.assertEqual(lector.ci(REPO, head, rama, desde=102).estado, 'verde')
-                lector.api = lambda endpoint, paginado=False: (
-                    [[status(estado, 102)]] if '/statuses?' in endpoint else api(endpoint, paginado))
+                self.assertEqual(resultado.rojos, ())
                 self.assertEqual(lector.ci(REPO, head).estado, por_sha)
+
+    def test_status_negativo_sin_fecha_bloquea_checks_verdes_de_la_ref(self):
+        rama = 'tren/actual-ci-1'
+        head = 'a' * 40
+        lector = GitHubGit({}, activo=True)
+        lector.api = lambda endpoint, paginado=False: (
+            [{'check_runs': [check('success')]}] if '/check-runs?' in endpoint else
+            [{'check_suites': [{'id': 1, 'head_sha': head, 'head_branch': rama}]}]
+            if '/check-suites?' in endpoint else [[{'context': 'Vercel', 'state': 'failure'}]])
+        resultado = lector.ci(REPO, head, rama)
+        self.assertEqual((resultado.estado, resultado.rojos), ('pendiente', ()))
 
     def leer(self, checks, datos=None, error=None):
         llamadas = []

@@ -569,7 +569,7 @@ def rearmar(estado, tren, temprano=False, rojo_ci=False):
     return replace(estado,
         trenes=tuple(replace(t, fase=Terminal("REARMAR")) if t.id == tren.id else t
                      for t in estado.trenes),
-        entradas=tuple(replace(e, tren=None, rearmada=temprano,
+        entradas=tuple(replace(e, tren=None, rearmada=temprano or e.rearmada,
                                rearme_ci=tren.id if rojo_ci else e.rearme_ci)
                        if e.entrega.recibo in tren.recibos
                        else e for e in estado.entradas))

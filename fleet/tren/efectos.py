@@ -140,12 +140,13 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                 if recibo is None:
                     return Ejecucion(limpia, False)
                 ruta, resultado = recibo
-                # Consumir la suite requiere haber acreditado CI verde sobre C.
-                # Al recuperar se conserva esa evidencia.
-                return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado,
-                    ci_candidato="verde", ci_recibo=recibo_ci(tren) if fase.solicitud else
-                    observacion.ci_recibo if observacion.ci_candidato == "verde"
-                    else recibo_ci(tren)), True)
+                llegada = replace(limpia, suite=ruta, resultado_suite=resultado)
+                # La solicitud inicial conserva el contrato histórico de recuperación.
+                if not fase.solicitud:
+                    llegada = replace(llegada, ci_candidato="verde",
+                        ci_recibo=observacion.ci_recibo if observacion.ci_candidato == "verde"
+                        else recibo_ci(tren))
+                return Ejecucion(llegada, True)
             if efecto.tipo == "reanudar-suite" and isinstance(fase, Corriendo):
                 esperado = efecto_reanudar_suite(tren, fase)
                 if efecto != esperado or fase.esperar_hasta is not None:
