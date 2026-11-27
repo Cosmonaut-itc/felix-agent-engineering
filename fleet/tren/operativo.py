@@ -162,7 +162,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         cerrados = {t.id for t in nuevo.trenes if isinstance(t.fase, Terminal)}
         terminales = [t for t in trenes_antes if t.id in cerrados and
                       not isinstance(t.fase, Terminal)]
-        # Captura los avisos antes de que cancelar.json oculte los registros.
+        # Captura las corridas sin leer sólo de los trenes que este paso cierra.
         confirmadas = tuple(corridas_sin_leer({t.id for t in terminales}, consumido))
         cancelar = getattr(adaptador, "cancelar_corridas", None)
         prelanzadas = cancelar(terminales, confirmadas) if terminales and cancelar is not None else ()
