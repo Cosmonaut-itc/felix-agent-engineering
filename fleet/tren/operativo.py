@@ -7,7 +7,9 @@ siempre proceden de la observación fresca. No modifica el reductor puro.
 from copy import copy
 from dataclasses import replace
 import json
+import os
 import subprocess
+import time
 
 from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
                      Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, base_vieja, clave,
@@ -58,6 +60,36 @@ def resumen_outbox(ledger, repo):
              "ejecutor": efecto.tipo in EJECUTABLES, "espera": espera,
              "resultado": json.loads(r["resultado"]) if r["resultado"] else None}
             for r, efecto, espera in outbox_en_orden(ledger, repo, estado, set())]
+
+
+PLAZO_RESERVA_BOAT_S = 10
+
+
+def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
+    clases = getattr(adaptador, "clases_boat", ())
+    if not clases:
+        return
+    activo = next((t for t in estado.trenes if not isinstance(t.fase, Terminal)), None)
+    acciones = []
+    if anterior is not None and (estado.pausa or activo is None or activo.id != anterior.id):
+        acciones.append(("liberar-reserva", anterior.id, ()))
+    if activo is not None and not estado.pausa:
+        acciones.append(("reservar", activo.id, ("--clases", ",".join(clases), "--ttl", "1800")))
+    limite = time.monotonic() + PLAZO_RESERVA_BOAT_S
+    for comando, lote, opciones in acciones:
+        try:
+            binario = os.path.expanduser(config.get("boat_pool", "~/.local/bin/boat-pool"))
+            argv = [binario, comando, "--repo", estado.repo, "--lote", lote, *opciones]
+            restante = limite - time.monotonic()
+            if restante <= 0:
+                raise subprocess.TimeoutExpired(argv, PLAZO_RESERVA_BOAT_S)
+            subprocess.run(argv, check=True, timeout=restante, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError) as exc:
+            fallo = {"lote": lote, "comando": comando, "clase": type(exc).__name__}
+            if isinstance(exc, subprocess.CalledProcessError):
+                fallo["codigo"] = exc.returncode
+            ledger.evento(estado.repo, "fallo-reserva-boat", ahora, fallo)
 
 
 def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
@@ -193,12 +225,15 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         return estado, fallo_operador
 
     def terminar(nuevo, efectos):
-        nuevo, fallo = drenar(nuevo, observacion)
+        actualizar_reserva_boat(ledger, config, adaptador, activo, nuevo, ahora)
+        drenado, fallo = drenar(nuevo, observacion)
         if fallo is not None:
-            ledger.guardar_paso(nuevo, (), ahora, fallo_operador=fallo)
+            ledger.guardar_paso(drenado, (), ahora, fallo_operador=fallo)
             frontera("paso-guardado", None)
-        snapshots.limpiar(nuevo, previo.pendientes(repo), ahora)
-        return {"modo": "activo", "estado": datos(nuevo), "efectos": datos(efectos),
+            activo_confirmado = next((t for t in nuevo.trenes if not isinstance(t.fase, Terminal)), None)
+            actualizar_reserva_boat(ledger, config, adaptador, activo_confirmado, drenado, ahora)
+        snapshots.limpiar(drenado, previo.pendientes(repo), ahora)
+        return {"modo": "activo", "estado": datos(drenado), "efectos": datos(efectos),
                 "outbox": resumen_outbox(ledger, repo)}
 
     # Una muerte con el marcador durable puede haber producido IO sin ACK.

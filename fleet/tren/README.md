@@ -1367,6 +1367,10 @@ inscribe ni activa repositorios.
 `"host": {"contract": "auto", "e2e": "boat"}`. Los valores aceptados son
 `auto`, `mini`, `desktop` y `boat`. El mapa debe incluir todos los modos
 configurados y sólo puede tener claves `contract` y `e2e`.
+Tras confirmar el estado del tick activo y antes de drenar sus efectos,
+`"boat_pool"` (por omisión `~/.local/bin/boat-pool`) reserva por 30 min los
+modos Boat del lote vivo y libera la reserva al cerrar el lote o pausar el
+carril. Si el drenado produce otra pausa, libera la reserva al guardarla.
 `"boat_esperar_s": 180` fija cuánto espera Boat un lugar con prioridad
 `tren` antes de enviar al desk en la misma invocación. Acepta enteros entre
 0 y 7200 y vale 180 por omisión. Las repeticiones filtradas usan el host de
