@@ -106,10 +106,6 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         ci = ledger.primer_inicio(repo, clave("ci", tren.id, tren.fase.solicitud))
         return ci is not None and ci < inicio
 
-    def suite_de_ci_anterior(tren):
-        return (isinstance(tren.fase, EsperandoCI) and tren.fase.solicitud > 0 and
-                not suite_de_ci_vigente(tren))
-
     previo.limpiar(estado)
     observacion = observador.observar(estado, ahora)
     activo = next((t for t in estado.trenes if not isinstance(t.fase, Terminal)), None)
@@ -214,9 +210,9 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     if ejecucion.en_curso:
                         frontera("efecto-ejecutado", efecto)
                         continue
-                    ci_anterior = efecto.tipo == "iniciar-suite" and suite_de_ci_anterior(tren)
+                    ci_numerado = isinstance(tren.fase, EsperandoCI) and tren.fase.solicitud > 0
                     resultado = {"observacion": resultado_observacion(
-                        efecto, ejecucion.observacion, conserva_ci=not ci_anterior)}
+                        efecto, ejecucion.observacion, conserva_ci=not ci_numerado)}
                     completo = ejecucion.completo
                     if not completo:
                         resultado["error"] = "ejecucion-incompleta"
@@ -328,15 +324,13 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                     tren = next((t for t in estado.trenes if t.id == efecto.datos[0]), None)
                     if tren is None:
                         continue
-                    if (isinstance(tren.fase, EsperandoCI) and tren.fase.solicitud and
-                            observacion.tren_id == tren.id and observacion.ci_candidato == "rojo" and
-                            observacion.ci_recibo == recibo_ci(tren)):
-                        continue
-                    if suite_de_ci_anterior(tren):
+                    if isinstance(tren.fase, EsperandoCI) and tren.fase.solicitud:
+                        # La suite terminó. Si falta verde, corre el plazo de CI.
+                        observacion = replace(observacion, suite_de_ci_vigente=False)
                         if (observacion.tren_id != tren.id or observacion.ci_candidato != "verde" or
                                 observacion.ci_recibo != recibo_ci(tren)):
                             continue
-                        # Un resultado guardado antes de esta versión puede traer otro verde.
+                        # Los recibos anteriores pueden incluir el CI del momento del arranque.
                         recibida.pop("ci_candidato", None)
                         recibida.pop("ci_recibo", None)
                 if efecto.tipo == "promover":

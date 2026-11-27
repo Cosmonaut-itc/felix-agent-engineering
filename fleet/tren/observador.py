@@ -1,7 +1,6 @@
 """Lectura de GitHub/git. Evidencia estructurada y decisiones fail-closed."""
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import datetime
 from fnmatch import fnmatchcase
 from functools import partial
 import json
@@ -27,25 +26,11 @@ CONCLUSIONES_CI = {
 }
 STATUS_CI = {"success": "verde", "failure": "rojo", "error": "pendiente",
              "pending": "pendiente"}
-STATUS_SOLICITUD = {"failure": "rojo", "error": "rojo", "pending": "pendiente"}
 # Tiempo total de fetch de una observación activa, sumado sobre toda la cola:
 # una caída del remoto no suma un timeout por PR bajo el candado del carril.
 PRESUPUESTO_TRANSPORTE_S = 120
 ERRORES_LECTURA = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
 SIN_LEER = object()
-
-
-def status_posterior(status, desde):
-    creado = status.get("created_at")
-    if desde is None or not isinstance(creado, str):
-        return False
-    if creado.endswith("Z"):
-        creado = creado[:-1] + "+00:00"
-    try:
-        instante = datetime.fromisoformat(creado)
-    except ValueError:
-        return False
-    return instante.tzinfo is not None and instante.timestamp() > desde
 
 
 class LimiteGitHub(Exception):
@@ -318,7 +303,7 @@ class GitHubGit:
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             return "pendiente"
 
-    def ci(self, repo, head, rama=None, *, desde=None):
+    def ci(self, repo, head, rama=None):
         # --slurp retains every page of both APIs, including >100 checks/statuses.
         endpoint = "repos/{}/commits/{}/check-runs?per_page=100".format(repo, head)
         # latest se filtra por completed_at en GitHub: una finalización vieja
@@ -348,8 +333,7 @@ class GitHubGit:
         # Status API returns newest first. A newer pending status supersedes green.
         ultimos = {}
         for status in statuses:
-            if rama is not None and (self.sombra or not self.activo or
-                                     not status_posterior(status, desde)):
+            if rama is not None and (self.sombra or not self.activo):
                 continue
             # D6 despierta al dueño; no es CI. Tras caducar, el head actual
             # debe poder reentregarse sin que nuestro aviso lo retenga solo.
@@ -376,10 +360,10 @@ class GitHubGit:
             if (valores[n] == "rojo" and c.get("conclusion") == "failure" and
                     (c.get("app") or {}).get("slug") == "github-actions"):
                 valores[n] = self.fallo_actions(repo, head, c)
-        # Los checks acreditan la ref. Un status vigente puede bloquearla.
+        # Un status identifica C por SHA. Sólo los checks deciden el rojo de la ref.
         estados = ({n: STATUS_CI.get(s, "pendiente") for n, s in ultimos.items()}
                    if rama is None else
-                   {n: STATUS_SOLICITUD[s] for n, s in ultimos.items() if s in STATUS_SOLICITUD})
+                   {n: "pendiente" for n, s in ultimos.items() if s != "success"})
         rojos = tuple(sorted({n for n, v in list(valores.items()) + list(estados.items())
                               if v == "rojo"}))
         # Un esperado ausente impide verde, pero no oculta un rojo presente.
@@ -508,12 +492,8 @@ class GitHubGit:
             return None
         # GitHub no conoce un C aún no publicado: CI pendiente.
         try:
-            fase = tren.fase
-            if fase.solicitud:
-                ci = self.ci(estado.repo, fase.candidato.C, "tren/" + rama_ci(tren),
-                             desde=fase.desde)
-            else:
-                ci = self.ci(estado.repo, fase.candidato.C, None)
+            ci = self.ci(estado.repo, tren.fase.candidato.C,
+                         "tren/" + rama_ci(tren) if tren.fase.solicitud else None)
         except ERRORES_LECTURA:
             ci = ResultadoCI("pendiente")
         return tren, ci

@@ -16,7 +16,7 @@ from unittest.mock import patch
 RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ))
 from dominio import (Admitido, Armado, Aterrizado, Candidato, Completo, Congelado, Corriendo,
-                     Decision, Diagnosticando, Entrada, Entrega, EsperandoCI, Estado,
+                     Decision, Diagnosticando, Entrada, Entrega, EscritorExterno, EsperandoCI, Estado,
                      Evidencia, Fallo, Intento, LIMITE_LOTE, Motivo, Observacion,
                      Pausa, Rechazado, Repeticion, Reproduccion, Retenido, Terminal,
                      UnidadRepetida, VistaPR, clave, datos, desde_datos, inicial, paso,
@@ -379,6 +379,33 @@ class RearmeCITests(unittest.TestCase):
             self.assertIsNone(fila.entradas[pos].particion)
             self.assertEqual(fila.entradas[pos].admitida, 100)
         siguiente, _ = paso(fila, replace(base_nueva, ahora=102))
+        self.assertEqual(siguiente.trenes[-1].recibos, (entrega(1).recibo, entrega(3).recibo))
+
+    def test_individual_liberado_conserva_fifo_tras_rearmar_en_promocion(self):
+        lote, obs = self.rearme()
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        individual, _ = paso(partido, obs)
+        espera, _ = self.armar(individual, obs)
+        tren = espera.trenes[-1]
+        c = tren.fase.candidato
+        certificado, _ = self.ci(espera, replace(
+            obs, ahora=101, suite="suite", resultado_suite=Completo("verde")), "verde")
+        cierre = replace(obs, ahora=102, prs=(vista(1), vista(2, abierto=False), vista(3)))
+        promoviendo, _ = paso(certificado, cierre)
+        base_nueva = replace(cierre, ahora=103, base="f" * 40)
+        fila, _ = paso(promoviendo, replace(
+            base_nueva, tren_id=tren.id, intento_promocion=1,
+            main=EscritorExterno(c.B, c.C, base_nueva.base)))
+        self.assertEqual(fila.pausa.motivo, "escritor-externo")
+        pausada, _ = paso(fila, replace(
+            base_nueva, ahora=104, prs=(vista(1, ci="pendiente"), *cierre.prs[1:])))
+        decision = Decision("juicio", fila.repo, tren.id, "reanudar", None,
+                            "escritor externo revisado", 105, "pausa", pausada.pausa)
+        libre, _ = paso(pausada, replace(
+            base_nueva, ahora=105, decision=decision, pausa_id="pausa"))
+        siguiente, _ = paso(libre, replace(base_nueva, ahora=106))
+        self.assertEqual(siguiente.entradas[0].admitida, 100)
         self.assertEqual(siguiente.trenes[-1].recibos, (entrega(1).recibo, entrega(3).recibo))
 
     def test_devuelto_individual_libera_su_particion_y_reagrupa_hasta_el_limite(self):

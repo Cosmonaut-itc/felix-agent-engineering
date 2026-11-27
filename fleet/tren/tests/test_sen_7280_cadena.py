@@ -181,8 +181,8 @@ class CadenaActivaTests(unittest.TestCase):
     def retener_ci_del_candidato(self):
         """Deja pendiente el CI de todo commit que no sea el head de un PR."""
         original, heads = self.contexto.observador.ci, {head for _, head in self.miembros}
-        self.contexto.observador.ci = lambda repo, commit, rama=None, **kwargs: (
-            original(repo, commit, rama, **kwargs) if commit in heads else ResultadoCI("pendiente"))
+        self.contexto.observador.ci = lambda repo, commit, rama=None: (
+            original(repo, commit, rama) if commit in heads else ResultadoCI("pendiente"))
         return lambda: setattr(self.contexto.observador, "ci", original)
 
     def test_un_lote_pide_ci_en_una_cadena_y_espera_sin_girar(self):
