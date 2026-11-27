@@ -9,7 +9,7 @@ import signal
 import subprocess
 import sys
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from test_tren import Aislado, cli, estado, observacion, REPO
 from test_hasito import B, C, CANDIDATO
@@ -988,6 +988,210 @@ class JaleTests(Aislado):
         self.assertEqual(resultado, Completo('verde', costo_s=4))
         self.assertEqual(json.loads(Path(ruta).read_text())[0]['codigo'], 0)
         self.assertEqual(self.invocaciones()[0]['boat']['SEN_BOAT_ESPERAR'], '180')
+
+    def test_boat_adapta_espera_a_la_salud_del_desk_y_guarda_el_motivo(self):
+        from adaptadores import seleccionar
+        casos = (
+            ('running', '14.00', None, True, 'desk-sano'),
+            ('paused', '3.00', None, False, 'grupo-en-pausa'),
+            ('running', '14.01', None, False, 'carga-alta'),
+            ('running', '3.00', OSError(), False, 'sonda-fallida'),
+            ('running', '3.00', subprocess.TimeoutExpired('ssh', 6), False, 'plazo-agotado'),
+            ('desconocido', '3.00', None, False, 'grupo-ilegible'),
+        )
+        for estado_grupo, carga, error, sano, motivo in casos:
+            with self.subTest(motivo=motivo):
+                self.adaptador = seleccionar({'adaptador': 'jale', 'lanzador': str(self.lanzador),
+                    'host': 'boat', 'modos': ['contract'], 'boat_esperar_no_sano_s': 900,
+                    'desk_host': 'desk-de-prueba', 'desk_grupos': ['pesadas', 'contratos']}, None)
+                sonda = Mock(return_value=(f'Group "pesadas" (3 parallel): {estado_grupo}\n'
+                                           'Group "contratos" (1 parallel): running\n'
+                                           f'{carga} 1.00 1.00 1/2 3\n14\n'), side_effect=error)
+                with patch.object(self.adaptador, 'sonda_desk', sonda):
+                    self.assertEqual(self.suite(tren=motivo)[1].veredicto, 'verde')
+                invocacion = self.invocaciones()[-1]
+                registro = Path(invocacion['log']).parent
+                espera = 180 if sano else 900
+                self.assertEqual(invocacion['boat']['SEN_BOAT_ESPERAR'], str(espera))
+                entorno = json.loads((registro / 'entorno.json').read_text())
+                self.assertEqual(entorno['SEN_BOAT_ESPERAR'], str(espera))
+                salud = json.loads((registro / 'salud-desk.json').read_text())
+                self.assertEqual((salud['sano'], salud['motivo'], salud['espera_s']),
+                                 (sano, motivo, espera))
+                self.assertEqual(salud['carga_1m'], None if error else float(carga))
+                sonda.assert_called_once()
+                argv, = sonda.call_args.args
+                self.assertIn('desk-de-prueba', argv)
+                self.assertIn('BatchMode=yes', argv)
+                self.assertNotIn('--json', argv[-1])
+                self.assertLessEqual(sonda.call_args.kwargs['timeout'], 8)
+        self.assertEqual(len(self.invocaciones()), len(casos))
+
+    def test_boat_sondea_grupos_en_ejecucion_sin_tareas(self):
+        def pueue(argv, **opciones):
+            grupos = ('Group "pesadas" (3 parallel): running\n'
+                      'Group "jale" (7 parallel): running\n')
+            # `status` omite las dos cabeceras si los grupos están vacíos.
+            cabeceras = grupos if 'pueue group' in argv[-1] else ''
+            return cabeceras + '2.00 1.00 1.00 1/2 3\n14\n'
+
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',),
+                                   boat_esperar_no_sano_s=900, sonda_desk=pueue)
+        self.assertEqual(self.suite()[1].veredicto, 'verde')
+        invocacion, = self.invocaciones()
+        self.assertEqual(invocacion['boat']['SEN_BOAT_ESPERAR'], '180')
+        decision = Path(invocacion['log']).with_name('salud-desk.json')
+        self.assertEqual(json.loads(decision.read_text())['motivo'], 'desk-sano')
+
+    def test_boat_sondea_solo_con_la_regla_activa_y_en_boat(self):
+        for host, opciones in (('boat', {}), ('desktop', {'boat_esperar_no_sano_s': 900})):
+            with self.subTest(host=host):
+                sonda = Mock()
+                self.adaptador = self.Jale(self.lanzador, host=host, modos=('contract',),
+                                          sonda_desk=sonda, **opciones)
+                self.assertEqual(self.suite(tren=host)[1].veredicto, 'verde')
+                sonda.assert_not_called()
+                registro = Path(self.invocaciones()[-1]['log']).parent
+                entorno = json.loads((registro / 'entorno.json').read_text())
+                self.assertEqual(entorno.get('SEN_BOAT_ESPERAR'), '180' if host == 'boat' else None)
+                self.assertFalse((registro / 'salud-desk.json').exists())
+
+    def test_boat_recupera_el_entorno_de_un_prelanzamiento_sin_sondear(self):
+        sonda = Mock(side_effect=OSError())
+        opciones = dict(host='boat', modos=('contract',), prelanzar=True, sonda_desk=sonda)
+        self.adaptador = self.Jale(self.lanzador, boat_esperar_no_sano_s=900, **opciones)
+        tren = 'prelanzado'
+        registro = self.adaptador.estado / clave('suite', tren) / 'contract' / '0'
+        registro.mkdir(parents=True)
+        entorno = registro / 'entorno.json'
+        contenido = json.dumps({'SEN_BOAT_ESPERAR': '420', 'SEN_RUN_ID': 'clave-guardada',
+                                'SEN_RUN_OWNER': 'pao-tren', 'REMOTE_RUN_CLAVE': None})
+        entorno.write_text(contenido)
+
+        self.adaptador.prelanzar(CANDIDATO, tren)
+        self.assertEqual(self.suite(tren=tren)[1].veredicto, 'verde')
+        sonda.assert_not_called()
+        self.assertEqual(entorno.read_text(), contenido)
+        self.assertEqual(self.invocaciones()[0]['boat']['SEN_BOAT_ESPERAR'], '420')
+
+    def test_boat_cambio_a_desktop_tras_guardar_solo_el_entorno_recupera_la_clave(self):
+        from adaptadores.jale import guardar
+
+        def interrumpir(ruta, valor):
+            if ruta.name == 'solicitud.json':
+                raise InterruptedError
+            guardar(ruta, valor)
+
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',))
+        registro = self.adaptador.estado / clave('suite', 'lote') / 'contract' / '0'
+        with patch('adaptadores.jale.guardar', side_effect=interrumpir):
+            with self.assertRaises(InterruptedError):
+                self.suite()
+        entorno = registro / 'entorno.json'
+        self.assertIn('SEN_RUN_ID', json.loads(entorno.read_text()))
+        self.assertFalse((registro / 'solicitud.json').exists())
+
+        self.adaptador = self.Jale(self.lanzador, host='desktop', modos=('contract',))
+        self.assertEqual(self.suite()[1].veredicto, 'verde')
+        invocacion, = self.invocaciones()
+        self.assertEqual(invocacion['host'], 'desktop')
+        self.assertEqual(json.loads(entorno.read_text()), {})
+        self.assertRegex(invocacion['clave'], r'^pao-jale-[0-9a-f]{64}$')
+
+    def test_boat_75_pendiente_conserva_la_decision_entre_ticks(self):
+        sana = ('Group "pesadas" (3 parallel): running\n'
+                'Group "jale" (7 parallel): running\n'
+                '2.00 1.00 1.00 1/2 3\n14\n')
+        sonda = Mock(side_effect=[sana.replace('2.00', '15.00'), sana])
+        opciones = dict(host='boat', modos=('contract',), boat_esperar_no_sano_s=900,
+                        sonda_desk=sonda)
+        self.adaptador = self.Jale(self.lanzador, **opciones)
+        self.plan([{'pendiente': 'intento desconocido'}, {}])
+        raiz, incompleto = self.suite()
+        self.assertEqual(incompleto, Incompleto(75, raiz))
+
+        self.adaptador = self.Jale(self.lanzador, **opciones)
+        self.assertEqual(self.suite(intento=1, reanudar=incompleto.reanudar)[1].veredicto, 'verde')
+        sonda.assert_called_once()
+        primera, segunda = self.invocaciones()
+        self.assertEqual(primera['boat']['SEN_RUN_ID'], segunda['boat']['SEN_RUN_ID'])
+        self.assertEqual([i['boat']['SEN_BOAT_ESPERAR'] for i in (primera, segunda)],
+                         ['900', '900'])
+        decisiones = [json.loads(Path(i['log']).with_name('salud-desk.json').read_text())
+                      for i in (primera, segunda)]
+        self.assertEqual(decisiones[0], decisiones[1])
+        self.assertEqual(decisiones[0]['motivo'], 'carga-alta')
+
+    def test_boat_75_pendiente_sin_sonda_usa_la_espera_vigente(self):
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',),
+                                   boat_esperar_s=180)
+        self.plan([{'pendiente': 'intento desconocido'}, {}])
+        raiz, incompleto = self.suite()
+        self.assertEqual(incompleto, Incompleto(75, raiz))
+
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',),
+                                   boat_esperar_s=42)
+        self.assertEqual(self.suite(intento=1, reanudar=incompleto.reanudar)[1].veredicto, 'verde')
+        primera, segunda = self.invocaciones()
+        self.assertEqual(primera['boat']['SEN_RUN_ID'], segunda['boat']['SEN_RUN_ID'])
+        self.assertEqual([i['boat']['SEN_BOAT_ESPERAR'] for i in (primera, segunda)],
+                         ['180', '42'])
+
+    def test_boat_dos_modos_comparten_una_sonda_con_plazo_total(self):
+        ssh = self.raiz / 'ssh'
+        ssh.write_text('#!/bin/sh\nexec sleep 60\n')
+        ssh.chmod(0o700)
+        sonda = Mock(wraps=subprocess.check_output)
+        self.adaptador = self.Jale(self.lanzador, host='boat', boat_esperar_no_sano_s=900,
+                                   sonda_desk=sonda)
+        with patch.dict(os.environ, {'PATH': str(self.raiz) + os.pathsep + os.environ['PATH']}):
+            inicio = time.monotonic()
+            self.adaptador.suite(CANDIDATO, 'lote')
+            self.assertLessEqual(time.monotonic() - inicio, 8)
+            self.assertEqual(self.suite()[1].veredicto, 'verde')
+        sonda.assert_called_once()
+        self.assertCountEqual([i['modo'] for i in self.invocaciones()], ['contract', 'e2e'])
+        for i in self.invocaciones():
+            self.assertEqual(i['boat']['SEN_BOAT_ESPERAR'], '900')
+            decision = Path(i['log']).with_name('salud-desk.json')
+            self.assertEqual(json.loads(decision.read_text())['motivo'], 'plazo-agotado')
+
+    def test_boat_repeticiones_y_adelantos_comparten_la_sonda_del_tick(self):
+        self.adaptador = self.Jale(self.lanzador, modos=('contract',))
+        origen = self.origen()
+        self.plan([{}])
+        sonda = Mock(side_effect=OSError)
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',),
+                                   repeticiones_paralelas=3, boat_esperar_no_sano_s=900,
+                                   sonda_desk=sonda)
+        solicitud = Reproduccion('solicitud-B', FALLO, 'B')
+        self.adaptador.adelantar_repeticiones(CANDIDATO, origen, [(solicitud, B)], 'lote')
+        self.repetir(origen)
+        self.repetir(origen, objetivo='B')
+        sonda.assert_called_once()
+        self.assertEqual([i['boat']['SEN_BOAT_ESPERAR'] for i in self.invocaciones()[1:]],
+                         ['900'] * 4)
+
+        self.adaptador.operador = Mock(checkout=None)
+        self.adaptador.operador.entorno_lanzador.return_value = None
+        self.assertEqual(self.suite(tren='lote-nuevo')[1].veredicto, 'verde')
+        self.assertEqual(sonda.call_count, 2)
+
+    def test_boat_reenganche_conserva_la_espera_del_prelanzamiento(self):
+        sonda = Mock(side_effect=OSError())
+        opciones = dict(host='boat', modos=('contract',), prelanzar=True, sonda_desk=sonda)
+        self.adaptador = self.Jale(self.lanzador, boat_esperar_no_sano_s=900, **opciones)
+        self.plan([{'transportes': 3, 'codigo_transporte': 127}])
+        self.adaptador.prelanzar(CANDIDATO, 'lote')
+        _, rechazo = self.suite()
+        registro = Path(rechazo.evidencia).parent
+        entorno = registro / 'entorno.json'
+        contenido = entorno.read_bytes()
+        self.adaptador = self.Jale(self.lanzador, boat_esperar_no_sano_s=600, **opciones)
+        self.assertEqual(self.suite(reenganche=(1, rechazo.evidencia))[1].veredicto, 'verde')
+        sonda.assert_called_once()
+        self.assertEqual(entorno.read_bytes(), contenido)
+        self.assertEqual([i['boat']['SEN_BOAT_ESPERAR'] for i in self.invocaciones()], ['900'] * 4)
 
     def test_boat_75_tras_corte_de_red_respeta_el_cambio_de_host_y_la_cache(self):
         self.plan({'contract': [{'pendiente': 'resultado o transporte no acreditado'}, {}] * 2})
