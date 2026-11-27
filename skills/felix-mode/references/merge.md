@@ -31,8 +31,10 @@ En sombra no edites `heads_autorizados`.
    recibo limpio de la dirigida y CI verde. La base del PR es `main`.
    En alto riesgo exige también **Verificado**. La suite completa la corre
    el tren sobre C, el commit candidato del lote, sólo en modo activo.
-2. En modo activo, un PR de CI, gobierno, lockfiles o alto riesgo queda en
-   merge-ready hasta que su head esté en `heads_autorizados`. En Jale no le
+2. En modo activo, un PR de alto riesgo, o uno que toca un patrón de
+   `sensibles` del repo en la configuración del tren (en Jale: CI,
+   despliegue, gobierno y lockfiles), queda en merge-ready hasta que su head
+   esté en `heads_autorizados`. En Jale no le
    pidas el OK a Felix: lo autorizó el 2026-11-27 por evidencia. El APTO de
    la entrega debe ser un archivo local con ruta absoluta, no una URL de
    comentario, y traer `verificado` y una lista `revisores`. Esa lista lleva
@@ -48,11 +50,11 @@ En sombra no edites `heads_autorizados`.
    no trae los dos veredictos sobre el SHA que vas a entregar, pide el que
    falte sobre ese SHA, como fija el **Par de Jale** de `SKILL.md`. Pasa así
    si la última ronda tuvo un solo revisor, o si el head cambió después,
-   también por una sincronización con `APTO vigente`. Decide la categoría
-   por el diff (CI, gobierno, lockfiles o alto riesgo), no por el motivo con
-   que el tren retiene el head. Un NO APTO del par sigue **Rondas** como
-   cualquier otro: corriges y repites. La vía manual de abajo sirve sólo si
-   no puedes conseguir a uno de los dos revisores.
+   también por una sincronización con `APTO vigente`. Decide si el PR es
+   uno de esos por su diff, contra esos patrones y la clasificación de
+   riesgo, no por el motivo con que el tren retiene el head. Un NO APTO del
+   par sigue **Rondas** como cualquier otro, también su pausa. La vía manual
+   de abajo sirve sólo si no puedes conseguir a uno de los dos revisores.
    `local.tren.ventanas-auto` añade el head a `heads_autorizados` en unos
    2 min y deja la procedencia en su `state.json`. El tren sigue exigiendo
    CI verde y, con migración, el journal sincronizado con `main`. No edites

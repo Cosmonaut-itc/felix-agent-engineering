@@ -90,8 +90,9 @@ Un pedido de consultar estado o atender comentarios mantiene ese alcance.
 El [procedimiento de merge](../skills/felix-mode/references/merge.md) fija
 los gates, la renovación del APTO, el destino y la verificación posterior.
 También fija los PRs que paran en merge-ready y te esperan, como los que
-tocan CI, dependencias o la gobernanza de agentes. En Jale no te esperan:
-los autoriza el APTO de Sol y de Opus sobre su head.
+tocan CI, dependencias o la gobernanza de agentes. En Jale no te esperan
+los que el tren retiene hasta autorizar su head: los autoriza el APTO de Sol
+y de Opus, como fija el paso 2 de la entrega al tren.
 
 ## Revisión
 

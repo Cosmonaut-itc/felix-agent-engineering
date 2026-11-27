@@ -341,8 +341,9 @@ que demuestra:
   antes de entregar, el veredicto que falte de gpt-6.2-sol en `high` o de
   opus-5.5 en `high` sobre el SHA que entregas. Un revisor que no revisó el
   cambio hace una ronda completa sobre el diff completo, con el brief
-  original. Uno que revisó un head anterior hace una ronda delta desde ese
-  head. Es la única excepción al revisor único de **Normal** y de **Ronda
+  original. Uno que revisó un head anterior hace la ronda que fija **Ronda
+  delta**: una delta desde ese head, o una completa cuando esa regla la
+  exige. Es la única excepción al revisor único de **Normal** y de **Ronda
   delta**, y la única ronda que corre aunque `apto-vigente` imprima `APTO
   vigente`. Un NO APTO de cualquiera de los dos sigue **Rondas**.
 - **Hallazgos.** El brief de todo revisor pide critical y warning. En nivel
