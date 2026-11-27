@@ -559,7 +559,7 @@ def aterrizaje(estado, tren, observacion):
 
 
 def rearmar(estado, tren, temprano=False, rojo_ci=False):
-    """C ya no aterriza sobre main: cierra el tren y devuelve sus miembros a la fila.
+    """Cierra el tren y devuelve sus miembros a la fila.
 
     Las fechas FIFO no cambian; el reductor congela el lote siguiente sobre main.
     """
@@ -1085,8 +1085,8 @@ def paso(estado, observacion):
             # C puede ser idéntico al del tren anterior. Pedir evidencia de esta ref.
             solicitud = int(any(e.rearme_ci for e in miembros))
             fase = EsperandoCI(fase.candidato, observacion.ahora, solicitud)
-            partes = ("ci", tren.id, solicitud) if solicitud else ("ci", tren.id)
-            efectos.append(Efecto(clave(*partes), "solicitar-ci", (tren.id,)))
+            clave_ci = clave("ci", tren.id, solicitud) if solicitud else clave("ci", tren.id)
+            efectos.append(Efecto(clave_ci, "solicitar-ci", (tren.id,)))
         elif (isinstance(fase, EsperandoCI) and observacion.ci_candidato == "verde" and
               (not fase.solicitud or (observacion.tren_id == tren.id and
                                      observacion.ci_recibo == recibo_ci(tren)))):
