@@ -247,8 +247,39 @@ class HuecosTests(unittest.TestCase):
         self.assertEqual(self.estado().pausa.hasta, 2061)
         self.assertEqual(self.ejecutar_cli("pausa", 2061, "--levantar", "--motivo", "tarde"),
                          (2, {"error": "pausa-no-vigente"}))
+        self.assertEqual(self.orden("estado", 2061, "--juicio")["juicio"]["admitidas"], [])
         with self.ledger() as ledger:
             self.assertEqual(ledger.db.execute(consulta).fetchone()[0], antes)
+
+    def test_merge_por_fuera_durante_el_hueco_rearma_sin_pausa(self):
+        self.hasta_fase(Certificado)
+        self.orden("hueco", 2000, "--motivo", "Merge por fuera")
+        self.contexto.tick(2001)
+        ajeno = self.commit({"comun": "base\n", "externo": "cambio\n"}, (self.B,))
+        self.push(ajeno, "refs/heads/main")
+        self.contexto.tick(2002)
+        self.orden("hueco", 2003, "--cerrar", "--motivo", "merge hecho")
+        for instante in (2004, 2005, 2006):
+            self.contexto.tick(instante)
+        estado = self.estado()
+        self.assertIsNone(estado.pausa)
+        self.assertEqual(estado.trenes[0].fase, Terminal("REARMAR"))
+        self.assertEqual(self.remoto(), ajeno)
+        self.assertEqual(self.pushes_main(), [])
+
+    def test_merge_por_fuera_y_cierre_antes_del_tick_rearman_sin_pausa(self):
+        self.hasta_fase(Certificado)
+        self.orden("hueco", 2000, "--motivo", "Merge por fuera")
+        self.contexto.tick(2001)
+        ajeno = self.commit({"comun": "base\n", "externo": "cambio\n"}, (self.B,))
+        self.push(ajeno, "refs/heads/main")
+        self.orden("hueco", 2002, "--cerrar", "--motivo", "merge hecho")
+        for instante in (2003, 2004, 2005):
+            self.contexto.tick(instante)
+        estado = self.estado()
+        self.assertIsNone(estado.pausa)
+        self.assertEqual(estado.trenes[0].fase, Terminal("REARMAR"))
+        self.assertEqual(self.remoto(), ajeno)
 
     def pushes_main(self):
         return [p for p in self.lineas("pushes.log") if p.endswith(":refs/heads/main")]

@@ -234,7 +234,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                            "eventos": ledger.ultimos_eventos(args.repo)}
                 if args.juicio:
                     from juicios import expediente
-                    resultado["juicio"] = expediente(ledger, args.repo)
+                    resultado["juicio"] = expediente(ledger, args.repo, ahora)
                 return 0, resultado
         # El tick en seco no espera: durante la suite la admisión se lee con `estado`.
         candado = ledger.candado(args.repo, 0) if args.seco else ledger.candado(args.repo)

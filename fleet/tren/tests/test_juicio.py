@@ -274,7 +274,7 @@ class JuicioTests(unittest.TestCase):
         for n in range(3):
             self.contexto.tick(300 + n)
         self.assertEqual(self.lineas("pushes.log"), [])
-        expediente = self.cli("estado", "--juicio")[1]["juicio"]
+        expediente = self.cli("estado", "--juicio", ahora=303)[1]["juicio"]
         self.assertEqual([a["decision"] for a in expediente["admitidas"]], ["levantar"])
         self.assertEqual(self.cli("pausa", "--levantar", "--motivo", "terminado", ahora=450)[0], 0)
         self.contexto.tick(500)

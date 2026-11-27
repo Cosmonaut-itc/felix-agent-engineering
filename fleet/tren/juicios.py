@@ -256,7 +256,7 @@ def resolver(estado, observacion):
     return estado, (resultado,) + efectos
 
 
-def expediente(ledger, repo):
+def expediente(ledger, repo, ahora=0):
     """Proyección local del expediente; nunca lee recibos ni consulta GitHub."""
     from dominio import Decision
     estado = ledger.estado(repo, operativo=True)
@@ -268,7 +268,7 @@ def expediente(ledger, repo):
         prs = [e.pr for e in miembros] if accion == "expulsar" else [None]
         for pr in prs:
             decision = Decision("expediente", repo, tren.id if tren else None,
-                                accion, pr, "<motivo>", 0, pausa_id, estado.pausa)
+                                accion, pr, "<motivo>", ahora, pausa_id, estado.pausa)
             if error_decision(estado, decision, pausa_id):
                 continue
             argv = ["pao-tren", "pausa" if accion == "levantar" else "juicio", "--repo", repo]

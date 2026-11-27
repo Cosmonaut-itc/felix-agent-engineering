@@ -548,6 +548,10 @@ def aterrizaje(estado, tren, observacion):
     if isinstance(fase, Certificado):
         if not fase.B:
             return replace(estado, pausa=Pausa("certificado-sin-base")), ()
+        # Sin push todavía: un main que avanzó (p. ej. un merge por fuera en un
+        # hueco) sólo rearma el lote, como base_vieja antes de la suite.
+        if observacion.base and observacion.base != fase.B:
+            return rearmar(estado, tren, temprano=True), ()
         if estado.promocion_retenida(observacion.ahora):
             return estado, ()
         fase = Promoviendo(fase)
