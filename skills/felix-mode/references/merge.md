@@ -44,10 +44,11 @@ En sombra no edites `heads_autorizados`.
                  {"modelo":"opus-5.5","esfuerzo":"high","veredicto":"APTO","head":"<SHA40>"}]}
    ```
 
-   Los dos veredictos son sobre el head que entregas. La ronda que da ese
-   APTO, también una delta o una de nivel normal, sigue el **Par de Jale**
-   de la sección Revisión de `SKILL.md`. Sin el par, sigue la vía manual de
-   abajo.
+   Los dos veredictos son sobre el head que entregas, también cuando ese
+   head sólo incorporó `main`. La ronda que da ese APTO, también una delta,
+   una de sincronización o una de nivel normal, sigue el **Par de Jale** de
+   la sección Revisión de `SKILL.md`. Si el par no da APTO sobre ese head,
+   sigue la vía manual de abajo.
    `local.tren.ventanas-auto` añade el head a `heads_autorizados` en unos
    2 min y deja la procedencia en su `state.json`. El tren sigue exigiendo
    CI verde y, con migración, el journal sincronizado con `main`. No edites
