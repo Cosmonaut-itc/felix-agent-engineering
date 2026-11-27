@@ -261,8 +261,8 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.reloj = count(100)
         original = self.contexto.observador.ci
         heads = {head for _, head in self.miembros}
-        self.contexto.observador.ci = lambda repo, commit, rama=None: (
-            original(repo, commit, rama) if commit in heads else
+        self.contexto.observador.ci = lambda repo, commit, rama=None, **kwargs: (
+            original(repo, commit, rama, **kwargs) if commit in heads else
             ResultadoCI(self.ci, ('check',) if self.ci == 'rojo' else ()))
 
     def configurar(self, prelanzar):
@@ -355,9 +355,9 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.configurar(True)
         self.ci = 'rojo'
         anterior = self.contexto.observador.ci
-        self.contexto.observador.ci = lambda repo, commit, rama=None: (
+        self.contexto.observador.ci = lambda repo, commit, rama=None, **kwargs: (
             ResultadoCI('pendiente', ()) if rama == 'tren/' + tren.id + '-ci-1'
-            else anterior(repo, commit, rama))
+            else anterior(repo, commit, rama, **kwargs))
         self.cli('juicio', '--tren', tren.id, '--decision', 'reanudar', '--motivo', 'prueba')
         self.tick()
         [vivo] = [t for t in self.estado().trenes if t.id == tren.id]
@@ -705,13 +705,13 @@ class TickActivoTests(Productor, unittest.TestCase):
             nonlocal segundos
             segundos += duracion
 
-        def ci(repo, commit, rama=None):
+        def ci(repo, commit, rama=None, **kwargs):
             if commit == tren.fase.candidato.C and rama is None:
                 if segundos == 80:
                     dormir(11)  # El cuarto sondeo devuelve rojo a los 91 s.
                 if segundos >= 91:
                     return ResultadoCI('rojo', ('check',))
-            return ci_original(repo, commit, rama)
+            return ci_original(repo, commit, rama, **kwargs)
 
         reloj = SimpleNamespace(monotonic=lambda: segundos, sleep=dormir,
                                 time=lambda: next(self.reloj))

@@ -362,6 +362,25 @@ class RearmeCITests(unittest.TestCase):
         self.assertEqual(juntos.entradas[0].admision, Rechazado(Motivo.CERRADO))
         self.assertEqual(juntos.trenes[-1].recibos, (entrega(2).recibo, entrega(3).recibo))
 
+    def test_rechazo_libera_el_individual_que_rearma_en_el_mismo_tick(self):
+        lote, obs = self.rearme()
+        espera, _ = self.armar(lote, obs)
+        partido, _ = self.ci(espera, obs)
+        individual, _ = paso(partido, obs)
+        cierre = replace(obs, ahora=101, prs=(vista(1), vista(2, abierto=False), vista(3)))
+        viajando, _ = paso(individual, cierre)
+        self.assertEqual(viajando.trenes[-1].recibos, (entrega(1).recibo,))
+        self.assertIsNotNone(viajando.entradas[0].tren)
+        base_nueva = replace(cierre, base="f" * 40)
+        fila, _ = paso(individual, base_nueva)
+        self.assertEqual(fila.trenes[-1].fase, Terminal("REARMAR"))
+        for pos in (0, 2):
+            self.assertFalse(fila.entradas[pos].partida)
+            self.assertIsNone(fila.entradas[pos].particion)
+            self.assertEqual(fila.entradas[pos].admitida, 100)
+        siguiente, _ = paso(fila, replace(base_nueva, ahora=102))
+        self.assertEqual(siguiente.trenes[-1].recibos, (entrega(1).recibo, entrega(3).recibo))
+
     def test_devuelto_individual_libera_su_particion_y_reagrupa_hasta_el_limite(self):
         lote, obs = self.rearme(LIMITE_LOTE)
         espera, _ = self.armar(lote, obs)

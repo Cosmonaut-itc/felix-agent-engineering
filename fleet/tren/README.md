@@ -951,8 +951,9 @@ vigentes.
 | Commit status | `success` | `verde` |
 | Commit status | `failure` | `rojo` |
 | Commit status, solicitud 0 | `error`, `pending`, estado desconocido | `pendiente` |
-| Commit status, solicitud positiva | `failure`, `error` | `rojo` |
-| Commit status, solicitud positiva | `success`, `pending`, estado desconocido | Sin efecto |
+| Commit status posterior a una solicitud positiva | `failure`, `error` | `rojo` |
+| Commit status posterior a una solicitud positiva | `pending` | `pendiente` |
+| Commit status posterior a una solicitud positiva | `success`, estado desconocido | Sin efecto por sí solo |
 
 En modo activo, `success` acredita aprobación; `skipped` y `neutral` son
 conclusiones aceptadas por GitHub, incluso si el check figura en
@@ -998,7 +999,7 @@ La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
   siguiente lote se arma sobre el main vigente. Si incluye alguna entrega
   marcada, comienza con la solicitud 1 en su propia ref `tren/<id>-ci-1`.
   Aunque el SHA de C coincida, sólo cuentan los checks de esa ref, y un
-  commit status negativo puede vetar C. Las suites prelanzadas del tren
+  commit status reciente puede bloquear C. Las suites prelanzadas del tren
   cerrado quedan sin consumir.
 - **Rojo de un lote con alguna entrega ya marcada:** cierra el tren
   `PARTIDO`, sin atribuir el fallo ni publicar feedback rojo. Devuelve sus
@@ -1023,8 +1024,9 @@ La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
   tampoco descuenta tiempo. Un recibo durable de suite sí permite recuperar
   su lanzamiento con el CI verde guardado y salir de `EsperandoCI`, aunque
   la lectura fresca haya vuelto a pendiente. Una suite en curso iniciada con
-  el verde vigente mantiene suspendido ese plazo. Si recuperar su recibo
-  falla, se vuelve a evaluar el vencimiento.
+  el verde vigente mantiene suspendido ese plazo. El buzón reintenta una
+  recuperación fallida en el siguiente tick. Si la fila sigue fallida tras
+  reintentarla, se vuelve a evaluar el vencimiento.
 
 `reanudar` conserva el tren y C, reinicia `desde` al consumir el juicio y
 emite `solicitar-ci` con contador/clave nuevos. Publica una ref
@@ -1042,11 +1044,12 @@ publicada exactos **antes** de elegir el mayor id por nombre. Un check de la
 ref anterior, aunque termine después de reanudar, no sirve. Sin checks de
 la solicitud vigente ni evidencia negativa, la lectura es pendiente y
 corre el plazo nuevo, incluso con `checks_esperados: []`. Los commit statuses
-no informan la ref solicitante. El último `failure` o `error` de cada
-contexto veta C y los demás estados se ignoran en solicitudes positivas.
-Habilitar la suite exige checks ligados a la solicitud. El recibo incluye
-la ref también en el buzón de
-recuperación; un recibo anterior no autoriza una suite de la nueva solicitud.
+no informan la ref solicitante. En solicitudes positivas se toma el último
+status por contexto con `created_at` posterior al inicio de la solicitud.
+Un `failure` o `error` veta C y un `pending` impide el verde. Habilitar la
+suite exige checks ligados a la solicitud. El recibo incluye la ref también
+en el buzón de recuperación. Un rojo fresco de una solicitud positiva
+prevalece sobre el verde guardado con la suite.
 `abortar` conserva el comportamiento U15: cierra `ABORTADO`, libera
 la custodia sin rojo y permite readmisión desde el tick siguiente.
 
@@ -1065,8 +1068,9 @@ La marca `partida` resiste cada readmisión y conserva la primera
 `admitida`. Formar un tren individual, abortarlo o rearmarlo conserva el
 aislamiento. Cuando una entrega de la partición aterriza, se devuelve por
 CI, suite atribuida o expulsión, o se rechaza por caducidad u otra causa,
-las demás entradas en fila de esa partición recuperan el régimen habitual
-de lotes con su admisión FIFO y su marca de rearme intactas. Sensibles, alto
+las demás entradas no terminales de esa partición recuperan el régimen habitual
+de lotes con su admisión FIFO y su marca de rearme intactas. Un tren activo
+conserva sus miembros hasta cerrar o devolverlos a la fila. Sensibles, alto
 riesgo y ventanas siguen su propia política de viaje individual.
 
 El reductor ignora un rojo sin nombres válidos y lo trata como pendiente;
