@@ -77,8 +77,9 @@ class Entrada:
     particion: Optional[str] = None
     rearme_ci: Optional[str] = None
     ci_ref_nueva: bool = False
-    # Sólo el PR en conflicto queda fuera de los lotes sobre esta base.
+    # Sin prefijo espera otra base. Con prefijo evita repetir la combinación.
     aplazada_en_base: str = ""
+    prefijo_en_conflicto: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -844,8 +845,7 @@ def aplazar_conflicto(estado, tren, conflicto, efectos):
                   if por_recibo[r].entrega.pr == conflicto.pr), None)
     if corte is None:
         return replace(estado, pausa=Pausa("candidato-no-corresponde")), tuple(efectos)
-    anteriores, aplazados = tren.recibos[:corte], tren.recibos[corte:]
-    recibo = aplazados[0]
+    anteriores, recibo = tren.recibos[:corte], tren.recibos[corte]
     entrada = por_recibo[recibo]
     base = tren.fase.B
     payload = json.dumps({"lote": tren.id, "pr": conflicto.pr, "archivos": conflicto.archivos,
@@ -860,12 +860,13 @@ def aplazar_conflicto(estado, tren, conflicto, efectos):
     estado = cambiar_fase(estado, tren, Terminal("REARMAR"))
     estado = replace(estado, entradas=tuple(
         replace(e, tren=nuevo.id) if e.entrega.recibo in sobrevivientes else
-        replace(e, tren=None, rearmada=True,
-                aplazada_en_base=base if e.entrega.recibo == recibo else e.aplazada_en_base)
-        if e.entrega.recibo in aplazados else e for e in estado.entradas))
+        replace(e, tren=None, rearmada=True, aplazada_en_base=base, prefijo_en_conflicto=anteriores)
+        if e.entrega.recibo == recibo else
+        replace(e, tren=None, rearmada=True)
+        if e.entrega.recibo in tren.recibos else e for e in estado.entradas))
     if sobrevivientes:
         estado = programar_armado(estado, nuevo, efectos)
-    return liberar_particiones(estado, (por_recibo[r] for r in aplazados)), tuple(efectos)
+    return estado, tuple(efectos)
 
 
 def archivos_acreditados(fase, observacion):
@@ -1026,14 +1027,22 @@ def orden_fifo(entrada):
     return entrada.admitida, entrada.recibida, entrada.entrega.recibo
 
 
-def siguiente_lote(fila):
+def siguiente_lote(fila, *, base=None):
     lote = []
+    recibos = set()
+    incompatibles = set()
     for entrada in fila[:LIMITE_LOTE]:
+        recibo = entrada.entrega.recibo
+        prefijo = entrada.prefijo_en_conflicto if entrada.aplazada_en_base == base else ()
+        if recibo in incompatibles or not recibos.isdisjoint(prefijo):
+            break
         if entrada.solo:
             if not lote:
                 lote.append(entrada)
             break
         lote.append(entrada)
+        recibos.add(recibo)
+        incompatibles.update(prefijo)
     return tuple(lote)
 
 
@@ -1225,9 +1234,11 @@ def paso(estado, observacion):
         estado = replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
                                              else t for t in estado.trenes))
         return estado, tuple(efectos)
-    fila = sorted((e for e in entradas if isinstance(e.admision, Admitido)
-                   and e.tren is None and e.aplazada_en_base != observacion.base), key=orden_fifo)
-    lote = siguiente_lote(fila)
+    # Sin tren activo, el aplazado con prefijo recupera su lugar FIFO.
+    fila = sorted((e for e in entradas if isinstance(e.admision, Admitido) and e.tren is None
+                   and (e.aplazada_en_base != observacion.base or e.prefijo_en_conflicto)),
+                  key=orden_fifo)
+    lote = siguiente_lote(fila, base=observacion.base)
     if not lote or not observacion.base:
         return estado, tuple(efectos)
     recibos = tuple(e.entrega.recibo for e in lote)
@@ -1261,7 +1272,7 @@ def datos(valor):
                        # Conservar payloads históricos de sombra/custodia.
                        if not (isinstance(valor, Entrada) and f.name in (
                                    "partida", "rearmada", "particion", "rearme_ci",
-                                   "ci_ref_nueva", "aplazada_en_base")
+                                   "ci_ref_nueva", "aplazada_en_base", "prefijo_en_conflicto")
                                and not getattr(valor, f.name))
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
                                 and valor.ventana is None)
