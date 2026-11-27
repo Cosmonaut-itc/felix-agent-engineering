@@ -72,14 +72,22 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
   inmediato. Si `pedir` no consigue un arriendo, sale con 75.
 - `pedir --repo R --corrida ID --clase preparar --vm NOMBRE` reserva toda
   la VM para el repositorio dueño aunque el registro indique `apta: false`.
-  Mientras el turno espera, la VM deja de otorgar lugares. Una vez que los
-  arriendos vigentes terminan, `preparar` tiene prioridad sobre `tren`,
-  `suite` y `otra`.
+  Cuando la reserva del tren lo permite, un turno `preparar` impide que la VM
+  siga otorgando lugares y tiene prioridad sobre `tren`, `suite` y `otra`
+  una vez que terminan los arriendos vigentes.
 - `latido ARRIENDO [--ttl S]` renueva el arriendo desde el momento actual.
   El lanzador lo llama cada `ttl/3`. Si sale 69, el lanzador termina la
   corrida e informa la pérdida del arriendo.
 - `soltar ARRIENDO` libera el lugar y se puede repetir.
-- `estado [--json]` muestra VMs, arriendos, lugares y puertas de arranque.
+- `reservar --repo R --lote ID --clases C1,C2 --ttl S` anuncia un lote del tren
+  al formarlo, antes del CI. Repetirlo con el mismo repo y lote reemplaza
+  las clases y renueva el vencimiento. El TTL admite de 300 a 3600 s.
+  Mientras viva la reserva, un turno ajeno al tren entra sólo si deja lugar
+  para las clases pendientes. Los arriendos vivos del tren cubren sus clases.
+  Si la reserva impide la concesión hasta vencer la espera, `pedir` devuelve `sin_lugar`.
+- `liberar-reserva --repo R --lote ID` quita la reserva al terminar el lote.
+  Se puede repetir. Si el tren omite la liberación, la reserva vence sola.
+- `estado [--json]` muestra VMs, arriendos, lugares, puertas de arranque y reservas vivas.
 - `encender NOMBRE|--todas` y `apagar NOMBRE|--todas` actúan sobre VMs
   declaradas y registradas. `encender` espera hasta 420 s a que Boat confirme
   la reanudación. Una VM con arriendos vivos se protege del apagado.
