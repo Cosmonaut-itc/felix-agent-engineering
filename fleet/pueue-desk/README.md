@@ -461,9 +461,13 @@ Si la tabla incorpora un grupo, sigue este orden:
 1. Lee la autoridad en sólo lectura y confirma `overrides == {}`,
    `mode_override == null` y cero recibos `applying`, `partial` o `unknown`.
    La migración retira los ajustes vigentes y cualquier adelanto de modo.
-2. Crea `slots.disabled` en el estado del desk. Así nadie pide un ± con la foto
-   anterior mientras rack y controlador difieren. Un rechazo de ese vector
-   dejaría un recibo `unknown` que bloquea los ajustes del desk.
+2. En la Mini, crea `~/.local/state/pao/rack/actions.disabled`, el interruptor
+   del rack (véase «Cerrar a mano un recibo sin confirmación» en
+   `fleet/rack/README.md`). El rack lo comprueba antes de enviar cualquier
+   acción al host. Sin él, un ± hecho con la foto anterior manda el vector viejo,
+   el controlador nuevo lo rechaza antes de mirar `slots.disabled` y el diario
+   del rack queda con un recibo `unknown` que bloquea los ajustes del desk hasta
+   cerrarlo a mano.
 3. Crea el grupo vacío con la cuota del horario vigente justo antes del ensayo.
    El preflight valida las cuotas de todos los grupos de la tabla nueva. Si
    `pueued` se reinicia antes de instalar, el grupo queda fuera del reparto y
@@ -472,7 +476,7 @@ Si la tabla incorpora un grupo, sigue este orden:
 5. Actualiza enseguida el rack, como el paso 3 de «Instalar U3.2 en un desk que ya tiene servicio y timers». Mientras el controlador y el
    rack tienen tablas distintas, el panel descarta la foto del desk y no lo
    muestra; vuelve sola cuando ambos coinciden.
-6. Cuando el panel muestre los grupos nuevos, retira `slots.disabled`.
+6. Cuando el panel muestre los grupos nuevos, retira `actions.disabled` en la Mini.
 
 Para `caja`, habilita su lanzador después de migrar el controlador y actualizar el rack.
 
