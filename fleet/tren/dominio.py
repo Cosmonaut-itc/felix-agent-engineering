@@ -744,6 +744,8 @@ def pausar_lanzador(estado, resultado):
         pausa = Pausa("infraestructura", detalle="salida-sin-recibo", archivos=archivos)
     elif resultado.detalle == "corrida-interrumpida":
         pausa = Pausa("infraestructura", detalle="corrida-interrumpida", archivos=archivos)
+    elif resultado.detalle == "recibo-malformado":
+        pausa = Pausa("infraestructura", detalle="recibo-malformado", archivos=archivos)
     elif resultado.detalle == "cobertura-parcial-boat":
         pausa = Pausa("infraestructura", detalle="cobertura-parcial-boat", archivos=archivos)
     else:

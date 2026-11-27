@@ -410,15 +410,16 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
 
     def test_recibo_invalido_del_primer_intento_conserva_el_recibo_del_segundo(self):
         (self.raiz / 'primero-malformado').touch()
-        with self.assertRaises(ResultadoInvalido) as error:
-            self.repetir()
-        self.assertEqual(error.exception.resultado.codigo, 'recibo-malformado')
-        _, segundo = self.registros(self.pedidos[0])
+        self.adelantar(self.pedidos[:1])
+        resultado = self.repetir()
+        primero, segundo = self.registros(self.pedidos[0])
+        self.assertEqual(resultado, RechazoLanzador(str(primero / 'corrida.log'), 'recibo-malformado'))
         self.assertTrue((segundo.parent / 'completo.json').exists())
         serie = self.jale(1, 'serie')
-        with self.assertRaises(ResultadoInvalido):
-            self.repetir(adaptador=serie)
+        resultado = self.repetir(adaptador=serie)
         raiz = serie.estado / clave('repetir', TREN, self.pedidos[0][0].id)
+        self.assertEqual(resultado, RechazoLanzador(str(raiz / '1' / '0' / 'corrida.log'),
+                                                    'recibo-malformado'))
         self.assertFalse((raiz / '2').exists())
 
     def test_adelantada_con_75_pide_la_primera_reanudacion(self):

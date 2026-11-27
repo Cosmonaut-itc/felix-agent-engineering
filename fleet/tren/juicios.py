@@ -23,6 +23,8 @@ POLITICA = {
         {"reanudar": "lanzador-nuevo", "abortar": "abortar"},
     ("infraestructura", "corrida-interrumpida"):
         {"reanudar": "lanzador-nuevo", "abortar": "abortar"},
+    ("infraestructura", "recibo-malformado"):
+        {"reanudar": "lanzador-nuevo", "abortar": "abortar"},
     ("infraestructura", "cobertura-parcial-boat"):
         {"reanudar": "lanzador-nuevo", "abortar": "abortar"},
     ("infraestructura", "salida-sin-recibo"):

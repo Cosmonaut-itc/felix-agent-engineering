@@ -1,6 +1,5 @@
 """Recibos jale-recibo@1; sin juicio contra base ni normalización de firmas."""
 import base64
-import binascii
 import fcntl
 import hashlib
 from itertools import chain, combinations, islice
@@ -97,7 +96,7 @@ def identidad_boat_pendiente(registro):
     if log.exists():
         lineas = log.read_text(encoding='utf-8', errors='replace').splitlines()
         if (any(linea.startswith('HOST=desktop fallback=') for linea in lineas) and
-                not any(linea.startswith(('RECIBO ', 'RESULT ')) for linea in lineas)):
+                not any(linea.startswith(('RECIBO', 'RESULT ')) for linea in lineas)):
             return identidad
     return None
 
@@ -122,7 +121,7 @@ def leer_recibo(log, codigo, commit, modo, filtros, *, host):
     except OSError:
         lineas = []
     except UnicodeError:
-        raise ResultadoInvalido('recibo-malformado') from None
+        return RechazoLanzador(str(log), 'recibo-malformado')
     if any(re.fullmatch(r'PARTIAL: boat omitted=0*[1-9][0-9]*', linea) for linea in lineas):
         return RechazoLanzador(str(log), 'cobertura-parcial-boat')
     recibos = [linea for linea in lineas if linea.startswith('RECIBO')]
@@ -136,12 +135,13 @@ def leer_recibo(log, codigo, commit, modo, filtros, *, host):
     exigir(len(recibos) == 1, 'salida-sin-recibo')
     exigir(0 <= codigo <= 255, 'salida-no-utilizable')
     match = re.fullmatch(r'RECIBO jale-recibo@1 ([A-Za-z0-9+/]+={0,2})', recibos[0])
-    exigir(match is not None, 'recibo-malformado')
+    if match is None:
+        return RechazoLanzador(str(log), 'recibo-malformado')
     try:
         r = json.loads(base64.b64decode(match[1], validate=True).decode('utf-8'),
                        object_pairs_hook=objeto)
-    except (ValueError, UnicodeError, binascii.Error):
-        raise ResultadoInvalido('recibo-malformado') from None
+    except ValueError:
+        return RechazoLanzador(str(log), 'recibo-malformado')
     exigir(isinstance(r, dict) and r.get('esquema') == 'jale-recibo@1', 'esquema-desconocido')
     exigir(sha(commit) and r.get('sha') == commit, 'sha-no-corresponde')
     exigir(r.get('modo') == modo, 'modo-no-corresponde')
@@ -630,9 +630,9 @@ class Jale:
                               for _, registro, proceso in lanzadas):
             return None
         if rechazos:
-            # Prioriza el envío incierto: con reanudar conserva su identidad.
-            return str(raiz), next((r for r in rechazos if r.detalle == 'salida-sin-recibo'),
-                                  rechazos[0])
+            # Conserva la prioridad del envío incierto y de los demás rechazos.
+            prioridad = {'salida-sin-recibo': 0, 'recibo-malformado': 2}
+            return str(raiz), min(rechazos, key=lambda r: prioridad.get(r.detalle, 1))
         if any(r is False for r in recibos):
             return None
         if any(r is None or r['codigo'] == 75 for r in recibos):

@@ -14,9 +14,9 @@ from unittest.mock import patch
 from test_tren import Aislado, cli, estado, observacion, REPO
 from test_hasito import B, C, CANDIDATO
 from adaptadores.hasito import Hasito, ResultadoInvalido
-from dominio import (Certificado, Completo, Decision, Efecto, EsperandoCI, Evidencia,
+from dominio import (Admitido, Certificado, Completo, Decision, Efecto, EsperandoCI, Evidencia,
                      Fallo, Incompleto, Intento, Pausa, RechazoLanzador, Repeticion,
-                     Reproduccion, Tren, clave, datos, desde_datos, intento_suite, paso)
+                     Reproduccion, Terminal, Tren, clave, datos, desde_datos, intento_suite, paso)
 from efectos import EfectoFallido, ejecutar
 from atribucion import planificar
 from git_ops import ErrorGit, Publicado, RamaOcupada
@@ -381,7 +381,106 @@ class JaleTests(Aislado):
         self.assertEqual(resultado, RechazoLanzador(evidencia, 'salida-sin-recibo'))
 
     def test_base64_malformado(self):
-        self.invalido({'malformado': True}, 'recibo-malformado')
+        self.plan({'contract': [{'malformado': True}]})
+        _, resultado = self.suite()
+        contract = next(i for i in self.invocaciones() if i['modo'] == 'contract')
+        self.assertEqual(resultado, RechazoLanzador(contract['log'], 'recibo-malformado'))
+        self.assertCountEqual([a[2] for a in self.lanzamientos()], ['contract', 'e2e'])
+
+    def test_leer_recibo_malformado_conserva_el_log(self):
+        from adaptadores.jale import leer_recibo
+
+        log = self.raiz / 'corrida.log'
+        prefijo = b'RECIBO jale-recibo@1 '
+        casos = {
+            'formato': b'RECIBO jale-recibo@1\n',
+            'base64': prefijo + b'xxx\n',
+            'cortado con texto pegado': prefijo + b'eyJlc3FRESULT mode=contract exit=0\n',
+            'json': prefijo + b'ew==\n',  # {
+            'payload no UTF-8': prefijo + b'/w==\n',
+            'log no UTF-8': prefijo + b'\xff\n',
+        }
+        for caso, salida in casos.items():
+            with self.subTest(caso=caso):
+                log.write_bytes(salida)
+                self.assertEqual(leer_recibo(log, 0, C, 'contract', (), host='desktop'),
+                                 RechazoLanzador(str(log), 'recibo-malformado'))
+
+    def resolver_recibo_malformado(self, decision):
+        from adaptadores.jale import EN_CURSO
+        from observador import Falso
+        from operativo import tick
+        from test_hasito import GitFalso
+        from test_tren import vista
+
+        self.plan({'contract': [{'malformado': True}, {}]})
+        ledger = self.ledger()
+        inicial = estado(len(CANDIDATO.eslabones))
+        entradas = tuple(replace(e, entrega=replace(e.entrega, head=head),
+                                 admision=Admitido(), tren='lote')
+                         for e, (_, head, _) in zip(inicial.entradas, CANDIDATO.eslabones))
+        recibos = tuple(e.entrega.recibo for e in entradas)
+        tren = Tren('lote', recibos, EsperandoCI(CANDIDATO))
+        inicial = replace(inicial, entradas=entradas, trenes=(tren,))
+        for entrada in entradas:
+            ledger.entregar(entrada.entrega, entrada.recibida)
+        obs = observacion(ci_candidato='verde', ci_recibo='recibo-ci')
+        obs = replace(obs, prs=tuple(vista(e.entrega.pr, head=e.entrega.head) for e in entradas))
+        observador = Falso(obs)
+        actual, (efecto,) = paso(inicial, obs)
+        ledger.guardar_paso(actual, (efecto,), obs.ahora)
+
+        ejecutados = []
+        def avanzar(ahora):
+            def frontera(nombre, efecto):
+                if nombre == 'antes-ejecutar':
+                    ejecutados.append(efecto)
+            tick(ledger, REPO, observador, ahora, GitFalso(self.raiz), self.adaptador,
+                 frontera=frontera)
+            return ledger.estado(REPO, operativo=True)
+
+        def esperar_corrida(modo, intento):
+            log = self.adaptador.estado / clave('suite', tren.id) / modo / str(intento) / 'corrida.log'
+            esperar_resultado(lambda: log if log.with_name('codigo.json').exists() else EN_CURSO)
+            return log
+
+        avanzar(101)
+        log = esperar_corrida('contract', 0)
+        esperar_corrida('e2e', 0)
+        pausado = avanzar(102)
+        self.assertEqual(pausado.pausa, Pausa('infraestructura', detalle='recibo-malformado',
+                                             archivos=(str(log),)))
+        self.assertFalse(ledger.outbox(REPO))
+        ejecutados.clear()
+        invocaciones = self.invocaciones()
+        self.assertEqual(avanzar(103).pausa, pausado.pausa)
+        self.assertEqual(ejecutados, [])
+        self.assertEqual(self.invocaciones(), invocaciones)
+
+        args = cli.parser().parse_args(['juicio', '--repo', REPO, '--tren', tren.id,
+                                        '--decision', decision, '--motivo', 'prueba'])
+        with patch.object(cli, 'activacion', return_value='activo'):
+            codigo, resultado = cli.ejecutar(args, ahora=104)
+        self.assertEqual(codigo, 0, resultado)
+        resuelto = avanzar(105)
+        self.assertIsNone(resuelto.pausa)
+        if decision == 'abortar':
+            self.assertEqual(resuelto.trenes[0].fase, Terminal('ABORTADO'))
+            self.assertEqual(tuple(e.entrega.recibo for e in resuelto.entradas), recibos)
+            self.assertTrue(all(e.tren is None and e.terminal is None for e in resuelto.entradas))
+            self.assertEqual(self.invocaciones(), invocaciones)
+        else:
+            nuevo_log = esperar_corrida('contract', 1)
+            final = avanzar(106)
+            self.assertIsInstance(final.trenes[0].fase, Certificado)
+            self.assertEqual([i['log'] for i in self.invocaciones()[len(invocaciones):]],
+                             [str(nuevo_log)])
+
+    def test_recibo_malformado_pausa_y_reanudar_produce_veredicto(self):
+        self.resolver_recibo_malformado('reanudar')
+
+    def test_recibo_malformado_pausa_y_abortar_devuelve_la_fila(self):
+        self.resolver_recibo_malformado('abortar')
 
     def test_recibo_duplicado(self):
         self.invalido({'duplicar_recibo': True}, 'salida-sin-recibo')
@@ -1223,7 +1322,11 @@ class JaleTests(Aislado):
 
     def test_boat_rechaza_un_recibo_con_bytes_no_utf8(self):
         self.adaptador = self.Jale(self.lanzador, host='boat')
-        self.invalido({'recibo_no_utf8': True}, 'recibo-malformado')
+        self.plan({'contract': [{'recibo_no_utf8': True}]})
+        _, resultado = self.suite()
+        contract = next(i for i in self.invocaciones() if i['modo'] == 'contract')
+        self.assertEqual(resultado, RechazoLanzador(contract['log'], 'recibo-malformado'))
+        self.assertCountEqual([a[2] for a in self.lanzamientos()], ['contract', 'e2e'])
 
     def test_boat_fallback_sin_recibo_admite_bytes_no_utf8_segun_host_guardado(self):
         self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',))
