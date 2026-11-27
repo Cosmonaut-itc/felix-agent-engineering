@@ -222,17 +222,14 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             frontera("resultado-guardado", efecto)
         return estado, fallo_operador
 
-    def terminar(nuevo, efectos, *, paso_guardado=True):
+    def terminar(nuevo, efectos):
         nuevo, fallo = drenar(nuevo, observacion)
         if fallo is not None:
             ledger.guardar_paso(nuevo, (), ahora, fallo_operador=fallo)
             frontera("paso-guardado", None)
         snapshots.limpiar(nuevo, previo.pendientes(repo), ahora)
-        salida = {"modo": "activo", "estado": datos(nuevo), "efectos": datos(efectos),
-                  "outbox": resumen_outbox(ledger, repo)}
-        if paso_guardado or fallo is not None:
-            actualizar_reserva_boat(ledger, config, adaptador, activo, nuevo, ahora)
-        return salida
+        return {"modo": "activo", "estado": datos(nuevo), "efectos": datos(efectos),
+                "outbox": resumen_outbox(ledger, repo)}
 
     # Una muerte con el marcador durable puede haber producido IO sin ACK.
     # Recuperarlo antes del paso evita caducar PR cerrados por nuestro push.
@@ -256,7 +253,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             lectura = previo.reconciliar(cert.B, cert.C, cert.arbol, heads)
             if isinstance(lectura, Incierto):
                 # Sigue pendiente; otro tick vuelve a acreditar sin empujar.
-                return terminar(estado, (), paso_guardado=False)
+                return terminar(estado, ())
             if isinstance(lectura, Aterrizado):
                 estado, recuperados = aterrizaje(replace(estado, pausa=None), tren,
                     replace(observacion, main=lectura, tren_id=tren.id,
