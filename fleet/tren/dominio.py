@@ -860,8 +860,10 @@ def aplazar_conflicto(estado, tren, conflicto, efectos):
     estado = cambiar_fase(estado, tren, Terminal("REARMAR"))
     estado = replace(estado, entradas=tuple(
         replace(e, tren=nuevo.id) if e.entrega.recibo in sobrevivientes else
+        # Contra main (sin prefijo) espera otra base; con prefijo acumula los de esta base.
         replace(e, tren=None, rearmada=True, aplazada_en_base=base, prefijo_en_conflicto=tuple(
-            dict.fromkeys((e.prefijo_en_conflicto if e.aplazada_en_base == base else ()) + anteriores)))
+            dict.fromkeys((e.prefijo_en_conflicto if e.aplazada_en_base == base else ()) + anteriores))
+            if anteriores else ())
         if e.entrega.recibo == recibo else
         replace(e, tren=None, rearmada=True)
         if e.entrega.recibo in tren.recibos else e for e in estado.entradas))
@@ -1035,13 +1037,15 @@ def siguiente_lote(fila, *, base=None):
     for entrada in fila[:LIMITE_LOTE]:
         recibo = entrada.entrega.recibo
         prefijo = entrada.prefijo_en_conflicto if entrada.aplazada_en_base == base else ()
-        if recibo in incompatibles or not recibos.isdisjoint(prefijo):
-            # Sólo esta entrega choca con el lote; las siguientes pueden viajar.
-            continue
+        choca = recibo in incompatibles or not recibos.isdisjoint(prefijo)
         if entrada.solo:
+            # Una entrega `solo` corta la fila aunque hoy no pueda viajar.
             if not lote:
                 lote.append(entrada)
             break
+        if choca:
+            # Sólo esta entrega choca con el lote; las siguientes pueden viajar.
+            continue
         lote.append(entrada)
         recibos.add(recibo)
         incompatibles.update(prefijo)

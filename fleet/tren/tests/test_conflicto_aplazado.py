@@ -122,3 +122,23 @@ class ConflictoAplazadoRonda2Tests(unittest.TestCase):
         siguiente, _ = paso(abortar_todo(aplazado, cerradas=(2,)), lectura)
         # Sin el primer conflicto guardado, el lote repetiría [1, 3] sobre la misma base.
         self.assertEqual(siguiente.trenes[-1].recibos, (r1,))
+
+    def test_un_aplazado_solo_sigue_cortando_la_fila(self):
+        obs = observacion(4)
+        original, _ = paso(estado(4), obs)
+        aplazado, _ = paso(original, conflicto(obs, original.trenes[-1], 3))
+        lectura = replace(obs, ahora=200, prs=(vista(1), vista(2),
+                                               vista(3, sensible=True, autorizado=True), vista(4)))
+        siguiente, _ = paso(abortar_todo(aplazado), lectura)
+        self.assertEqual(siguiente.trenes[-1].recibos, (entrega(1).recibo, entrega(2).recibo))
+
+    def test_un_conflicto_contra_main_espera_otra_base_aunque_hubiera_prefijo(self):
+        obs = observacion(3)
+        original, _ = paso(estado(3), obs)
+        aplazado, _ = paso(original, conflicto(obs, original.trenes[-1], 2))
+        lectura = replace(obs, ahora=200, prs=(vista(1, abierto=False), vista(2), vista(3)))
+        segundo, _ = paso(abortar_todo(aplazado, cerradas=(1,)), lectura)
+        self.assertEqual(segundo.trenes[-1].recibos, (entrega(2).recibo, entrega(3).recibo))
+        contra_main, _ = paso(segundo, conflicto(replace(lectura, ahora=300), segundo.trenes[-1], 2))
+        siguiente, _ = paso(desde_datos(datos(contra_main)), replace(lectura, ahora=400))
+        self.assertEqual(siguiente.trenes[-1].recibos, (entrega(3).recibo,))
