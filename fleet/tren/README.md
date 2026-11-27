@@ -872,11 +872,12 @@ B (caso 1), o que falla dos veces con una firma estable en C y al menos una vez
 con esa firma en B (caso 2). En ambos casos exige dos intentos observados en
 cada commit y la misma definición. Para el caso 1, el recibo debe traer la
 identidad de cada caso que falló en la suite y su resultado en cada repetición
-de C, con un pase para cada caso en los dos intentos. Para el caso 2, el
+de C y de B, con un pase para cada caso en los cuatro intentos. El adaptador de
+Jale lo acredita con el campo `casos` del recibo. Para el caso 2, el
 adaptador debe declarar que la firma del recibo distingue fallos distintos del
-mismo caso. Hoy ningún adaptador habilita estos casos. Los recibos de Hasito y
-Jale carecen de la evidencia de pases por caso, por lo que se conserva
-`confirmacion-candidato`. Sus firmas también pueden coincidir para errores
+mismo caso. Ningún adaptador habilita hoy el caso 2. Los recibos de Hasito
+carecen de la evidencia de pases por caso, por lo que ahí se conserva
+`confirmacion-candidato`. Las firmas de Hasito y Jale pueden coincidir para errores
 distintos del mismo caso, por lo que se conserva `confirmacion-base` con B mixto.
 
 La absolución requiere una suite sin etapas pendientes,

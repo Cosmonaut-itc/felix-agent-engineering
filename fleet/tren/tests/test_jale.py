@@ -25,6 +25,8 @@ UNIDAD = 'apps/api/src/a.contract.test.ts'
 OTRA = 'apps/api/src/b.contract.test.ts'
 FIRMA = 'sha256:' + 'a' * 64
 FALLO = Fallo(UNIDAD, FIRMA, 'solo-candidato', 'contract', 'contract', 'jale', 4)
+CASO = 'src/a.contract.test.ts › acceso › entra & sale'
+SIN_CASOS = object()
 
 # Escribe exclusivamente fixtures del contrato; no depende del productor real.
 PRODUCTOR = r'''
@@ -118,6 +120,8 @@ if len(estados) > len(rutas):
 unidades = [dict(unidad=u, resultado=e, firma='sha256:' + 'a' * 64 if e == 'falla' else '',
                  fallidas=int(e == 'falla'), duracion_s=0 if e == 'no-corrida' else 4)
             for u, e in zip(rutas, estados)]
+if 'casos' in f:
+    unidades[0]['casos'] = f['casos']
 codigo = f.get('codigo', int('falla' in estados or 'no-corrida' in estados))
 r = dict(esquema='jale-recibo@1', sha=sha, modo=modo,
          alcance='parcial' if filtros else 'completo', filtros=filtros, codigo=codigo,
@@ -128,7 +132,11 @@ if f.get('duplicar_unidad'):
     r['unidades'] *= 2
 if f.get('invertir'):
     r['unidades'].reverse()
-linea = 'RECIBO jale-recibo@1 ' + base64.b64encode(json.dumps(r).encode()).decode() + '\n'
+contenido = json.dumps(r)
+if f.get('campo_duplicado'):
+    campo = json.dumps(f['campo_duplicado']) + ': '
+    contenido = contenido.replace(campo, campo + 'null, ' + campo, 1)
+linea = 'RECIBO jale-recibo@1 ' + base64.b64encode(contenido.encode()).decode() + '\n'
 if f.get('malformado'):
     linea = 'RECIBO jale-recibo@1 xxx\n'
 if f.get('duplicar_recibo'):
@@ -386,6 +394,9 @@ class JaleTests(Aislado):
     def test_recibo_duplicado(self):
         self.invalido({'duplicar_recibo': True}, 'salida-sin-recibo')
 
+    def test_campo_duplicado_fuera_de_casos_invalida_recibo(self):
+        self.invalido({'campo_duplicado': 'codigo'}, 'recibo-malformado')
+
     def test_firma_sin_hash_es_infraestructura(self):
         self.invalido({'codigo': 1, 'cambiar': {'unidades': [dict(unidad=UNIDAD,
             resultado='falla', firma='error privado', fallidas=1, duracion_s=1)]}}, 'firma-invalida')
@@ -627,6 +638,96 @@ class JaleTests(Aislado):
         p = planificar((FALLO,), (1,), evidencias, 100)
         self.assertTrue(p.terminado)
         self.assertEqual(p.causas, ())
+
+    def atribuir_con_casos(self, casos_suite, casos_repeticion, *, acreditados=False,
+                          campo_duplicado=None, casos_base=None, acreditados_base=None):
+        previos = sum(a[2] == 'contract' for a in self.lanzamientos())
+        tren = 'casos-' + str(previos)
+        candidato = replace(CANDIDATO, B=format(previos + 1, '040x'))
+        roja = {'estados': ['falla']}
+        repeticion = {'campo_duplicado': campo_duplicado}
+        if casos_suite is not SIN_CASOS:
+            roja['casos'] = casos_suite
+        if casos_repeticion is not SIN_CASOS:
+            repeticion['casos'] = casos_repeticion
+        base = dict(repeticion)
+        if casos_base is SIN_CASOS:
+            base.pop('casos', None)
+        elif casos_base is not None:
+            base['casos'] = casos_base
+        self.plan({'contract': [{}] * previos + [roja] + [repeticion] * 2 + [base] * 2})
+        origen, suite = esperar_resultado(self.adaptador.suite, candidato, tren)
+        self.assertEqual(suite, Completo('rojo', (FALLO,), costo_s=8))
+
+        evidencias = ()
+        for objetivo, commit in (('C', candidato.C), ('B', candidato.B)):
+            plan = planificar(suite.fallos, (1,), evidencias, 100, absolver=True,
+                              firma_distingue_fallo=self.adaptador.firma_distingue_fallo)
+            self.assertEqual(plan.siguiente.objetivo, objetivo)
+            resultado = esperar_resultado(self.adaptador.repetir, candidato, origen,
+                                           plan.siguiente, commit, tren)
+            self.assertEqual([i.veredicto for i in resultado.unidades[0].intentos], ['pasa'] * 2)
+            esperado = acreditados if objetivo == 'C' or acreditados_base is None else acreditados_base
+            self.assertEqual([i.caso_ejecutado for i in resultado.unidades[0].intentos],
+                             [esperado] * 2)
+            evidencias += (Evidencia(plan.siguiente, resultado),)
+        return planificar(suite.fallos, (1,), evidencias, 100, absolver=True,
+                          firma_distingue_fallo=self.adaptador.firma_distingue_fallo)
+
+    def test_atribucion_absuelve_si_c_y_b_acreditan_el_caso_fallido(self):
+        plan = self.atribuir_con_casos([dict(caso=CASO, resultado='falla')],
+                                      [dict(caso=CASO, resultado='pasa')], acreditados=True)
+        self.assertTrue(plan.terminado)
+        self.assertEqual(plan.incierto, '')
+        absolucion, = plan.absoluciones
+        self.assertEqual((absolucion.fallo, absolucion.caso), (FALLO, 1))
+
+    def test_atribucion_pide_juicio_si_falta_evidencia_del_caso(self):
+        falla = dict(caso=CASO, resultado='falla')
+        pasa = dict(caso=CASO, resultado='pasa')
+        escenarios = (
+            ('omitida', [falla], [dict(caso=CASO, resultado='omitida')]),
+            ('recuperada', [falla], [dict(caso=CASO, resultado='recuperada')]),
+            ('suite vieja', SIN_CASOS, [pasa]),
+            ('repetición vieja', [falla], SIN_CASOS),
+            ('sin fallos individuales', [dict(caso=CASO, resultado='recuperada')], [pasa]),
+            ('segundo caso ausente', [falla, dict(caso=CASO + ' dos', resultado='falla')], [pasa]),
+            ('lista malformada', [falla], {'caso': CASO, 'resultado': 'pasa'}),
+            ('identidad vacía', [falla], [dict(caso='', resultado='pasa'), pasa]),
+            ('resultado desconocido', [falla], [pasa, dict(caso='otro', resultado='verde')]),
+            ('identidad duplicada en la suite', [falla, falla], [pasa]),
+            ('identidad duplicada en la repetición', [falla], [pasa, pasa]),
+        )
+        for escenario, casos_suite, casos_repeticion in escenarios:
+            with self.subTest(escenario=escenario):
+                plan = self.atribuir_con_casos(casos_suite, casos_repeticion)
+                self.assertFalse(plan.terminado)
+                self.assertEqual(plan.incierto, 'confirmacion-candidato:' + UNIDAD)
+                self.assertEqual(plan.absoluciones, ())
+
+    def test_atribucion_pide_juicio_si_b_no_acredita_el_caso(self):
+        falla = dict(caso=CASO, resultado='falla')
+        pasa = dict(caso=CASO, resultado='pasa')
+        for escenario, casos_base in (('omitida', [dict(caso=CASO, resultado='omitida')]),
+                                      ('ausente', [dict(caso='otro', resultado='pasa')]),
+                                      ('recibo viejo', SIN_CASOS)):
+            with self.subTest(escenario=escenario):
+                plan = self.atribuir_con_casos([falla], [pasa], acreditados=True,
+                                               casos_base=casos_base, acreditados_base=False)
+                self.assertFalse(plan.terminado)
+                self.assertEqual(plan.incierto, 'confirmacion-candidato:' + UNIDAD)
+                self.assertEqual(plan.absoluciones, ())
+
+    def test_clave_duplicada_dentro_de_un_caso_descarta_evidencia_sin_rechazar(self):
+        plan = self.atribuir_con_casos([dict(caso=CASO, resultado='falla')],
+                                      [dict(caso=CASO, resultado='pasa', n=1)],
+                                      campo_duplicado='n')
+        self.assertEqual(plan.incierto, 'confirmacion-candidato:' + UNIDAD)
+
+    def test_campo_duplicado_en_casos_solo_descarta_evidencia(self):
+        plan = self.atribuir_con_casos([dict(caso=CASO, resultado='falla')],
+                                      [dict(caso=CASO, resultado='pasa')], campo_duplicado='caso')
+        self.assertEqual(plan.incierto, 'confirmacion-candidato:' + UNIDAD)
 
     def test_sin_permiso_no_lanza_y_recupera_recibo_existente(self):
         self.assertIsNone(self.suite(permitir_lanzar=False))

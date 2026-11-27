@@ -112,6 +112,7 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
             if (puede_absolver and candidato == "pasa"
                     and all(i.caso_ejecutado is True for i in uc.intentos)
                     and estable(ub) == "pasa"
+                    and all(i.caso_ejecutado is True for i in ub.intentos)
                     and ub.definicion == uc.definicion):
                 return Plan(absoluciones=(absolucion(fallo, 1, uc, ub),))
             return Plan(incierto="confirmacion-candidato:" + fallo.unidad)
