@@ -173,6 +173,17 @@ La historia anterior a `desde` también cuenta para formar los lotes. El
 informe muestra los miembros de la cohorte `[desde, hasta)` y sólo usa
 observaciones anteriores a `hasta`.
 
+### Latencia de espera
+
+`pao-tren latencia --repo owner/project --desde 2026-11-01T00:00:00Z [--hasta ISO] [--prs archivo.json]`
+lee el ledger en modo de sólo lectura. Informa horas-PR y horas de carril
+por causa, horas de la primera entrega al merge por PR (`tren`, `sesion`
+y `otras`), media, p50 y p90 de `tren`, y minutos de las pausas de juicio
+e infraestructura levantadas en la ventana. La ventana incluye `--desde`
+y excluye `--hasta`, que por defecto es el instante de la consulta. Con
+`--prs` toma los merges de la salida de `gh pr list --state merged --json number,mergedAt,state`.
+Sin el archivo, toma los aterrizajes registrados por el tren.
+
 ### Duración por fase
 
 ```sh

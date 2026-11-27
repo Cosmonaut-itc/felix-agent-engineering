@@ -401,6 +401,21 @@ def filas_medicion(repo, directorio=None):
     return requests, events
 
 
+@contextmanager
+def filas_latencia(repo, hasta, directorio=None):
+    with lectura_medicion(directorio) as db:
+        requests = db.execute(
+            "SELECT recibo, repo, pr, head, recibida FROM requests WHERE repo=? AND recibida < ?",
+            (repo, hasta))
+        events = db.execute(
+            "SELECT * FROM events WHERE repo=? AND tipo='operativo' AND instante < ? ORDER BY seq",
+            (repo, hasta))
+        effects = db.execute(
+            "SELECT repo, payload FROM effects WHERE repo=? AND payload LIKE '%\"devolver\"%'",
+            (repo,))
+        yield requests, events, effects
+
+
 def filas_fases(repo, directorio=None):
     with lectura_medicion(directorio) as db:
         events = [dict(r) for r in db.execute(
