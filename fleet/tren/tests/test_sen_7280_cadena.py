@@ -1,18 +1,21 @@
 """SEN-7280: un tick activo encadena el siguiente mientras el carril avance."""
 import contextlib
+from dataclasses import replace
 import io
 import itertools
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 import test_activo as activo
 import test_feedback as feedback
-from dominio import EsperandoCI, ResultadoCI, Terminal
+from dominio import EsperandoCI, Pausa, ResultadoCI, Terminal
 
 cli = activo.cli
 REPO = activo.REPO
@@ -75,17 +78,22 @@ class CuotaTests(unittest.TestCase):
         return ejecutar
 
     def test_con_cuota_holgada_sigue(self):
-        self.assertTrue(cli.cuota(self.responder(str(cli.CUOTA_MINIMA) + "\n")))
+        self.assertIsNone(cli.corte_cuota(self.responder(str(cli.CUOTA_MINIMA) + "\n")))
 
-    def test_bajo_el_minimo_corta(self):
-        self.assertFalse(cli.cuota(self.responder(str(cli.CUOTA_MINIMA - 1) + "\n")))
+    def test_bajo_el_minimo_corta_y_dice_cuanto_quedaba(self):
+        self.assertEqual(cli.corte_cuota(self.responder(str(cli.CUOTA_MINIMA - 1) + "\n")),
+                         {"motivo": "cuota-baja", "restante": cli.CUOTA_MINIMA - 1})
 
-    def test_sin_respuesta_util_corta(self):
-        for caso in (self.responder("no es un número\n"),
-                     self.responder(error=subprocess.TimeoutExpired("gh", 10)),
-                     self.responder(error=subprocess.CalledProcessError(1, "gh")),
-                     self.responder(error=FileNotFoundError("gh"))):
-            self.assertFalse(cli.cuota(caso))
+    def test_sin_respuesta_util_corta_y_dice_la_clase_y_lo_que_tardo(self):
+        for caso, clase in ((self.responder("no es un número\n"), "ValueError"),
+                            (self.responder(error=subprocess.TimeoutExpired("gh", 10)),
+                             "TimeoutExpired"),
+                            (self.responder(error=subprocess.CalledProcessError(1, "gh")),
+                             "CalledProcessError"),
+                            (self.responder(error=FileNotFoundError("gh")), "FileNotFoundError")):
+            reloj = iter((100.0, 110.04))
+            self.assertEqual(cli.corte_cuota(caso, lambda: next(reloj)),
+                             {"motivo": "cuota-ilegible", "clase": clase, "lectura_s": 10.0})
 
 
 class ProgramaTests(unittest.TestCase):
@@ -116,15 +124,20 @@ class ProgramaTests(unittest.TestCase):
 
 
 class MainTests(unittest.TestCase):
+    SIN_CUOTA = {"motivo": "cuota-baja", "restante": 0}
+
     def correr(self, argv, huellas, intentos, seguir=True, programa=lambda: "igual", cuota=None):
         huellas, intentos = iter(huellas), iter(intentos)
         salida = io.StringIO()
+        self.cortes = []
         with patch("sys.argv", ["pao-tren", *argv]), \
                 patch.object(cli, "intento", lambda args, instalando=False: next(intentos)), \
                 patch.object(cli, "candado_programa", lambda exclusivo: contextlib.nullcontext(True)), \
                 patch.object(cli, "huella", lambda repo: next(huellas)), \
                 patch.object(cli, "programa", programa), \
-                patch.object(cli, "cuota", cuota or (lambda: seguir)), \
+                patch.object(cli, "corte_cuota",
+                             cuota or (lambda: None if seguir else self.SIN_CUOTA)), \
+                patch.object(cli, "anotar_corte", lambda *corte: self.cortes.append(corte)), \
                 contextlib.redirect_stdout(salida):
             codigo = cli.main()
         return codigo, [json.loads(l) for l in salida.getvalue().splitlines()]
@@ -134,6 +147,7 @@ class MainTests(unittest.TestCase):
                                      [(0, {"n": 1}), (0, {"n": 2}), (0, {"n": 3})])
         self.assertEqual(lineas, [{"n": 1}, {"n": 2}, {"n": 3}])
         self.assertEqual(codigo, 0)
+        self.assertEqual(self.cortes, [])
         codigo, lineas = self.correr(["tick", "--repo", REPO], itertools.count(),
                                      [(0, {"n": 1}), (2, {"error": "x"})])
         self.assertEqual((codigo, len(lineas)), (2, 2))
@@ -142,18 +156,25 @@ class MainTests(unittest.TestCase):
         _, lineas = self.correr(["tick", "--repo", REPO], itertools.count(),
                                 [(0, {"n": 1}), (0, {"n": 2})], seguir=False)
         self.assertEqual(lineas, [{"n": 1}])
+        self.assertEqual(self.cortes, [(REPO, self.SIN_CUOTA)])
 
     def test_una_instalacion_durante_la_consulta_de_cuota_corta(self):
         instalado = ["igual"]
 
         def cuota():
             instalado[0] = "nuevo"
-            return True
 
         _, lineas = self.correr(["tick", "--repo", REPO], itertools.count(),
                                 [(0, {"n": 1}), (0, {"n": 2})],
                                 programa=lambda: instalado[0], cuota=cuota)
         self.assertEqual(lineas, [{"n": 1}])
+        self.assertEqual(self.cortes, [(REPO, {"motivo": "programa-cambiado"})])
+
+    def test_un_programa_ilegible_al_arrancar_no_encadena(self):
+        _, lineas = self.correr(["tick", "--repo", REPO], itertools.count(),
+                                [(0, {"n": 1}), (0, {"n": 2})], programa=lambda: None)
+        self.assertEqual(lineas, [{"n": 1}])
+        self.assertEqual(self.cortes, [(REPO, {"motivo": "programa-ilegible"})])
 
     def test_tick_seco_y_los_demas_comandos_no_encadenan(self):
         for argv in (["tick", "--repo", REPO, "--seco"], ["estado", "--repo", REPO]):
@@ -218,6 +239,62 @@ class CadenaActivaTests(unittest.TestCase):
         self.assertEqual(len(self.cadena(itertools.count(100))), 1)
         intentos = [p for p in self.lineas("posts.log") if "/issues/1/comments" in p]
         self.assertEqual(len(intentos), 1)
+
+    CORTE = {"motivo": "cuota-baja", "restante": 3}
+
+    def cortes(self):
+        with self.ledger() as ledger:
+            return [(instante, json.loads(payload)) for instante, payload in ledger.db.execute(
+                "SELECT instante, payload FROM events WHERE repo=? AND tipo='cadena-cortada'",
+                (REPO,))]
+
+    def test_el_corte_con_un_lote_vivo_queda_en_el_ledger_y_no_cuenta_como_avance(self):
+        self.retener_ci_del_candidato()
+        self.cadena(itertools.count(100))
+        antes, estado = cli.huella(REPO), self.estado()
+        with patch.object(cli.time, "time", return_value=1234.5):
+            cli.anotar_corte(REPO, self.CORTE)
+        self.assertEqual(self.cortes(), [(1234.5, {**self.CORTE, "fases": ["EsperandoCI"]})])
+        self.assertEqual((cli.huella(REPO), self.estado()), (antes, estado))
+
+    def test_el_corte_sin_lote_vivo_o_con_pausa_no_se_anota(self):
+        cli.anotar_corte(REPO, self.CORTE)
+        self.retener_ci_del_candidato()
+        self.cadena(itertools.count(100))
+        with self.ledger() as ledger:
+            ledger.guardar_paso(replace(ledger.estado(REPO), pausa=Pausa("necesita-juicio")),
+                                (), 200)
+        self.assertIsInstance(self.estado().trenes[0].fase, EsperandoCI)
+        cli.anotar_corte(REPO, self.CORTE)
+        self.assertEqual(self.cortes(), [])
+
+    def test_el_corte_sobre_un_lote_terminal_no_se_anota(self):
+        self.assert_aterrizado_una_vez()
+        cli.anotar_corte(REPO, self.CORTE)
+        self.assertEqual(self.cortes(), [])
+
+    def test_anotar_el_corte_no_crea_el_ledger_ni_propaga_sus_fallos(self):
+        with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.raiz / "sin-estado")}):
+            cli.anotar_corte(REPO, self.CORTE)
+        self.assertFalse((self.raiz / "sin-estado").exists())
+        self.retener_ci_del_candidato()
+        self.cadena(itertools.count(100))
+        with patch.object(cli.sqlite3, "connect", side_effect=sqlite3.OperationalError("roto")):
+            cli.anotar_corte(REPO, self.CORTE)
+        self.assertEqual(self.cortes(), [])
+
+    def test_con_el_ledger_ocupado_el_corte_se_pierde_tras_un_plazo_corto(self):
+        self.retener_ci_del_candidato()
+        self.cadena(itertools.count(100))
+        with self.ledger() as otro_carril, patch.object(cli, "PLAZO_ANOTAR_S", 0.2):
+            otro_carril.db.execute("BEGIN IMMEDIATE")
+            inicio = time.monotonic()
+            cli.anotar_corte(REPO, self.CORTE)
+            self.assertLess(time.monotonic() - inicio, 5)
+            otro_carril.db.execute("ROLLBACK")
+        self.assertEqual(self.cortes(), [])
+        cli.anotar_corte(REPO, self.CORTE)
+        self.assertEqual(len(self.cortes()), 1)
 
     def test_leer_la_huella_no_crea_el_ledger(self):
         with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.raiz / "sin-estado")}):

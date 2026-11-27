@@ -277,7 +277,7 @@ class TickLimiteTests(unittest.TestCase):
                         adaptador=self.contexto.hasito, escritor=self.contexto.escritor, **kwargs)
                 with patch.object(cli, "ejecutar", side_effect=tick) as un_tick, \
                         patch.object(cli, "GitHubGit", side_effect=crear), \
-                        patch.object(cli, "cuota") as cuota:
+                        patch.object(cli, "corte_cuota") as cuota:
                     self.assertEqual(list(cli.ticks(args)), [(75, {
                         "error": "limite-github", "recurso": "core", "reinicio": REINICIO})])
                     un_tick.assert_called_once()
@@ -317,7 +317,7 @@ class TickLimiteTests(unittest.TestCase):
         with patch.object(sys, "argv", self.configurar()), \
                 patch.object(cli, "intento", side_effect=tick), \
                 patch.object(cli, "huella", return_value=("igual",)), \
-                patch.object(cli, "cuota", return_value=True), \
+                patch.object(cli, "corte_cuota", return_value=None), \
                 patch.object(cli, "ARRANQUE", 0), \
                 patch.object(cli, "time", SimpleNamespace(monotonic=lambda: reloj[0], sleep=dormir)), \
                 patch.object(subprocess, "run", ejecutar), redirect_stdout(salida):

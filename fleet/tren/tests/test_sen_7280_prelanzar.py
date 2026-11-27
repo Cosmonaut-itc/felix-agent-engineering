@@ -65,7 +65,8 @@ if predecesor.exists():
     for ruta in json.loads(predecesor.read_text()):
         with Path(ruta, 'candado').open('rb') as candado:
             try:
-                fcntl.flock(candado, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # Compartido: el lanzador hermano sondea el mismo candado a la vez.
+                fcntl.flock(candado, fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError:
                 activos.append(ruta)
     (registro / 'predecesoras-activas.json').write_text(json.dumps(activos))
@@ -695,7 +696,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         reloj = SimpleNamespace(monotonic=lambda: segundos, sleep=dormir,
                                 time=lambda: next(self.reloj))
         with patch.object(cli, 'ARRANQUE', 0), patch.object(cli, 'time', reloj), \
-                patch.object(cli, 'cuota', return_value=True), \
+                patch.object(cli, 'corte_cuota', return_value=None), \
                 patch('adaptadores.jale.time', reloj), \
                 patch.object(self.contexto.observador, 'ci', side_effect=ci), \
                 patch.object(cli, 'GitHubGit', wraps=cli.GitHubGit,
