@@ -276,14 +276,14 @@ restantes y la separación entre propietario, verificador y stacker.
      ronda de sincronización. Si se rechaza la excepción de Drizzle, la
      última línea `Excepción de migraciones: punto N: …` indica qué falló.
      Si se rechaza la unión de un catálogo, aparece `Excepción de catálogos`.
-     Un conflicto de Git en una ruta no compartida veta la excepción,
-     salvo si el archivo es el journal o un snapshot numerado de un
-     directorio de Drizzle que se valida. El diagnóstico nombra la ruta.
+     Un conflicto de Git en una ruta no compartida veta la excepción. El
+     diagnóstico nombra la ruta.
      Si el head difiere de la referencia en una ruta no compartida fuera
      de los directorios que se validan, la salida es `Ronda` incluso sin
-     excepción activa o cuando hay un directorio vaciado. En una mezcla
-     limpia sin archivos compartidos, el head debe coincidir con la mezcla
-     automática.
+     excepción activa o cuando hay un directorio vaciado. Sin excepción
+     activa, si la mezcla es limpia y el head coincide con su árbol, se
+     conserva el veredicto ordinario según las rutas del parche que cambió
+     el destino.
    - `Ronda`, o un error del script: corre la ronda que fija **Rondas**.
      Si el destino y el head nuevo tienen varias bases comunes óptimas,
      el script sale con 2 antes del veredicto.

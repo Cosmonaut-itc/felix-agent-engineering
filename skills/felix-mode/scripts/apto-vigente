@@ -3,8 +3,8 @@
 # `APTO vigente` confirma una mezcla limpia sin archivos compartidos o una
 # excepción de catálogos o Drizzle. Las excepciones comparan rutas por blob y modo.
 # Drizzle se detecta en la base común, el head revisado y la base nueva.
-# `Ronda` tiene prioridad ante diferencias no compartidas fuera de los directorios que se validan, aun sin excepción.
-# `Ronda delta` lista rutas y resolución. Sólo se eximen conflictos en rutas compartidas o en el journal y snapshots numerados de los directorios que se validan.
+# `Ronda` prima ante diferencias no compartidas fuera de los directorios validados, salvo en una mezcla limpia y exacta sin excepción activa.
+# `Ronda delta` lista rutas y resolución. Sólo se eximen conflictos en rutas compartidas.
 # Sale con 2 si no puede decidir o si la base nueva es ambigua. Requiere git 2.38+ y python3.
 set -uo pipefail
 fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
@@ -409,14 +409,12 @@ dirs = tuple(sorted(prefix for prefix in migration_dirs
                     if any(path.startswith(prefix) for path in shared | different)))
 outside = {path for path in different if not path.startswith(dirs)}
 has_exception = bool(emptied or dirs or any(CATALOG.fullmatch(path) for path in shared))
-unshared_conflicts = {path for path in conflicts - shared
-                      if not any(path.startswith(prefix) and
-                                 (path[len(prefix):] == JOURNAL or NUMBERED_SNAPSHOT.fullmatch(path[len(prefix):]))
-                                 for prefix in dirs)}
-full_round = bool(outside)
+unshared_conflicts = conflicts - shared
+clean_match = merge_status == '0' and auto == tree
+full_round = bool(outside) and (has_exception or not clean_match)
 # La regla de mezcla limpia también cuenta las ediciones iguales en ambos lados.
 overlap = changes(trees[0], trees[1]) & changes(trees[0], trees[2])
-ordinary = merge_status == '0' and auto == tree and not overlap and not emptied and not full_round
+ordinary = clean_match and not overlap and not emptied and not full_round
 
 details, accepted = [], False
 if full_round and has_exception:

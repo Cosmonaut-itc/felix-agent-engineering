@@ -2480,7 +2480,7 @@ apto_vigente_interactions() {
     output=$(apto "$repo" destino revisado rebasado)
     assert test "$output" = 'Ronda: el head nuevo no es la mezcla del head revisado con el destino'
 
-    # El rebase mueve la edición del parche a una ruta donde la referencia conserva el blob del destino.
+    # El rebase mueve la edición del parche y coincide con la mezcla automática limpia.
     repo=$(apto_repo)
     git -C "$repo" checkout -q revisado
     printf 'x\nparche\n' > "$repo/otro.txt"
@@ -2490,8 +2490,9 @@ apto_vigente_interactions() {
     git -C "$repo" commit -q -m rename
     git -C "$repo" checkout -q -b rebasado revisado
     git -C "$repo" rebase -q destino
+    assert test "$(git -C "$repo" merge-tree --write-tree destino revisado)" = "$(git -C "$repo" rev-parse 'rebasado^{tree}')"
     output=$(apto "$repo" destino revisado rebasado)
-    assert test "$output" = 'Ronda: el head nuevo no es la mezcla del head revisado con el destino'
+    assert test "$output" = "$(printf 'Ronda delta: el destino cambió archivos del parche\notro.txt')"
 
     # Los dos lados cambian zonas distintas del mismo archivo y git los mezcla sin conflicto.
     repo=$(apto_repo)
@@ -2769,6 +2770,7 @@ cases = {
     'journal-revisado': ('conflicto-git', 'deploy/jobs/movido.sql'),
     'journal-destino': ('conflicto-git', 'deploy/jobs/movido.sql'),
     'hacia-drizzle': ('conflicto-git', 'packages/db/schema-history/0001_primera.sql'),
+    'snapshot': ('conflicto-git', 'packages/db/schema-history/meta/0001_snapshot.json'),
 }
 for case, failure in cases.items():
     repo = Path(temporary) / ('migracion-' + case)
@@ -2808,13 +2810,18 @@ for case, failure in cases.items():
     branch_last = deepcopy(branch_tables)
     branch_last['original']['columns']['second'] = 'text'
     incoming_tables = deepcopy(base_tables)
-    incoming_tables['destino'] = {'columns': {'id': 'integer'}}
+    if case != 'snapshot':
+        incoming_tables['destino'] = {'columns': {'id': 'integer'}}
     if case == 'misma-clave':
         branch_tables['original']['columns']['id'] = 'bigint'
         incoming_tables['original']['columns']['id'] = 'text'
 
     write_migration(root, base, b'SELECT 0;\n', 'base', origin, base_tables)
     write_journal(root, [base])
+    if case == 'snapshot':
+        write(repo / 'planes/borrador.json', dict(id='primera', prevId='base', version='7',
+                                                  dialect='postgresql', tables=branch_tables))
+        (repo / 'planes/README.md').write_text('planes\n')
     if case == 'id-base-nombrado':
         write(root / 'meta/archivado_snapshot.json', dict(id='archivado', prevId=origin, tables={}))
     if clean:
@@ -2874,6 +2881,8 @@ for case, failure in cases.items():
     original_id = None if case in ('solo-sql', 'snapshot-agregado') else 'primera'
     if job_conflict:
         git(repo, 'mv', 'deploy/jobs/legado.sql', failure[1])
+    if case == 'snapshot':
+        git(repo, 'mv', 'planes/borrador.json', f'{directory}/meta/0001_snapshot.json')
     if case == 'journal-revisado':
         write_journal(jobs, [])
     write_migration(root, first, branch_sql, original_id, original_parent, branch_tables)
@@ -2914,7 +2923,10 @@ for case, failure in cases.items():
     commit(repo, 'revisado')
 
     git(repo, 'checkout', '-q', 'destino')
-    write_migration(root, incoming, b'SELECT 1;\n', 'destino', 'base', incoming_tables)
+    incoming_id = None if case == 'snapshot' else 'destino'
+    write_migration(root, incoming, b'SELECT 1;\n', incoming_id, 'base', incoming_tables)
+    if case == 'snapshot':
+        git(repo, 'rm', 'planes/borrador.json')
     write_journal(root, [base, incoming])
     if clean:
         padded(incoming, after=True)
@@ -2999,7 +3011,7 @@ for case, failure in cases.items():
     if case in ('sql', 'sin-conflicto-sql'):
         branch_sql += b' '
     write_migration(root, new_first, branch_sql,
-                    first_id, 'base' if case == 'prevId' or retreat else 'destino', integrated)
+                    first_id, 'base' if case in ('prevId', 'snapshot') or retreat else 'destino', integrated)
     if two:
         second_id = None if gap else first_id if case == 'id-alta' else 'integrada-segunda'
         if not gap:
