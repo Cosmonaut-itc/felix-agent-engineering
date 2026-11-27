@@ -271,7 +271,7 @@ class InvariantesTests(ContextoCI):
         self.ci_en(lambda head: 'failure' if head == candidato else
                    'pending' if head == primero else None)
         self.contexto.tick(500)
-        self.ci_en(lambda head: 'failure' if head == candidato else None)
+        self.ci_en(lambda head: 'failure' if head == candidato else 'success')
         self.ci_del_lote_rearmado(520)
         self.ci_en(lambda head: 'failure' if head == candidato else
                    'pending' if head == primero else None)
