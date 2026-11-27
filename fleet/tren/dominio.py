@@ -1003,9 +1003,11 @@ def paso(estado, observacion):
         tren = activos[0]
         fase = tren.fase
         if observacion.main is None and not fase.reintento_pendiente:
-            nuevo, efectos, _ = avanzar_ci_promocion(estado, tren, observacion)
-            return nuevo, efectos
-        if not (fase.reintento_pendiente and observacion.main is None):
+            # Si main sigue en B, el rojo puede cerrar tras readmitir los heads.
+            if lectura_ci(tren, observacion) != "rojo" or observacion.base != fase.certificado.B:
+                nuevo, efectos, _ = avanzar_ci_promocion(estado, tren, observacion)
+                return nuevo, efectos
+        elif observacion.main is not None:
             estado, efectos = aterrizaje(estado, tren, observacion)
             # Sólo EnBase del intento vigente permite readmitir y reintentar.
             lectura = observacion.main
@@ -1126,18 +1128,17 @@ def paso(estado, observacion):
         # Los resultados completados quedan incorporados antes de esta puerta.
         if any(isinstance(e.admision, Rechazado) for e in miembros):
             return replace(estado, pausa=Pausa("head-cambiado-en-tren")), tuple(efectos)
-        if any(not isinstance(e.admision, Admitido) for e in miembros):
-            return estado, tuple(efectos)
-        if isinstance(tren.fase, Congelado) and isinstance(fase, Armado):
-            return estado, tuple(efectos)
-        if isinstance(fase, Certificado) and not fase.B:
-            return aterrizaje(estado, tren, observacion)
-        if certificado_de(fase) is not None:
+        cert = certificado_de(fase)
+        if cert is not None and cert.B:
             estado, ci_efectos, verde = avanzar_ci_promocion(estado, tren, observacion)
             if not verde:
                 return estado, tuple(efectos) + ci_efectos
             tren = next(t for t in estado.trenes if t.id == tren.id)
             fase = tren.fase
+        if any(not isinstance(e.admision, Admitido) for e in miembros):
+            return estado, tuple(efectos)
+        if isinstance(tren.fase, Congelado) and isinstance(fase, Armado):
+            return estado, tuple(efectos)
         if isinstance(fase, Certificado):
             nuevo, promocion = aterrizaje(estado, tren, observacion)
             return nuevo, tuple(efectos) + promocion

@@ -2,12 +2,13 @@
 import sys
 from unittest.mock import patch
 
-from test_u16_r1 import CasosCI, ContextoR1, RearmeCIRefTests, check, status
-from dominio import Certificado, EsperandoCI, PLAZO_CI, Pausa, Promoviendo, Terminal
+import test_u16_r1 as fixtures
+from test_u16_r1 import ContextoR1, check, status
+from dominio import Certificado, EsperandoCI, PLAZO_CI, Pausa, Promoviendo, ResultadoCI, Terminal
 
 
-class PromocionCITests(CasosCI):
-    rearmar_con_rojo = RearmeCIRefTests.rearmar_con_rojo
+class PromocionCITests(fixtures.CasosCI):
+    rearmar_con_rojo = fixtures.RearmeCIRefTests.rearmar_con_rojo
 
     def certificar_solicitud_cero(self):
         tren = self.hasta_fase(EsperandoCI).trenes[0]
@@ -93,6 +94,21 @@ class PromocionCITests(CasosCI):
         self.assertIsNone(self.estado().pausa)
         self.assertEqual(self.remoto(), self.B)
 
+    def test_rojo_de_c_rearma_aunque_el_ci_de_un_head_este_pendiente(self):
+        datos = self.certificar_solicitud_cero()
+        self.ci_status(datos, "failure", 1022)
+        leer = self.contexto.observador.ci
+
+        def ci(repo, sha, rama=None):
+            if sha == self.miembros[0][1]:
+                return ResultadoCI("pendiente")
+            return leer(repo, sha, rama)
+
+        with patch.object(self.contexto.observador, "ci", side_effect=ci):
+            self.contexto.tick(1022)
+        self.assertEqual(self.estado().trenes[-1].fase, Terminal("REARMAR"))
+        self.assertEqual(self.remoto(), self.B)
+
     def test_sin_gancho_relee_ci_si_falla_entre_el_paso_y_el_push(self):
         datos = self.certificar_solicitud_cero()
 
@@ -114,3 +130,21 @@ class PromocionCITests(CasosCI):
         self.assertEqual(self.remoto(), datos["head"])
         self.contexto.tick(1023)
         self.assertEqual(self.estado().trenes[-1].fase, Terminal("ATERRIZADO"))
+
+    def test_rojo_posterior_al_push_no_impide_reconciliar_un_ack_perdido(self):
+        datos = self.certificar_solicitud_cero()
+
+        class Corte(Exception):
+            pass
+
+        def perder_ack(nombre, efecto):
+            if nombre == "efecto-ejecutado" and efecto.tipo == "promover":
+                raise Corte
+
+        with self.assertRaises(Corte):
+            self.contexto.tick(1022, perder_ack)
+        self.assertEqual(self.remoto(), datos["head"])
+        self.ci_status(datos, "failure", 1023)
+        self.contexto.tick(1023)
+        self.assertEqual(self.estado().trenes[-1].fase, Terminal("ATERRIZADO"))
+        self.assertEqual(sum(p.endswith(":refs/heads/main") for p in self.lineas("pushes.log")), 1)
