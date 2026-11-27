@@ -34,19 +34,29 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
   `--candidatas A,B` limita la concesión a esas VMs de `pool.json` del mismo
   repositorio y sólo se admite en clases distintas de `preparar`.
   Entre las VMs con cupo, `pedir` pospone las que tienen un apagado pendiente
-  o cuyo último evento de energía para el ID vigente es un apagado. Elige por
-  menor proporción de lugares ocupados y desempata en el orden de
-  `pool.json`. Un diario ilegible deja la VM al final. Si la lectura del
-  diario falla al validar la candidata, `pedir` prueba con las demás.
+  o cuyo último evento de energía para el ID vigente es un apagado. Mientras
+  sigue una reanudación, da preferencia a las candidatas que ya están listas.
+  Elige por menor proporción de lugares ocupados y desempata en el orden de
+  `pool.json`. Un diario ilegible deja la VM al final. Si la lectura del diario
+  falla al validar la candidata, `pedir` prueba con las demás.
   Cuando el pool confirma que una VM está lista después de un evento
   `apagada` del mismo ID y sin un apagado pendiente, registra `encendida`.
   La VM vuelve al orden por carga.
   Los valores predeterminados son prioridad `otra`, espera de cero segundos
   para un lugar y arriendo de 900 segundos. La espera admite de 0 a 7200 s
-  y el arriendo de 300 a 3600 s. Una vez elegida la VM, la espera a que
-  quede lista tras reanudarla tiene un plazo propio de 420 s. Si vence,
-  `pedir` rechaza esa VM con `Boat no confirmó el cambio de estado` y prueba
-  las demás candidatas. Si no consigue un arriendo, sale con 75.
+  y el arriendo de 300 a 3600 s. Una VM está arrancando cuando hay una marca
+  de reanudación de su ID en `operacion.json` con menos de 420 s y Boat la
+  muestra en arranque o detenida. Cualquier pedido que la tenga como
+  candidata puede adoptar esa reanudación y deja libre el candado de la VM
+  entre consultas. Si Boat aún la muestra detenida a los 90 s, `pedir` puede
+  reenviar el `resume` y renovar la marca. Si Boat la muestra en arranque,
+  sigue consultando su estado.
+  Mientras alguna candidata arranca, el turno puede durar más que `--esperar`
+  y se extiende hasta el mayor plazo de esas reanudaciones. Si a los 420 s
+  de la marca Boat sigue sin confirmar que la VM está lista, el pedido la
+  rechaza con `Boat no confirmó el cambio de estado`. Estados como `error` o
+  `cancelled` provocan el rechazo inmediato. Si `pedir` no consigue un
+  arriendo, sale con 75.
 - `pedir --repo R --corrida ID --clase preparar --vm NOMBRE` reserva toda
   la VM para el repositorio dueño aunque el registro indique `apta: false`.
   Mientras el turno espera, la VM deja de otorgar lugares. Una vez que los
@@ -58,7 +68,8 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
 - `soltar ARRIENDO` libera el lugar y se puede repetir.
 - `estado [--json]` muestra VMs, arriendos, lugares y puertas de arranque.
 - `encender NOMBRE|--todas` y `apagar NOMBRE|--todas` actúan sobre VMs
-  declaradas y registradas. Una VM con arriendos vivos se protege del apagado.
+  declaradas y registradas. `encender` espera hasta 420 s a que Boat confirme
+  la reanudación. Una VM con arriendos vivos se protege del apagado.
 - Los lanzadores piden arriendos desde la MacBook. En otros hosts, si el
   comando no está instalado, si falta `pool.json` o ante otra salida 75,
   usan su host habitual. La primera línea de stderr de una salida 75 es

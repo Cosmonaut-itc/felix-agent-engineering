@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import datetime, timezone
 import io
@@ -5,10 +6,12 @@ import json
 import os
 from pathlib import Path
 import plistlib
+from queue import Queue
 import re
 import subprocess
 import sys
 import tempfile
+from threading import Event
 import time
 import unittest
 from unittest.mock import patch
@@ -785,18 +788,33 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.api.sleeps, 1)
         self.assertEqual([item['evento'] for item in self.journal()], ['registro', 'arranque', 'concedido'])
 
-    def request_archived_vm(self, *, transition_at=None, state='ready'):
-        self.api.sandbox(FAKE_ID, state='archived')
-        self.api.resume_fields['state'] = 'resuming'
-
+    @contextlib.contextmanager
+    def resume_clock(self, transitions):
         def advance_clock(seconds):
             self.api.now += seconds
-            if self.api.now - NOW == transition_at:
-                self.api.sandbox(FAKE_ID, state=state)
+            self.assertLessEqual(self.api.now - NOW, 2 * pool.RESUME_TIMEOUT)
+            transition = transitions.get(self.api.now - NOW)
+            if transition is not None:
+                transition()
 
         with patch.object(pool.time, 'monotonic', side_effect=lambda: self.api.now - NOW), \
                 patch.object(self.api, 'sleep', side_effect=advance_clock):
+            yield
+
+    def request_archived_vm(self, *, transition_at=None, state='ready'):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        with self.resume_clock({transition_at: lambda: self.api.sandbox(FAKE_ID, state=state)}):
             return self.run_cli(*self.args())
+
+    def mark_resume(self):
+        pool.atomic_json(self.state / 'vms' / NAME / 'operacion.json', {
+            'id': 'reanudacion-local', 'sandbox_id': FAKE_ID, 'accion': 'resume', 'desde': pool.stamp(NOW),
+        })
+
+    def resume_posts(self):
+        return [(route, body) for method, route, body in self.api.calls
+                if method == 'POST' and route.endswith('/resume')]
 
     def test_pedir_concede_cuando_la_reanudacion_tarda_mas_de_90_s(self):
         code, output, stderr = self.request_archived_vm(transition_at=213)
@@ -804,6 +822,17 @@ class Harness(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(output)['vm'], NAME)
         self.assertEqual(self.api.now, NOW + 213)
+
+    def test_encender_espera_la_reanudacion_aunque_tarde_mas_de_90_s(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+
+        with self.resume_clock({213: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            code, _, stderr = self.run_cli('encender', NAME)
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(self.api.now, NOW + 213)
+        self.assertEqual(len(self.resume_posts()), 1)
 
     def test_pedir_rechaza_si_la_vm_sigue_reanudando_a_los_420_s(self):
         code, output, stderr = self.request_archived_vm()
@@ -821,18 +850,175 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.notices, ['Boat informa un error en ' + NAME])
 
     def test_pedir_no_repite_una_reanudacion_sin_confirmar_a_los_120_s(self):
-        self.api.sandbox(FAKE_ID, state='archived')
-        marker = self.state / 'vms' / NAME / 'operacion.json'
-        pool.atomic_json(marker, {
-            'id': 'reanudacion-local', 'sandbox_id': FAKE_ID, 'accion': 'resume', 'desde': pool.stamp(NOW),
-        })
+        self.api.sandbox(FAKE_ID, state='resuming', holdsCreatorLogins=False)
+        self.mark_resume()
         self.api.now += 120
 
-        code, output, stderr = self.run_cli(*self.args('segundo-pedido'))
+        with self.resume_clock({213: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            self.assertEqual(self.get_grant('segundo-pedido')['vm'], NAME)
 
-        self.assertEqual((code, output), (75, ''), stderr)
-        self.assertEqual(stderr, 'boat-pool: api: reanudación anterior sin confirmar\n')
-        self.assertFalse(self.writes())
+        self.assertFalse(self.resume_posts())
+        self.assertEqual(self.api.now, NOW + 213)
+
+    def test_pedir_concede_otra_vm_mientras_arranca_la_primera(self):
+        other = 'vm-ocupada'
+        self.add_vm(other, fake_id('efgh2345'))
+        busy = self.get_lease('ocupante', 'contract', '--candidatas', other)
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+
+        def release_other():
+            self.assertEqual(self.run_cli('soltar', busy)[0], 0)
+
+        with self.resume_clock({150: release_other}):
+            grant = self.get_grant('tren', 'contract', '--esperar', '180')
+            self.assertEqual(grant['vm'], other)
+            self.assertEqual(self.api.now, NOW + 150)
+
+            # El tren ya recibió B. Otro pedido sigue el mismo arranque de A hasta que vence.
+            self.assert_unavailable('api', *self.args('solo-primera', 'contract', '--candidatas', NAME))
+
+        self.assertEqual(len(self.resume_posts()), 1)
+        self.assertEqual(self.api.now, NOW + 420)
+        rejected, = [item for item in self.journal() if item['evento'] == 'rechazo']
+        self.assertEqual(rejected['motivo'], 'Boat no confirmó el cambio de estado')
+        self.assertEqual(rejected['en'], pool.stamp(NOW + 420))
+
+    def check_two_requests_resume(self, wait):
+        self.config['vms'][0]['lugares'] = 2
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        pauses = Queue()
+        done = Event()
+        gates = []
+
+        def request(run, wait):
+            def pause(_):
+                gate = Event()
+                gates.append(gate)
+                pauses.put((run, gate))
+                if done.is_set() or not gate.wait(5):
+                    raise AssertionError('el reloj simulado no avanzó para ' + run)
+
+            instance = pool.Pool(self.config, self.state, boat_factory=self.api.factory,
+                                 now=lambda: self.api.now, sleep=pause, notify=self.notices.append)
+            args = pool.parser().parse_args(self.args(run, 'contract', '--esperar', str(wait),
+                                                     '--prioridad', 'tren'))
+            return instance.ask(args)
+
+        def paused(run):
+            sleeping_run, gate = pauses.get(timeout=5)
+            self.assertEqual(sleeping_run, run)
+            return gate
+
+        with patch.object(pool.time, 'monotonic', side_effect=lambda: self.api.now - NOW), \
+                ThreadPoolExecutor(max_workers=2) as executor:
+            try:
+                first = executor.submit(request, 'primero', 180)
+                first_gate = paused('primero')
+                with pool.lock(self.state / 'vms' / NAME / 'lock', wait=False) as acquired:
+                    self.assertTrue(acquired, 'el primer pedido duerme sin candado')
+                self.api.now = NOW + 130
+                second = executor.submit(request, 'segundo', wait)
+                second_gate = paused('segundo')
+                queued = [pool.read_json(path) for path in (self.state / 'espera').glob('*.json')]
+                self.assertEqual({turn['corrida'] for turn in queued}, {'primero', 'segundo'})
+                self.assertTrue(all(pool.epoch(turn['vence']) >= NOW + 420 for turn in queued))
+
+                self.api.now = NOW + 213
+                self.api.sandbox(FAKE_ID, state='ready')
+                # El segundo ve READY primero y cede el paso al turno FIFO.
+                second_gate.set()
+                second_ready = paused('segundo')
+                first_gate.set()
+                first_grant = first.result(timeout=5)
+                second_ready.set()
+                second_grant = second.result(timeout=5)
+            finally:
+                done.set()
+                for gate in gates:
+                    gate.set()
+
+        self.assertEqual((first_grant['vm'], second_grant['vm']), (NAME, NAME))
+        self.assertNotEqual(first_grant['arriendo'], second_grant['arriendo'])
+        self.assertEqual(len(self.resume_posts()), 1)
+        self.assertEqual([item['corrida'] for item in self.journal() if item['evento'] == 'concedido'],
+                         ['primero', 'segundo'])
+
+    def test_dos_pedidos_adoptan_el_arranque_con_espera_cero(self):
+        self.check_two_requests_resume(0)
+
+    def test_dos_pedidos_adoptan_el_arranque_con_espera_del_tren(self):
+        self.check_two_requests_resume(180)
+
+    def test_pedir_adopta_una_marca_joven_con_boat_aun_archivada(self):
+        self.api.sandbox(FAKE_ID, state='archived', holdsCreatorLogins=False)
+        self.mark_resume()
+        self.api.now = NOW + 60
+
+        with self.resume_clock({
+            80: lambda: self.api.sandbox(FAKE_ID, state='resuming'),
+            200: lambda: self.api.sandbox(FAKE_ID, state='ready'),
+        }):
+            self.assertEqual(self.get_grant('adopta')['vm'], NAME)
+
+        self.assertFalse(self.resume_posts())
+        self.assertEqual(self.api.now, NOW + 200)
+
+    def test_pedir_reenvia_una_marca_vieja_con_boat_aun_archivada(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        self.mark_resume()
+        self.api.now = NOW + 120
+
+        with self.resume_clock({213: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            self.assertEqual(self.get_grant('reintenta')['vm'], NAME)
+
+        self.assertEqual(len(self.resume_posts()), 1)
+        started, = [item for item in self.journal() if item['evento'] == 'arranque']
+        self.assertEqual(started['en'], pool.stamp(NOW + 120))
+        self.assertEqual(self.api.now, NOW + 213)
+
+    def test_pedir_reenvia_solo_al_cumplir_90_s_si_boat_vuelve_a_archivada(self):
+        self.api.sandbox(FAKE_ID, state='resuming', holdsCreatorLogins=False)
+        self.api.resume_fields['state'] = 'resuming'
+        self.mark_resume()
+        self.api.now = NOW + 60
+
+        with self.resume_clock({
+            80: lambda: self.api.sandbox(FAKE_ID, state='archived'),
+            213: lambda: self.api.sandbox(FAKE_ID, state='ready'),
+        }):
+            self.assertEqual(self.get_grant('reintenta')['vm'], NAME)
+
+        self.assertEqual(len(self.resume_posts()), 1)
+        starts = [item['en'] for item in self.journal() if item['evento'] == 'arranque']
+        self.assertEqual(starts, [pool.stamp(NOW), pool.stamp(NOW + 90)])
+
+    def test_pedir_descarta_el_error_tardio_y_concede_otra_vm(self):
+        other = 'vm-ocupada'
+        self.add_vm(other, fake_id('efgh2345'))
+        busy = self.get_lease('ocupante', 'contract', '--candidatas', other)
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields['state'] = 'resuming'
+        transport = self.api.transport
+
+        def release_other_on_error(method, route, headers, body, timeout):
+            result = transport(method, route, headers, body, timeout)
+            if (method == 'GET' and route == '/sandboxes/' + FAKE_ID
+                    and result['sandbox']['state'] == 'error'):
+                self.assertEqual(self.run_cli('soltar', busy)[0], 0)
+            return result
+
+        with self.resume_clock({120: lambda: self.api.sandbox(FAKE_ID, state='error')}), \
+                patch.object(self.api, 'transport', side_effect=release_other_on_error):
+            self.assertEqual(self.get_grant('tren', 'contract', '--esperar', '30')['vm'], other)
+
+        self.assertEqual(self.api.now, NOW + 120)
+        self.assertEqual(self.notices, ['Boat informa un error en ' + NAME])
+        rejected, = [item for item in self.journal() if item['evento'] == 'rechazo']
+        self.assertEqual(rejected['motivo'], 'Boat no confirmó el cambio de estado')
+        self.assertEqual(rejected['en'], pool.stamp(NOW + 120))
 
     def test_cada_puerta_cerrada_se_registra_y_no_reanuda(self):
         self.api.sandbox(FAKE_ID, state='archived')
