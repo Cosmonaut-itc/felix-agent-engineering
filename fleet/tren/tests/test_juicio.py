@@ -264,7 +264,7 @@ class JuicioTests(unittest.TestCase):
             self.contexto.tick(100, detener)
         self.assertEqual(self.cli("pausa", "--motivo", "mantenimiento")[0], 0)
         self.contexto.tick(200)
-        self.assertEqual(self.estado().pausa, Pausa("manual", detalle="mantenimiento"))
+        self.assertEqual(replace(self.estado().pausa, hasta=None), Pausa("manual", detalle="mantenimiento"))
         self.assertEqual(self.lineas("pushes.log"), [])
         self.assertEqual(self.lineas("trabajos.log"), [])
         self.assertEqual(len(self.posts("/statuses/")), 3)

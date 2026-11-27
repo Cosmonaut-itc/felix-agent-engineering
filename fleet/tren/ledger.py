@@ -208,9 +208,11 @@ class Ledger:
             e for e in nuevas if e.entrega.recibo not in recibos))
 
     def guardar_paso(self, estado, efectos, ahora, consumido=None, fallo_operador=None, *,
-                     prelanzadas=(), suites_sin_leer=()):
+                     prelanzadas=(), suites_sin_leer=(), vencimientos=()):
         """Snapshot, proyecciones, outbox y ACK del resultado: un solo COMMIT."""
         with self.transaccion():
+            for tipo, motivo, hasta in vencimientos:
+                self.evento(estado.repo, tipo, ahora, {"motivo": motivo, "hasta": hasta})
             for aviso in prelanzadas:
                 self.evento(estado.repo, "suite-prelanzada-sin-leer", ahora, aviso)
             for aviso in suites_sin_leer:
@@ -306,7 +308,6 @@ class Ledger:
     def pausa_id(self, repo, estado=None):
         """Identidad de la aparición de una pausa, aun si se repite su texto.
 
-        No añade campos al contrato de Estado/Pausa ni a eventos de sombra.
         Una sucesión de ticks pausados conserva la primera secuencia.
         """
         from juicios import tren_pausado
@@ -315,9 +316,12 @@ class Ledger:
             return ""
         def firma(e):
             tren = tren_pausado(e)
-            return (e.pausa, tren.id if tren else None)
+            pausa = e.pausa
+            if pausa and pausa.motivo == "manual":
+                pausa = replace(pausa, hasta=None)
+            return (pausa, tren.id if tren else None)
         actual = firma(estado)
-        identificador = clave("pausa-inicial", repo, datos(estado.pausa))
+        identificador = clave("pausa-inicial", repo, datos(actual[0]))
         for fila in self.db.execute(
                 "SELECT seq, payload FROM events WHERE repo=? AND tipo='operativo' ORDER BY seq DESC",
                 (repo,)):

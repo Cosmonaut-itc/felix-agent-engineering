@@ -8,7 +8,7 @@ import sqlite3
 import time
 
 from adaptadores.jale import MODOS
-from dominio import Motivo, clave, datos, inicial
+from dominio import MAX_MINUTOS_PAUSA, Motivo, clave, datos, inicial
 from fases import SUITES, medir_fases
 from inscripcion import modo
 from instalar import atomico
@@ -48,9 +48,9 @@ def unidad_publica(valor):
         return HEX_LARGO.sub(r"\1", valor)
 
 
-def fecha(valor, ahora, defecto=None):
+def fecha(valor, ahora, defecto=None, *, futuro=300):
     if type(valor) is int or type(valor) is float and math.isfinite(valor):
-        return max(ahora - 30 * DIA, min(valor, ahora + 300))
+        return max(ahora - 30 * DIA, min(valor, ahora + futuro))
     return defecto
 
 
@@ -208,12 +208,17 @@ def proyectar(filas, tomado, ahora, errors=()):
     repos = []
     for repo, modo_repo, estado, entradas, historia, efectos, devoluciones, lotes, ensayos in filas:
         pausa = estado.get("pausa")
+        hueco = estado.get("hueco")
+        futuro = 60 * MAX_MINUTOS_PAUSA + 300
         if pausa is not None:
             motivo = pausa["motivo"]
             pr = pausa.get("pr")
+            hasta = fecha(pausa.get("hasta"), tomado, futuro=futuro)
             pausa = dict(motivo=motivo if coincide(motivo, r"[a-z0-9][a-z0-9-]{0,47}") else "otra",
                          pr=pr if type(pr) is int and pr > 0 else None,
                          desde=fecha(historia["pausa"][1], tomado, tomado))
+            if hasta is not None:
+                pausa["hasta"] = hasta
         lote = None
         tren = activo(estado)
         if tren:
@@ -231,6 +236,8 @@ def proyectar(filas, tomado, ahora, errors=()):
                           espera=espera(entradas.values(), tomado),
                           recientes=recientes(repo, estado, entradas, historia, devoluciones,
                                              tomado, ahora)))
+        if hueco is not None:
+            repos[-1]["hueco"] = {"hasta": fecha(hueco["hasta"], tomado, futuro=futuro)}
     return dict(schema="tren-host@1", taken=tomado, repos=repos, errors=list(errors))
 
 
@@ -270,7 +277,7 @@ def leer_hitos(db, repo, tipo, ultimo, previo, estado, efectos):
         paso = json.loads(raw)
         foto = paso["estado"]
         pausa = foto.get("pausa")
-        marca = None if pausa is None else clave(pausa)
+        marca = None if pausa is None else clave({k: v for k, v in pausa.items() if k != "hasta"})
         if marca != previo["pausa"][0]:
             previo["pausa"] = [marca, instante]
         for tren in foto["trenes"]:

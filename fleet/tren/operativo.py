@@ -9,7 +9,7 @@ from dataclasses import replace
 import json
 import subprocess
 
-from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
+from dominio import (MAX_MINUTOS_PAUSA, Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
                      Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, base_vieja, clave,
                      datos, desde_datos, paso, recibo_ci)
 from efectos import EfectoFallido, ejecutar, prelanzar_ci, suite_autorizada
@@ -61,6 +61,24 @@ def resumen_outbox(ledger, repo):
             for r, efecto, espera in outbox_en_orden(ledger, repo, estado, set())]
 
 
+def actualizar_plazos(ledger, estado, ahora):
+    nuevo = estado
+    vencimientos = []
+    pausa = estado.pausa
+    if pausa and pausa.motivo == "manual":
+        if pausa.hasta is None:
+            nuevo = replace(nuevo, pausa=replace(pausa, hasta=ahora + 60 * MAX_MINUTOS_PAUSA))
+        elif ahora >= pausa.hasta:
+            nuevo = replace(nuevo, pausa=None)
+            vencimientos.append(("pausa-manual-vencida", pausa.detalle, pausa.hasta))
+    if estado.hueco and not estado.promocion_retenida(ahora):
+        nuevo = replace(nuevo, hueco=None)
+        vencimientos.append(("hueco-vencido", estado.hueco.motivo, estado.hueco.hasta))
+    if nuevo is not estado:
+        ledger.guardar_paso(nuevo, (), ahora, vencimientos=vencimientos)
+    return nuevo
+
+
 def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
          escritor=None):
     """El llamador mantiene el candado durante TODO el tick, incluido el IO.
@@ -74,7 +92,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     escritor = escritor or EscritorGitHub()
     # Sólo para entregas aún no incorporadas: conserva la primera admisión
     # muestreada en custodia, sin importar ningún lote simulado de sombra.
-    estado = ledger.estado(repo, operativo=True)
+    estado = actualizar_plazos(ledger, ledger.estado(repo, operativo=True), ahora)
     trenes_antes = estado.trenes
     config = getattr(observador, "config", {})
     snapshots = Snapshots(ledger, repo, git, config)
@@ -174,7 +192,8 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 continue
             # La obligación es durable y de todo el repo. No gastar un intento
             # ni reabrir verificar mientras otra operación exige cancelación.
-            if efecto.tipo == "promover" and previo.bloqueado(repo):
+            if efecto.tipo == "promover" and (
+                    estado.promocion_retenida(ahora) or previo.bloqueado(repo)):
                 continue
             # Recuperar, levantar una pausa o reanudar no publica el CI ni lanza
             # la suite de una B que main dejó atrás: el paso la rearma.

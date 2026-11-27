@@ -16,7 +16,7 @@ from unittest.mock import patch
 from test_tren import Aislado, BASE, HEAD, REPO, cli, entrega, observacion, vista
 
 from dominio import (Admitido, Candidato, Certificado, Congelado, Corriendo,
-                     Decision, Diagnosticando, Efecto, Entrada, Estado, Fallo, Fase,
+                     Decision, Diagnosticando, Efecto, Entrada, Estado, Fallo, Fase, Hueco,
                      Motivo, Observacion, Pausa, Rechazado, Reproduccion, Retenido,
                      Terminal, Tren, clave, datos, paso)
 from feedback import EscritorGitHub
@@ -141,6 +141,18 @@ class PanelTests(Aislado):
         ensayo = lote["ensayo"]
         self.assertEqual((ensayo["unidad"], ensayo["prs"], ensayo["hechos"]), (UNIDAD, [1], 0))
         self.assertEqual(ensayo["lugar"], dict(tipo="mini", vm=None, pueue_id=33, ref=None))
+
+    def test_publica_los_vencimientos_sin_motivos_privados(self):
+        pausa = Pausa("manual", detalle="/evidencia/pausa")
+        self.paso(-10, estado=replace(self.estado, pausa=pausa))
+        hasta_pausa = self.ahora + 7195
+        hasta_hueco = self.ahora + 3600
+        self.paso(-5, estado=replace(self.estado, pausa=replace(pausa, hasta=hasta_pausa),
+                                    hueco=Hueco(hasta_hueco, "/evidencia/hueco")))
+        repo = self.proyectar("--repo", REPO)["repos"][0]
+        self.assertEqual(repo["pausa"], dict(motivo="manual", pr=None, desde=self.ahora - 10,
+                                            hasta=hasta_pausa))
+        self.assertEqual(repo["hueco"], dict(hasta=hasta_hueco))
 
     def test_devuelto_relee_feedback_y_conserva_el_pr_de_su_lote(self):
         self.paso(-170)
