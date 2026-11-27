@@ -1284,18 +1284,19 @@ class Harness(unittest.TestCase):
         self.config['vms'][0]['lugares'] = 2
         self.api.sandbox(FAKE_ID, state='archived')
         self.api.resume_fields['state'] = 'resuming'
-        granting = Event()
-        release_grant = Event()
-        grant = pool.Pool.grant
+        marker = self.state / 'vms' / NAME / 'operacion.json'
+        marker_cleared = Event()
+        release_first = Event()
+        check_resumed = pool.Pool.check_resumed
 
-        def hold_first_grant(instance, vm, info, args):
-            if args.corrida == 'primero':
-                granting.set()
-                if not release_grant.wait(5):
-                    raise AssertionError('la concesión no soltó el candado')
-            return grant(instance, vm, info, args)
+        def hold_after_marker_cleanup(instance, vm, info, pending, *, wait):
+            check_resumed(instance, vm, info, pending, wait=wait)
+            marker_cleared.set()
+            if not release_first.wait(5):
+                raise AssertionError('el primer pedido no pudo continuar tras limpiar la marca')
 
-        with patch.object(pool.Pool, 'grant', hold_first_grant), self.resume_requests() as (start, paused):
+        with patch.object(pool.Pool, 'check_resumed', hold_after_marker_cleanup), \
+                self.resume_requests() as (start, paused):
             try:
                 first = start('primero')
                 first_gate = paused('primero')
@@ -1309,8 +1310,13 @@ class Harness(unittest.TestCase):
                     second_gate = paused('segundo')
                     self.api.now = NOW + 220
                 first_gate.set()
-                self.assertTrue(granting.wait(5))
-                self.assertFalse((self.state / 'vms' / NAME / 'operacion.json').exists())
+                self.assertTrue(marker_cleared.wait(5))
+                self.assertFalse(marker.exists())
+                with pool.lock(marker.parent / 'lock', wait=False) as free:
+                    self.assertFalse(free)
+                with pool.lock(self.state / 'espera.lock', wait=False) as free:
+                    self.assertTrue(free)
+                self.assertNotIn('concedido', [event['evento'] for event in self.journal()])
                 second_gate.set()
                 second_contended = paused('segundo')
 
@@ -1319,12 +1325,12 @@ class Harness(unittest.TestCase):
                     second_contended.set()
                     second_contended = paused('segundo')
                 self.api.now += 1
-                release_grant.set()
+                release_first.set()
                 first_grant = first.result(timeout=5)
                 second_contended.set()
                 second_grant = second.result(timeout=5)
             finally:
-                release_grant.set()
+                release_first.set()
 
         self.assertEqual((first_grant['vm'], second_grant['vm']), (NAME, NAME))
         self.assertNotEqual(first_grant['arriendo'], second_grant['arriendo'])
