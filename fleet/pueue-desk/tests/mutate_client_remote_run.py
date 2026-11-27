@@ -22,6 +22,8 @@ CASES = [
     ('a confirmed force start survives autonomous finish', R,
      "if reservation is not None and not reservation['open'] and reservation['phase'] == 'finish':",
      'if False:', 'test_recover_closes_once_from_live_done'),
+    ('collector reads the copied phase instead of SQLite', A,
+     'recorded=record)', 'recorded=None)', 'test_recover_closes_once_from_live_done'),
     ('apply reopens completion', A,
      'if finish is not None and isinstance(self.actions.adapter, InstalledAdapters):',
      'if False:', 'test_apply_revalidates_completion'),

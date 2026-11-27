@@ -220,8 +220,17 @@ class RemoteRunTests(unittest.TestCase):
         self.assertEqual(set(bundle), {'observation', 'finish'})
         self.assertIsNotNone(bundle['finish'])
         self.assertEqual(bundle['finish']['proof'], proof)
-        self.engine.reconcile_clients()
-        finish = self.actions.record(bundle['finish'])['response']
+        controller, connect = os.getpid(), self.engine.connect
+
+        def connect_in_controller(*args, **kwargs):
+            self.assertEqual(os.getpid(), controller, 'collector opened SQLite')
+            return connect(*args, **kwargs)
+
+        with patch.object(self.engine, 'connect', connect_in_controller):
+            self.assertEqual(self.engine.reconcile_clients(), 1)
+        terminal = self.actions.record(bundle['finish'])
+        self.assertIsNotNone(terminal)
+        finish = terminal['response']
         self.assertEqual((finish['status'], finish['reservation']), ('finished', 'closed'))
         self.assertEqual(self.actions.record(request)['response']['status'], 'started')
         self.assertFalse(self.actions.reservation(request)['open'])

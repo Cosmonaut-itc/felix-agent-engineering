@@ -69,7 +69,7 @@ class InstalledAdapters:
         self.engine, self.exclusion = engine, exclusion
         self.record, self.reservation = record, reservation
 
-    def adapter(self, request):
+    def adapter(self, request, *, read_record=None):
         if request['launcher'] != 'remote-run' or self.exclusion != 'filtered':
             raise Unavailable('unsupported')
         c.token(request['ref'])
@@ -83,7 +83,7 @@ class InstalledAdapters:
             module.c, module.Unavailable = c, Unavailable
             exec(compile(source, str(REMOTE_RUN), 'exec'), module.__dict__)
             _REMOTE_RUN = module
-        return _REMOTE_RUN.installed(self.engine, self.record, self.reservation)
+        return _REMOTE_RUN.installed(self.engine, read_record or self.record, self.reservation)
 
     def supports(self, request):
         try:
@@ -98,8 +98,14 @@ class InstalledAdapters:
     def verify(self, request, observation, reservation):
         self.adapter(request).verify(request, observation, reservation)
 
-    def recover(self, request, state, reservation, process, daemon):
-        return self.adapter(request).recover(request, state, reservation, process, daemon)
+    def recover(self, request, state, reservation, process, daemon, *, recorded=None):
+        read_record = None
+        if recorded is not None:
+            # The collector inherits a copy of the current phase, not SQLite.
+            def read_record(key):
+                fields = ('launcher', 'ref', 'action_id', 'phase')
+                return recorded if all(key[k] == recorded['request'][k] for k in fields) else None
+        return self.adapter(request, read_record=read_record).recover(request, state, reservation, process, daemon)
 
     def observe_posterior(self, request, state, reservation):
         return self.adapter(request).observe(request, state, reservation, posterior=True)
@@ -814,11 +820,14 @@ class Reconciler:
         if process and process.get('pid') is not None and not stock:
             if self.birth is None or self.birth(process['pid']) == process['birth']:
                 raise Unavailable('rpc_unresolved')
-        if isinstance(self.actions.adapter, InstalledAdapters):
+        fixed = isinstance(self.actions.adapter, InstalledAdapters)
+        if fixed:
             daemon = None if self.offline else daemon  # Only a live snapshot can close a stock action.
-        elif callable(daemon):
-            daemon = daemon()
-        evidence = self.actions.adapter.recover(r, item['state'], reservation, process, daemon)
+            evidence = self.actions.adapter.recover(r, item['state'], reservation, process, daemon, recorded=record)
+        else:
+            if callable(daemon):
+                daemon = daemon()
+            evidence = self.actions.adapter.recover(r, item['state'], reservation, process, daemon)
         if daemon is None:
             raise Unavailable('startup')
         fields = 'observation finish'
@@ -854,7 +863,8 @@ class Reconciler:
                     or finish['mode'] != reservation['mode'] or finish['expected'] != observed['identity']
                     or reservation['acceptance'] is not None and finish['acceptance'] != reservation['acceptance']):
                 raise Unavailable('identity')
-            self.actions.adapter.verify(finish, observed, reservation)
+            if not fixed:
+                self.actions.adapter.verify(finish, observed, reservation)
         return dict(kind='evidence', observation=observed, finish=finish, effect_applied=evidence.get('effect_applied'))
 
     def collect_stock(self, item):
@@ -948,7 +958,10 @@ class Reconciler:
                     return [dict(kind='retain', reason='evidence_missing') for _ in copies]
                 chunk = os.read(read_fd, 65536)
                 if not chunk:
-                    proposals = json.loads(raw)
+                    try:
+                        proposals = json.loads(raw)
+                    except ValueError:
+                        break
                     if type(proposals) is list and len(proposals) == len(copies):
                         return proposals
                     break
