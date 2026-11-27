@@ -1196,7 +1196,8 @@ class Pool:
                     break
                 self.sleep(min(1 if resume_remaining > 0 or waiting_to_restart else 0.25, remaining))
                 rechecked = False
-            if reservation_delayed:
+            # Sin candidatas, el último error explica la salida. Al vencer la espera, la reserva que frenó al turno.
+            if candidates and reservation_delayed:
                 raise Unavailable('sin_lugar', 'sin lugar al vencer la espera (una reserva del tren frenó el turno)')
             if last_error is not None:
                 raise last_error
