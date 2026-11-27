@@ -110,9 +110,9 @@ class Decision:
     pausa: Optional[Pausa]
     minutos: Optional[int] = None
 
-    def vencimiento(self):
+    def vencimiento(self, aplicacion):
         defecto = 60 if self.decision == "abrir-hueco" else MAX_MINUTOS_PAUSA
-        return self.instante + 60 * (defecto if self.minutos is None else self.minutos)
+        return aplicacion + 60 * (defecto if self.minutos is None else self.minutos)
 
 
 @dataclass(frozen=True)

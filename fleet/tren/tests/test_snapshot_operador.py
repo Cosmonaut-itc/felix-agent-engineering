@@ -810,13 +810,13 @@ c.tick(2000, morir)
 
     def test_pausa_manual_persiste(self):
         self.hasta_fase(EsperandoCI)
-        self.assertEqual(self.cli('pausa', '--motivo', 'mantenimiento')[0], 0)
+        self.assertEqual(self.cli('pausa', '--motivo', 'mantenimiento', ahora=890)[0], 0)
         with patch.object(self.contexto.git, 'leer_ref', return_value='f' * 40):
             self.contexto.tick(900)
             self.contexto.tick(910)
         self.assertEqual(replace(self.estado().pausa, hasta=None), Pausa('manual', detalle='mantenimiento'))
         self.assertFalse(self.solicitudes())
-        self.assertEqual(self.cli('pausa', '--levantar', '--motivo', 'listo')[0], 0)
+        self.assertEqual(self.cli('pausa', '--levantar', '--motivo', 'listo', ahora=920)[0], 0)
         self.hasta_fase(Certificado)
         self.comprobar_snapshot(self.argv(), self.nuevo)
 

@@ -781,17 +781,21 @@ obligatorio cuando la pausa corresponde a un tren; se omite para `etapa-1`.
 `--pr` es obligatorio para expulsar y se rechaza en las otras decisiones.
 Una pausa automática no puede sustituirse ni levantarse con `pausa`.
 
-`pausa` acepta entre 1 y 120 minutos y usa 120 por omisión, desde el registro
-de la decisión. El primer tick al vencer levanta la pausa manual y anota el
+`pausa` acepta entre 1 y 120 minutos y usa 120 por omisión, desde el tick que
+aplica la decisión. El primer tick al vencer levanta la pausa manual y anota el
 motivo original en `pausa-manual-vencida`. Para una pausa manual anterior sin
 vencimiento guardado, las dos horas cuentan desde el primer tick que la ve.
-`--levantar` permite terminarla antes.
+`--levantar` permite terminarla antes. Si se registra a tiempo, el tick aplica
+la orden aunque el plazo haya vencido para entonces.
 
-`hueco` retiene el paso a promoción y cualquier push a main mientras siguen
-el armado, las suites y las repeticiones. Acepta entre 1 y 120 minutos y usa
-60 por omisión, desde el registro de la decisión. El tick lo cierra al vencer
-con el evento `hueco-vencido`, y `--cerrar` permite cerrarlo antes. Tanto
-`estado` como el panel muestran el vencimiento de cada control.
+`hueco` retiene los nuevos pushes a main mientras siguen el armado, las suites,
+las repeticiones y la reconciliación de pushes anteriores. Si queda un push
+en curso, devuelve código 2 con `push-a-main-en-curso`. Pide el hueco otra vez
+después del tick que lo reconcilia. Acepta entre 1 y 120 minutos y usa 60 por
+omisión, desde el tick que aplica la decisión. El tick lo cierra al vencer con
+el evento `hueco-vencido`, y `--cerrar` permite cerrarlo antes. Al cerrarse,
+el gancho de preaterrizaje vuelve a verificar una espera pendiente con un plazo
+nuevo. Tanto `estado` como el panel muestran el vencimiento de cada control.
 
 Los comandos registran una entrada `pendiente` en la tabla aditiva
 `decisions` y el evento `juicio-registrado`: id, repo, tren, acción, PR,

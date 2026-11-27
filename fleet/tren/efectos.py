@@ -92,7 +92,8 @@ def pedidos_adelantados(fase, git, adaptador, tren):
         yield solicitud, commit
 
 
-def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
+def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None, *,
+             solo_lectura=False, push_previo=False):
     """Repetible sobre la misma instantánea; los leases hacen converger el IO.
 
     Devuelve Ejecucion; sólo completo=True permite cerrar el efecto del outbox.
@@ -213,18 +214,17 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
         cert = fase.certificado
         entradas = {e.entrega.recibo: e for e in estado.entradas}
         heads = tuple(entradas[r].entrega.head for r in tren.recibos)
-        vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
-        if any(not isinstance(admision_entrada(entradas[r], vistas, observacion), Admitido)
-               for r in tren.recibos):
-            # Puede haber aterrizado antes de perder el ACK: leer sin empujar.
-            lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
-            return Ejecucion(replace(limpia, main=lectura,
-                                    intento_promocion=fase.intentos),
-                             not isinstance(lectura, Incierto))
+        limpia = replace(limpia, intento_promocion=fase.intentos)
         # Antes de repetir IO, reconciliar: un proceso muerto pudo aterrizar C.
+        leer = previo.reconciliar if solo_lectura and previo is not None else git.reconciliar
+        lectura = leer(cert.B, cert.C, cert.arbol, heads)
+        if solo_lectura or not lote_admitido(estado, tren, observacion):
+            # Los PR pueden haberse cerrado por nuestro push antes del ACK.
+            return Ejecucion(replace(limpia, main=lectura),
+                not isinstance(lectura, Incierto),
+                en_curso=(solo_lectura or push_previo) and isinstance(lectura, (EnBase, Incierto)))
         # Una lectura incierta conserva el contrato U2: intentar el CAS sigue
         # siendo seguro por el lease, y su lectura posterior decide el resultado.
-        lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
         if isinstance(lectura, (EnBase, Incierto)):
             if previo is not None and previo.necesario(tren, observacion):
                 if isinstance(lectura, Incierto):
@@ -237,8 +237,12 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                         antes_push=lambda: previo.verificar(estado, tren, observacion, efecto))
             else:
                 lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
+        if (isinstance(lectura, Incierto) and lectura.motivo == "push-sin-confirmar" or
+                push_previo and isinstance(lectura, (EnBase, Incierto, EsperaPrevia, BloqueoPrevia))):
+            # Ver B no prueba que un servidor que perdió el ACK haya terminado.
+            return Ejecucion(replace(limpia, main=lectura), False, en_curso=True)
         if previo is not None:
             lectura = previo.resolver(estado, tren, lectura)
-        return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),
+        return Ejecucion(replace(limpia, main=lectura),
                          not isinstance(lectura, (Incierto, EsperaPrevia)))
     raise ValueError("efecto o fase no soportados")

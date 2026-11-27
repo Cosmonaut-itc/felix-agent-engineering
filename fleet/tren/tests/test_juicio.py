@@ -28,7 +28,10 @@ class JuicioTests(unittest.TestCase):
     lineas = activo.ActivoTests.lineas
     hijo = activo.ActivoTests.hijo
 
-    def cli(self, *argv):
+    def cli(self, *argv, ahora=None):
+        if ahora is not None:
+            args = activo.cli.parser().parse_args([argv[0], "--repo", REPO, *argv[1:]])
+            return activo.cli.ejecutar(args, ahora=ahora)
         proc = subprocess.run([sys.executable, "-I", str(activo.RAIZ / "pao-tren"),
                                argv[0], "--repo", REPO, *argv[1:]],
                               capture_output=True, text=True, timeout=30)
@@ -262,7 +265,7 @@ class JuicioTests(unittest.TestCase):
                 raise Muerte()
         with self.assertRaises(Muerte):
             self.contexto.tick(100, detener)
-        self.assertEqual(self.cli("pausa", "--motivo", "mantenimiento")[0], 0)
+        self.assertEqual(self.cli("pausa", "--motivo", "mantenimiento", ahora=150)[0], 0)
         self.contexto.tick(200)
         self.assertEqual(replace(self.estado().pausa, hasta=None), Pausa("manual", detalle="mantenimiento"))
         self.assertEqual(self.lineas("pushes.log"), [])
@@ -273,7 +276,7 @@ class JuicioTests(unittest.TestCase):
         self.assertEqual(self.lineas("pushes.log"), [])
         expediente = self.cli("estado", "--juicio")[1]["juicio"]
         self.assertEqual([a["decision"] for a in expediente["admitidas"]], ["levantar"])
-        self.assertEqual(self.cli("pausa", "--levantar", "--motivo", "terminado")[0], 0)
+        self.assertEqual(self.cli("pausa", "--levantar", "--motivo", "terminado", ahora=450)[0], 0)
         self.contexto.tick(500)
         self.assertIsNone(self.estado().pausa)
         self.aterrizar_ultimo()
@@ -283,11 +286,11 @@ class JuicioTests(unittest.TestCase):
         # Suite ejecutada, resultado aún no consumido.
         self.contexto.tick(2000)
         self.assertEqual(len(self.lineas("trabajos.log")), 1)
-        self.assertEqual(self.cli("pausa", "--motivo", "revisión")[0], 0)
+        self.assertEqual(self.cli("pausa", "--motivo", "revisión", ahora=2100)[0], 0)
         self.contexto.tick(2200)
         self.assertIsNotNone(self.estado().pausa)
         self.assertEqual(self.remoto(), self.B)
-        self.assertEqual(self.cli("pausa", "--levantar", "--motivo", "seguir")[0], 0)
+        self.assertEqual(self.cli("pausa", "--levantar", "--motivo", "seguir", ahora=2300)[0], 0)
         self.contexto.tick(2400)
         self.aterrizar_ultimo()
         self.assertEqual(len(self.lineas("trabajos.log")), 1)
@@ -302,12 +305,12 @@ class JuicioTests(unittest.TestCase):
         with self.assertRaises(Muerte):
             self.contexto.tick(2000, detener)
         self.assertEqual(self.lineas("trabajos.log"), [])
-        self.assertEqual(self.cli("pausa", "--motivo", "esperar")[0], 0)
+        self.assertEqual(self.cli("pausa", "--motivo", "esperar", ahora=2050)[0], 0)
         self.contexto.tick(2100)
         self.contexto.tick(2200)
         self.assertEqual(self.lineas("trabajos.log"), [])
         self.assertEqual(self.remoto(), self.B)
-        self.assertEqual(self.cli("pausa", "--levantar", "--motivo", "seguir")[0], 0)
+        self.assertEqual(self.cli("pausa", "--levantar", "--motivo", "seguir", ahora=2250)[0], 0)
         self.contexto.tick(2300)
         self.aterrizar_ultimo()
         self.assertEqual(len(self.lineas("trabajos.log")), 1)

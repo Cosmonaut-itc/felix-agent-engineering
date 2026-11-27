@@ -85,7 +85,7 @@ def base_y_commit(tren):
     return getattr(evidencia, "B", ""), getattr(evidencia, "C", "")
 
 
-def error_decision(estado, decision, pausa_id, ahora=None):
+def error_decision(estado, decision, pausa_id, ahora=None, *, push_en_curso=False):
     """También valida el CLI; el reductor repite la validación al consumir."""
     if decision.repo != estado.repo or not decision.motivo.strip():
         return "repo-o-motivo-invalido"
@@ -95,16 +95,18 @@ def error_decision(estado, decision, pausa_id, ahora=None):
         minutos = decision.minutos
         if minutos is not None and (type(minutos) is not int or not 1 <= minutos <= MAX_MINUTOS_PAUSA):
             return "minutos-invalidos"
-        if ahora >= decision.vencimiento():
-            return "plazo-vencido"
     if accion in ("abrir-hueco", "cerrar-hueco"):
         if decision.tren is not None or decision.pr is not None:
             return "alcance-invalido"
         vigente = estado.promocion_retenida(ahora)
         if accion == "abrir-hueco":
+            if push_en_curso:
+                return "push-a-main-en-curso"
             return "hueco-ya-abierto" if vigente else ""
         return "" if vigente else "hueco-no-vigente"
     pausa = estado.pausa
+    if accion == "levantar" and pausa and pausa.hasta is not None and ahora >= pausa.hasta:
+        return "pausa-no-vigente"
     if (accion == "levantar" and pausa and pausa.motivo == "manual" and
             decision.pausa and decision.pausa.hasta is None):
         # Una decisión anterior al vencimiento añadido conserva su identidad.
@@ -170,18 +172,18 @@ def error_decision(estado, decision, pausa_id, ahora=None):
     return ""
 
 
-def resolver(estado, observacion):
+def resolver(estado, observacion, *, push_en_curso=False):
     decision = observacion.decision
-    error = error_decision(estado, decision, observacion.pausa_id, observacion.ahora)
+    error = error_decision(estado, decision, observacion.pausa_id, push_en_curso=push_en_curso)
     resultado = Efecto(clave("resolver-juicio", decision.id), "resolver-juicio",
         (decision.id, "rechazada" if error else "aplicada", error))
     if error:
         return estado, (resultado,)
     if decision.decision == "pausar":
-        pausa = Pausa("manual", detalle=decision.motivo, hasta=decision.vencimiento())
+        pausa = Pausa("manual", detalle=decision.motivo, hasta=decision.vencimiento(observacion.ahora))
         return replace(estado, pausa=pausa), (resultado,)
     if decision.decision == "abrir-hueco":
-        hueco = Hueco(decision.vencimiento(), decision.motivo)
+        hueco = Hueco(decision.vencimiento(observacion.ahora), decision.motivo)
         return replace(estado, hueco=hueco), (resultado,)
     if decision.decision == "cerrar-hueco":
         return replace(estado, hueco=None), (resultado,)

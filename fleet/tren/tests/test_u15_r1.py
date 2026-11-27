@@ -43,7 +43,9 @@ class RegresionesTests(ContextoPausa):
         self.assertEqual(pendiente[0]["estado"], estado_outbox)
         self.assertEqual(pendiente[0]["resultado"] is None, estado_outbox == "ejecutando")
         io = [self.lineas(n) for n in ("pushes.log", "trabajos.log")]
-        self.assertEqual(self.cli("pausa", "--motivo", "mantenimiento")[0], 0)
+        opciones = ["pausa", "--repo", REPO]
+        args = activo.cli.parser().parse_args(opciones + ["--motivo", "mantenimiento"])
+        self.assertEqual(activo.cli.ejecutar(args, ahora=2900)[0], 0)
         for ahora in (3000, 3100, 3200):
             self.contexto.tick(ahora)
             pausado = self.estado()
@@ -53,7 +55,8 @@ class RegresionesTests(ContextoPausa):
             self.assertEqual(self.posts("/comments"), [])
             self.assertEqual(self.promocion_pendiente(), pendiente)
             self.assertEqual(io, [self.lineas(n) for n in ("pushes.log", "trabajos.log")])
-        self.assertEqual(self.cli("pausa", "--levantar", "--motivo", "seguir")[0], 0)
+        args = activo.cli.parser().parse_args(opciones + ["--levantar", "--motivo", "seguir"])
+        self.assertEqual(activo.cli.ejecutar(args, ahora=3250)[0], 0)
         self.contexto.tick(3300)
         final = self.aterrizar_ultimo()
         self.assertEqual([t.fase for t in final.trenes], [Terminal("ATERRIZADO")])

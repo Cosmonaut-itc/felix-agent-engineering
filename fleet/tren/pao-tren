@@ -92,7 +92,8 @@ def parser():
         control.add_argument("--motivo", required=True, type=motivo)
         opciones = control.add_mutually_exclusive_group()
         opciones.add_argument(cierre, dest="cerrar", action="store_true")
-        opciones.add_argument("--minutos", type=minutos)
+        opciones.add_argument("--minutos", type=minutos,
+                              help="duración desde el tick que aplica la orden")
     tick = comandos.add_parser("tick")
     tick.add_argument("--repo", required=True, type=repositorio)
     tick.add_argument("--seco", action="store_true")
@@ -173,7 +174,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                     getattr(args, "tren", None), accion, getattr(args, "pr", None),
                     args.motivo, ahora, ledger.pausa_id(args.repo, estado), estado.pausa,
                     getattr(args, "minutos", None))
-                error = error_decision(estado, decision, decision.pausa_id)
+                error = error_decision(estado, decision, decision.pausa_id,
+                    push_en_curso=accion == "abrir-hueco" and ledger.push_en_curso(args.repo))
                 if error:
                     return 2, {"error": error}
                 if ledger.siguiente_decision(args.repo) is not None:
@@ -262,7 +264,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                 if isinstance(adaptador, Jale):
                     adaptador.limite_cancelacion = getattr(args, "limite_cancelacion", None)
                 return 0, tick(ledger, args.repo, observador, ahora, git, adaptador, frontera,
-                               escritor)
+                               escritor, reloj=time.time if reloj_real else None)
             doble_camino = modo(args.repo) == "sombra"
             estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
             if observador is None:

@@ -208,9 +208,13 @@ class Ledger:
             e for e in nuevas if e.entrega.recibo not in recibos))
 
     def guardar_paso(self, estado, efectos, ahora, consumido=None, fallo_operador=None, *,
-                     prelanzadas=(), suites_sin_leer=(), vencimientos=()):
+                     prelanzadas=(), suites_sin_leer=(), vencimientos=(), liberar_hueco=False):
         """Snapshot, proyecciones, outbox y ACK del resultado: un solo COMMIT."""
         with self.transaccion():
+            if liberar_hueco:
+                # Al retomar, verificar otra vez con el gancho y un plazo nuevo.
+                self.db.execute("UPDATE pre_aterrizajes SET payload=json_remove(payload, "
+                                "'$.vence_espera') WHERE repo=? AND pendiente=1", (estado.repo,))
             for tipo, motivo, hasta in vencimientos:
                 self.evento(estado.repo, tipo, ahora, {"motivo": motivo, "hasta": hasta})
             for aviso in prelanzadas:
@@ -304,6 +308,10 @@ class Ledger:
             "SELECT e.clave, e.payload, o.estado, r.payload AS resultado FROM effects e "
             "JOIN outbox o ON o.clave=e.clave LEFT JOIN effect_results r ON r.clave=e.clave "
             "WHERE e.repo=? AND o.estado NOT IN ('completo', 'cancelado') ORDER BY e.rowid", (repo,))]
+
+    def push_en_curso(self, repo):
+        return any(f["estado"] == "ejecutando" and json.loads(f["payload"])["tipo"] == "promover"
+                   for f in self.outbox(repo))
 
     def pausa_id(self, repo, estado=None):
         """Identidad de la aparición de una pausa, aun si se repite su texto.

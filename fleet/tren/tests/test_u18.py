@@ -251,10 +251,13 @@ class CicloTests(ContextoU18):
     def test_cancelar_al_pausar_y_abortar_sin_rojo(self):
         self.preparar()
         self.tick()
-        self.cli('pausa', '--motivo', 'pausa de prueba')
+        opciones = ['pausa', '--repo', REPO]
+        args = activo.cli.parser().parse_args(opciones + ['--motivo', 'pausa de prueba'])
+        self.assertEqual(activo.cli.ejecutar(args, ahora=5000)[0], 0)
         self.tick()
         self.assertEqual(len(self.llamadas('cancelar')), 1)
-        self.cli('pausa', '--levantar', '--motivo', 'reanudar prueba')
+        args = activo.cli.parser().parse_args(opciones + ['--levantar', '--motivo', 'reanudar prueba'])
+        self.assertEqual(activo.cli.ejecutar(args, ahora=5000)[0], 0)
         self.tick()
         self.modo('pausar')
         self.hasta(lambda: self.estado().pausa is not None)
