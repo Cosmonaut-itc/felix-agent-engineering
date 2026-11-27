@@ -11,7 +11,7 @@ import subprocess
 
 from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
                      Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, base_vieja, clave,
-                     datos, desde_datos, paso, recibo_ci)
+                     datos, desde_datos, paso, puede_relanzar, recibo_ci)
 from efectos import EfectoFallido, ejecutar, prelanzar_ci, suite_autorizada
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
@@ -362,6 +362,15 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 consumido = fila["clave"]
                 break
     nuevo, efectos = paso(estado, observacion)
+    if consumido is not None and nuevo.pausa is None:
+        resultado = observacion.resultado_suite or observacion.repeticion
+        vigente = next((t for t in nuevo.trenes if t.id == observacion.tren_id and
+                        not isinstance(t.fase, Terminal)), None)
+        if (vigente is not None and puede_relanzar(vigente, resultado) and
+                any(not isinstance(e.admision, Admitido) for e in nuevo.entradas
+                    if e.entrega.recibo in vigente.recibos)):
+            # La misma salida se vuelve a observar cuando el lote sea readmitido.
+            consumido = None
     nuevo = limpiar(nuevo)
     guardar_paso(nuevo, efectos, consumido, fallo)
     frontera("paso-guardado", None)

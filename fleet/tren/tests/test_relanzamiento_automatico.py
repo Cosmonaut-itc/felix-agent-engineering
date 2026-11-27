@@ -3,8 +3,8 @@ from dataclasses import replace
 import json
 
 from test_tren import Aislado, estado, observacion
-from dominio import (Completo, Corriendo, Decision, Diagnosticando, EsperandoCI,
-                     Pausa, RechazoLanzador, Tren, intento_suite, paso)
+from dominio import (Completo, Corriendo, Decision, Diagnosticando, Efecto, EsperandoCI,
+                     Pausa, RechazoLanzador, Tren, clave, intento_suite, paso)
 from test_hasito import CANDIDATO
 from test_jale import FALLO
 from test_sen_7120 import evidencia
@@ -14,28 +14,30 @@ class RelanzamientoAutomaticoTests(Aislado):
     def setUp(self):
         super().setUp()
         inicial = estado()
-        self.tren = Tren("lote", (inicial.entradas[0].entrega.recibo,), EsperandoCI(CANDIDATO))
+        self.tren = Tren("lote", (inicial.entradas[0].entrega.recibo,), EsperandoCI(CANDIDATO, desde=99))
         self.inicial = replace(inicial, trenes=(self.tren,))
         self.obs = observacion(tren_id=self.tren.id)
         self.suite = replace(self.obs, ci_candidato="verde", suite="suite.json")
         self.sin_recibo = replace(self.suite, resultado_suite=RechazoLanzador(
             "coordinador.log", "salida-sin-recibo"))
 
-    def test_suite_sin_recibo_relanzada_con_otro_intento(self):
+    def test_suite_sin_recibo_reengancha_el_mismo_intento(self):
         nuevo, (registro, efecto) = paso(self.inicial, self.sin_recibo)
         tren, = nuevo.trenes
         self.assertIsNone(nuevo.pausa)
         self.assertIsInstance(tren.fase, Corriendo)
-        self.assertEqual(intento_suite(tren.fase), 1)
+        self.assertEqual(intento_suite(tren.fase), 0)
+        self.assertEqual(tren.fase.reenganches, 1)
+        self.assertEqual(tren.fase.registro_reenganche, "coordinador.log")
         self.assertEqual(tren.relanzamientos_automaticos, 1)
         self.assertEqual(efecto.tipo, "reanudar-suite")
-        self.assertEqual(efecto.datos, (tren.id, "1"))
+        self.assertEqual(efecto.datos, (tren.id, "0", "1", "coordinador.log"))
         self.assertEqual(registro.tipo, "registrar-relanzamiento-automatico")
-        self.assertEqual(paso(nuevo, self.sin_recibo), (nuevo, (efecto,)))
+        self.assertEqual(paso(nuevo, self.obs), (nuevo, (efecto,)))
 
     def test_presupuesto_del_lote_sobrevive_a_fases_y_evidencias(self):
         en_suite, _ = paso(self.inicial, self.sin_recibo)
-        en_diagnostico, _ = paso(en_suite, replace(self.suite, suite_intento=1,
+        en_diagnostico, _ = paso(en_suite, replace(self.suite,
             resultado_suite=Completo("rojo", (FALLO,)), costo_suite_sana_s=1000))
         fase = en_diagnostico.trenes[0].fase
         self.assertIsInstance(fase, Diagnosticando)
@@ -103,11 +105,42 @@ class RelanzamientoAutomaticoTests(Aislado):
         fila, = ledger.outbox(repo)
         self.assertEqual(fila["clave"], efectos[-1].clave)
 
-    def test_relanzamiento_espera_readmision(self):
-        retenido, (registro,) = paso(self.inicial, replace(self.sin_recibo, prs=()))
+    def test_relanzamiento_diferido_conserva_resultado_en_el_buzon(self):
+        from observador import Falso
+        from operativo import resultado_observacion, tick
+
+        ledger = self.ledger()
+        repo = self.inicial.repo
+        iniciar = Efecto(clave("suite", self.tren.id), "iniciar-suite", (self.tren.id,))
+        for entrada in self.inicial.entradas:
+            ledger.entregar(entrada.entrega, entrada.recibida)
+        ledger.guardar_paso(self.inicial, (iniciar,), 98)
+        ledger.registrar_efecto(repo, iniciar, 99,
+            {"observacion": resultado_observacion(iniciar, self.sin_recibo)}, True)
+        tick(ledger, repo, Falso(replace(self.obs, prs=())), 100, object())
+        retenido = ledger.estado(repo, operativo=True)
         self.assertIsNone(retenido.pausa)
-        self.assertEqual(registro.tipo, "registrar-relanzamiento-automatico")
-        nuevo, (efecto,) = paso(retenido, self.obs)
+        self.assertEqual(retenido.trenes, (self.tren,))
+        self.assertFalse(any(e["tipo"] == "relanzamiento-automatico"
+                             for e in ledger.ultimos_eventos(repo)))
+        fila, = ledger.outbox(repo)
+        self.assertEqual((fila["clave"], fila["estado"]), (iniciar.clave, "resultado"))
+
+        class PasoGuardado(Exception):
+            pass
+
+        def detener(nombre, efecto):
+            if nombre == "paso-guardado":
+                raise PasoGuardado
+
+        with self.assertRaises(PasoGuardado):
+            tick(ledger, repo, Falso(self.obs), 101, object(), frontera=detener)
+        nuevo = ledger.estado(repo, operativo=True)
         self.assertEqual(nuevo.trenes[0].relanzamientos_automaticos, 1)
-        self.assertEqual(efecto.tipo, "reanudar-suite")
-        self.assertEqual(efecto.datos, (self.tren.id, "1"))
+        self.assertEqual(nuevo.trenes[0].fase.registro_reenganche, "coordinador.log")
+        evento, = [e for e in ledger.ultimos_eventos(repo)
+                   if e["tipo"] == "relanzamiento-automatico"]
+        self.assertEqual(json.loads(evento["payload"])["numero"], 1)
+        fila, = ledger.outbox(repo)
+        self.assertEqual((fila["estado"], json.loads(fila["payload"])["tipo"]),
+                         ("pendiente", "reanudar-suite"))

@@ -834,12 +834,17 @@ el feedback conserva B y deja C vacío; no inventa una unidad de prueba.
 rojo, y las readmite por las reglas normales desde el tick siguiente.
 
 El tren relanza automáticamente una suite o repetición ante `salida-sin-recibo`,
-`corrida-interrumpida` o `cobertura-parcial-boat`, con registro y clave nuevos.
+`corrida-interrumpida` o `cobertura-parcial-boat`. Con `salida-sin-recibo`
+reengancha el mismo registro y clave. Los otros dos detalles abren un registro
+y una clave nuevos. Un rechazo no relanzable en otro modo o intento impide
+el relanzamiento automático.
 Tiene dos relanzamientos por lote, compartidos entre suite y diagnóstico. La
 tercera señal pausa el tren y permite las decisiones de la tabla. En
 `pao-tren estado`, el evento `relanzamiento-automatico` muestra el número,
 el límite y el detalle, por ejemplo «relanzado automáticamente 1/2 por
 salida-sin-recibo».
+Para cortar una corrida del tren a propósito, pausa el tren antes de cortarla
+o la relanzará hasta dos veces.
 
 | Motivo de pausa | Detalle | Decisiones admitidas y efecto |
 |---|---|---|

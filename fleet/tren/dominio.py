@@ -211,6 +211,7 @@ class Incompleto:
 class RechazoLanzador:
     evidencia: str
     detalle: str = "lanzador-rechazo"
+    relanzable: bool = True
 
 
 @dataclass(frozen=True)
@@ -714,23 +715,30 @@ def nuevo_intento_lanzador(fase):
                    reenganches=0, registro_reenganche="")
 
 
+def reenganchar_lanzador(fase, evidencia):
+    return replace(fase, reenganches=fase.reenganches + 1, registro_reenganche=evidencia)
+
+
+def puede_relanzar(tren, resultado):
+    return (isinstance(resultado, RechazoLanzador) and resultado.relanzable and
+            resultado.detalle in RECHAZOS_RELANZABLES and
+            tren.relanzamientos_automaticos < LIMITE_RELANZAMIENTOS_AUTOMATICOS)
+
+
 def resolver_rechazo_lanzador(estado, tren, fase, resultado, despachar):
-    if (resultado.detalle not in RECHAZOS_RELANZABLES or
-            tren.relanzamientos_automaticos >= LIMITE_RELANZAMIENTOS_AUTOMATICOS):
+    if not puede_relanzar(tren, resultado):
         return pausar_lanzador(estado, resultado)
-    if not despachar and any(isinstance(e.admision, Rechazado)
-                             for e in estado.entradas if e.entrega.recibo in tren.recibos):
-        return estado, ()  # paso conserva la pausa por head cambiado.
+    if not despachar:
+        return estado, ()
     numero = tren.relanzamientos_automaticos + 1
-    fase = nuevo_intento_lanzador(fase)
+    fase = (reenganchar_lanzador(fase, resultado.evidencia) if resultado.detalle == "salida-sin-recibo"
+            else nuevo_intento_lanzador(fase))
     nuevo = replace(tren, fase=fase, relanzamientos_automaticos=numero)
     estado = replace(estado, trenes=tuple(nuevo if t.id == tren.id else t for t in estado.trenes))
     registro = Efecto(clave("relanzar-automaticamente", tren.id, numero),
         "registrar-relanzamiento-automatico",
         (tren.id, str(numero), str(LIMITE_RELANZAMIENTOS_AUTOMATICOS),
          resultado.detalle, resultado.evidencia))
-    if not despachar:
-        return estado, (registro,)  # La fase conserva el intento hasta readmitir el lote.
     efecto = (efecto_reanudar_suite(tren, fase) if isinstance(fase, Corriendo)
               else efecto_diagnostico(tren, fase))
     return estado, (registro, efecto)
@@ -1100,11 +1108,15 @@ def paso(estado, observacion):
                 (not fase.solicitud or observacion.ci_recibo == recibo_ci(tren)) and
                 observacion.ci_candidato == "verde" and observacion.suite and
                 observacion.resultado_suite is not None):
+            admitidos = all(isinstance(e.admision, Admitido) for e in miembros)
+            rechazados = any(isinstance(e.admision, Rechazado) for e in miembros)
+            if not admitidos and not rechazados and puede_relanzar(tren, observacion.resultado_suite):
+                return estado, tuple(efectos)
             fase = Corriendo(fase.candidato, observacion.suite, observacion.ci_recibo)
             estado = cambiar_fase(estado, tren, fase)
             nuevo, suite_efectos = avanzar_suite(estado, replace(tren, fase=fase), observacion,
-                all(isinstance(e.admision, Admitido) for e in miembros))
-            if any(isinstance(e.admision, Rechazado) for e in miembros):
+                admitidos)
+            if rechazados:
                 nuevo = replace(nuevo, pausa=Pausa("head-cambiado-en-tren"))
             return nuevo, tuple(efectos) + suite_efectos
         # Los resultados completados quedan incorporados antes de esta puerta.
@@ -1182,6 +1194,8 @@ def datos(valor):
                                and not getattr(valor, f.name))
                        and not (isinstance(valor, Tren) and f.name == "relanzamientos_automaticos"
                                 and not valor.relanzamientos_automaticos)
+                       and not (isinstance(valor, RechazoLanzador) and f.name == "relanzable"
+                                and valor.relanzable)
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
                                 and valor.ventana is None)})
     if isinstance(valor, tuple):

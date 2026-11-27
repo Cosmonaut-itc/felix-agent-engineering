@@ -100,7 +100,7 @@ class RunnerFalso:
 
 
 def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="reanudar", codigo=64,
-                      detalle=None):
+                      detalle=None, relanzamientos_previos=0):
     """Contrato operativo compartido: cada adaptador conserva su productor falso."""
     from dominio import Decision, intento_suite
     from ledger import Ledger
@@ -130,10 +130,11 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
     anterior = actual.trenes[0].fase
     if detalle is None:
         detalle = "lanzador-rechazo" if codigo == 64 else "salida-sin-recibo"
-    if codigo != 64:
-        # Estos casos ejercitan el juicio humano al agotar los relanzamientos.
-        actual = replace(actual, trenes=(replace(actual.trenes[0], relanzamientos_automaticos=2),))
+    if relanzamientos_previos:
+        actual = replace(actual, trenes=(replace(actual.trenes[0],
+            relanzamientos_automaticos=relanzamientos_previos),))
     reengancha = detalle == "salida-sin-recibo" and decision == "reanudar"
+    automatico = relanzamientos_previos == 0 and (reengancha or detalle == "corrida-interrumpida")
     configurar(str(codigo))
     ledger = Ledger(caso.raiz / ("ledger-" + tipo))
     caso.addCleanup(ledger.close)
@@ -164,46 +165,58 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
     caso.assertTrue(rechazados)
     invocaciones_antes = list(invocaciones())
     observador = Falso(obs)
-    tick(ledger, actual.repo, observador, obs.ahora + 1, caso.git, caso.adaptador)
-    pausado = ledger.estado(actual.repo, operativo=True)
-    caso.assertIsNotNone(pausado.pausa)
-    caso.assertEqual((pausado.pausa.motivo, pausado.pausa.detalle),
-                     ("infraestructura", detalle))
-    caso.assertEqual(invocaciones(), invocaciones_antes)
-    caso.assertTrue(pausado.pausa.archivos)
-    caso.assertTrue(all(Path(r).is_file() for r in pausado.pausa.archivos))
-    caso.assertEqual(pausado.trenes[0].fase.reanudaciones,
-                     getattr(anterior, "reanudaciones", 0))
-    if tipo == "repetir":
-        caso.assertIsInstance(anterior, Diagnosticando)
-        fase = pausado.trenes[0].fase
-        caso.assertIsInstance(fase, Diagnosticando)
-        caso.assertEqual((fase.costo_infra_s, fase.evidencias, fase.pendiente),
-                         (anterior.costo_infra_s, anterior.evidencias, anterior.pendiente))
-    caso.assertFalse(ledger.outbox(actual.repo))
-    caso.assertEqual(desde_datos(datos(pausado)), pausado)
-    # La proyección del CLI muestra motivo, evidencia y decisiones admitidas.
-    from test_tren import cli
-    from unittest.mock import patch
-    with patch.object(cli, "activacion", return_value="activo"), \
-         patch.object(cli, "Ledger", return_value=ledger):
-        args = cli.parser().parse_args(["estado", "--repo", actual.repo, "--juicio"])
-        _, visible = cli.ejecutar(args)
-    caso.assertEqual(visible["estado"]["pausa"]["detalle"], detalle)
-    admitidas = {"reanudar", "abortar"}
-    if detalle == "salida-sin-recibo":
-        admitidas.add("absolver")
-    caso.assertEqual({d["decision"] for d in visible["juicio"]["admitidas"]}, admitidas)
-    # El CLI cierra el ledger: reabrir para continuar la decisión real.
-    ledger = Ledger(caso.raiz / ("ledger-" + tipo))
-    caso.addCleanup(ledger.close)
-    d = Decision("resolver-" + str(codigo), actual.repo, "lote", decision, None,
-                 "infraestructura corregida", obs.ahora + 2,
-                 ledger.pausa_id(actual.repo), pausado.pausa)
-    ledger.registrar_decision(d)
-    configurar("verde")
-    tick(ledger, actual.repo, observador, obs.ahora + 2, caso.git, caso.adaptador)
-    resuelto = ledger.estado(actual.repo, operativo=True)
+    if automatico:
+        configurar("verde")
+        tick(ledger, actual.repo, observador, obs.ahora + 1, caso.git, caso.adaptador)
+        resuelto = ledger.estado(actual.repo, operativo=True)
+        caso.assertEqual(resuelto.trenes[0].relanzamientos_automaticos, 1)
+        evidencia = next(r for r in ledger.ultimos_eventos(actual.repo)
+                         if r["tipo"] == "relanzamiento-automatico")
+        log = json.loads(evidencia["payload"])["evidencia"]
+        caso.assertTrue(Path(log).is_file())
+        if reengancha:
+            caso.assertEqual(resuelto.trenes[0].fase.registro_reenganche, log)
+    else:
+        tick(ledger, actual.repo, observador, obs.ahora + 1, caso.git, caso.adaptador)
+        pausado = ledger.estado(actual.repo, operativo=True)
+        caso.assertIsNotNone(pausado.pausa)
+        caso.assertEqual((pausado.pausa.motivo, pausado.pausa.detalle),
+                         ("infraestructura", detalle))
+        caso.assertEqual(invocaciones(), invocaciones_antes)
+        caso.assertTrue(pausado.pausa.archivos)
+        caso.assertTrue(all(Path(r).is_file() for r in pausado.pausa.archivos))
+        caso.assertEqual(pausado.trenes[0].fase.reanudaciones,
+                         getattr(anterior, "reanudaciones", 0))
+        if tipo == "repetir":
+            caso.assertIsInstance(anterior, Diagnosticando)
+            fase = pausado.trenes[0].fase
+            caso.assertIsInstance(fase, Diagnosticando)
+            caso.assertEqual((fase.costo_infra_s, fase.evidencias, fase.pendiente),
+                             (anterior.costo_infra_s, anterior.evidencias, anterior.pendiente))
+        caso.assertFalse(ledger.outbox(actual.repo))
+        caso.assertEqual(desde_datos(datos(pausado)), pausado)
+        # La proyección del CLI muestra motivo, evidencia y decisiones admitidas.
+        from test_tren import cli
+        from unittest.mock import patch
+        with patch.object(cli, "activacion", return_value="activo"), \
+             patch.object(cli, "Ledger", return_value=ledger):
+            args = cli.parser().parse_args(["estado", "--repo", actual.repo, "--juicio"])
+            _, visible = cli.ejecutar(args)
+        caso.assertEqual(visible["estado"]["pausa"]["detalle"], detalle)
+        admitidas = {"reanudar", "abortar"}
+        if detalle == "salida-sin-recibo":
+            admitidas.add("absolver")
+        caso.assertEqual({d["decision"] for d in visible["juicio"]["admitidas"]}, admitidas)
+        # El CLI cierra el ledger: reabrir para continuar la decisión real.
+        ledger = Ledger(caso.raiz / ("ledger-" + tipo))
+        caso.addCleanup(ledger.close)
+        d = Decision("resolver-" + str(codigo), actual.repo, "lote", decision, None,
+                     "infraestructura corregida", obs.ahora + 2,
+                     ledger.pausa_id(actual.repo), pausado.pausa)
+        ledger.registrar_decision(d)
+        configurar("verde")
+        tick(ledger, actual.repo, observador, obs.ahora + 2, caso.git, caso.adaptador)
+        resuelto = ledger.estado(actual.repo, operativo=True)
     caso.assertIsNone(resuelto.pausa)
     conservados = {
         (ruta.with_name("codigo-reenganche-1.json") if reengancha
@@ -218,14 +231,15 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
         return
     fase = resuelto.trenes[0].fase
     caso.assertEqual(fase.reanudaciones, getattr(anterior, "reanudaciones", 0))
-    fase_pausada = pausado.trenes[0].fase
+    intento_anterior = intento_suite(anterior) if isinstance(anterior, (Corriendo, Diagnosticando)) else 0
+    reintentos_anteriores = getattr(anterior, "reintentos_lanzador", 0)
     if reengancha:
         caso.assertEqual(fase.reenganches, 1)
-        caso.assertEqual(fase.reintentos_lanzador, fase_pausada.reintentos_lanzador)
-        caso.assertEqual(intento_suite(fase), intento_suite(fase_pausada))
+        caso.assertEqual(fase.reintentos_lanzador, reintentos_anteriores)
+        caso.assertEqual(intento_suite(fase), intento_anterior)
     else:
-        caso.assertEqual(fase.reintentos_lanzador, fase_pausada.reintentos_lanzador + 1)
-        caso.assertEqual(intento_suite(fase), intento_suite(fase_pausada) + 1)
+        caso.assertEqual(fase.reintentos_lanzador, reintentos_anteriores + 1)
+        caso.assertEqual(intento_suite(fase), intento_anterior + 1)
     filas = ledger.outbox(actual.repo)
     caso.assertEqual(len(filas), 1)
     nuevo = desde_datos(json.loads(filas[0]["payload"]))
