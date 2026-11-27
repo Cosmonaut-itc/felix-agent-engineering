@@ -456,10 +456,25 @@ Pasos para el operador, **no ejecutados por las pruebas**:
 
 ### Cambiar GROUP_LIMITS después de adoptar
 
-Si la tabla incorpora un grupo, créalo vacío en el desk con la cuota del
-horario vigente antes del ensayo del instalador. El preflight valida las
-cuotas de todos los grupos de la tabla nueva. Para `caja`, habilita su lanzador
-después de migrar el controlador y actualizar el rack.
+Si la tabla incorpora un grupo, sigue este orden:
+
+1. Lee la autoridad en sólo lectura y confirma `overrides == {}`,
+   `mode_override == null` y cero recibos `applying`, `partial` o `unknown`.
+   La migración retira los ajustes vigentes y cualquier adelanto de modo.
+2. Crea `slots.disabled` en el estado del desk. Así nadie pide un ± con la foto
+   anterior mientras rack y controlador difieren. Un rechazo de ese vector
+   dejaría un recibo `unknown` que bloquea los ajustes del desk.
+3. Crea el grupo vacío con la cuota del horario vigente justo antes del ensayo.
+   El preflight valida las cuotas de todos los grupos de la tabla nueva. Si
+   `pueued` se reinicia antes de instalar, el grupo queda fuera del reparto y
+   pausado; revisa sus `pause_reasons` después de migrar.
+4. Corre el ensayo y la instalación de esta sección.
+5. Actualiza enseguida el rack (paso 3 de U3.2). Mientras el controlador y el
+   rack tienen tablas distintas, el panel descarta la foto del desk y no lo
+   muestra; vuelve sola cuando ambos coinciden.
+6. Cuando el panel muestre los grupos nuevos, retira `slots.disabled`.
+
+Para `caja`, habilita su lanzador después de migrar el controlador y actualizar el rack.
 
 Cambiar la tabla en el checkout revisado y ejecutar primero `install-desk.py --seco`
 y luego `install-desk.py` con el mismo `--pid-file` de los pasos anteriores.
