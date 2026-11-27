@@ -860,7 +860,8 @@ def aplazar_conflicto(estado, tren, conflicto, efectos):
     estado = cambiar_fase(estado, tren, Terminal("REARMAR"))
     estado = replace(estado, entradas=tuple(
         replace(e, tren=nuevo.id) if e.entrega.recibo in sobrevivientes else
-        replace(e, tren=None, rearmada=True, aplazada_en_base=base, prefijo_en_conflicto=anteriores)
+        replace(e, tren=None, rearmada=True, aplazada_en_base=base, prefijo_en_conflicto=tuple(
+            dict.fromkeys((e.prefijo_en_conflicto if e.aplazada_en_base == base else ()) + anteriores)))
         if e.entrega.recibo == recibo else
         replace(e, tren=None, rearmada=True)
         if e.entrega.recibo in tren.recibos else e for e in estado.entradas))
@@ -1035,7 +1036,8 @@ def siguiente_lote(fila, *, base=None):
         recibo = entrada.entrega.recibo
         prefijo = entrada.prefijo_en_conflicto if entrada.aplazada_en_base == base else ()
         if recibo in incompatibles or not recibos.isdisjoint(prefijo):
-            break
+            # Sólo esta entrega choca con el lote; las siguientes pueden viajar.
+            continue
         if entrada.solo:
             if not lote:
                 lote.append(entrada)
