@@ -211,6 +211,7 @@ class Incompleto:
 class RechazoLanzador:
     evidencia: str
     detalle: str = "lanzador-rechazo"
+    relanzable: bool = True
 
 
 @dataclass(frozen=True)
@@ -375,6 +376,7 @@ class Tren:
     id: str
     recibos: Tuple[str, ...]
     fase: Fase
+    relanzamientos_automaticos: int = 0
 
 
 @dataclass(frozen=True)
@@ -704,6 +706,44 @@ def pausar_lanzador(estado, resultado):
     return replace(estado, pausa=pausa), ()
 
 
+LIMITE_RELANZAMIENTOS_AUTOMATICOS = 2
+RECHAZOS_RELANZABLES = ("salida-sin-recibo", "corrida-interrumpida", "cobertura-parcial-boat")
+
+
+def nuevo_intento_lanzador(fase):
+    return replace(fase, reintentos_lanzador=fase.reintentos_lanzador + 1,
+                   reenganches=0, registro_reenganche="")
+
+
+def reenganchar_lanzador(fase, evidencia):
+    return replace(fase, reenganches=fase.reenganches + 1, registro_reenganche=evidencia)
+
+
+def puede_relanzar(tren, resultado):
+    return (isinstance(resultado, RechazoLanzador) and resultado.relanzable and
+            resultado.detalle in RECHAZOS_RELANZABLES and
+            tren.relanzamientos_automaticos < LIMITE_RELANZAMIENTOS_AUTOMATICOS)
+
+
+def resolver_rechazo_lanzador(estado, tren, fase, resultado, despachar):
+    if not puede_relanzar(tren, resultado):
+        return pausar_lanzador(estado, resultado)
+    if not despachar:
+        return estado, ()
+    numero = tren.relanzamientos_automaticos + 1
+    fase = (reenganchar_lanzador(fase, resultado.evidencia) if resultado.detalle == "salida-sin-recibo"
+            else nuevo_intento_lanzador(fase))
+    nuevo = replace(tren, fase=fase, relanzamientos_automaticos=numero)
+    estado = replace(estado, trenes=tuple(nuevo if t.id == tren.id else t for t in estado.trenes))
+    registro = Efecto(clave("relanzar-automaticamente", tren.id, numero),
+        "registrar-relanzamiento-automatico",
+        (tren.id, str(numero), str(LIMITE_RELANZAMIENTOS_AUTOMATICOS),
+         resultado.detalle, resultado.evidencia))
+    efecto = (efecto_reanudar_suite(tren, fase) if isinstance(fase, Corriendo)
+              else efecto_diagnostico(tren, fase))
+    return estado, (registro, efecto)
+
+
 def efecto_diagnostico(tren, fase):
     solicitud = fase.pendiente
     tipo = ("armar-subconjunto" if solicitud.objetivo == "subconjunto" and
@@ -819,7 +859,7 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
         if resultado is not None and fase.esperar_hasta is None:
             fase = replace(fase, suite=observacion.suite)
             if isinstance(resultado, RechazoLanzador):
-                return pausar_lanzador(estado, resultado)
+                return resolver_rechazo_lanzador(estado, tren, fase, resultado, despachar)
             if isinstance(resultado, Incompleto):
                 return esperar_infraestructura(estado, tren, fase, resultado, observacion.ahora)
             if not isinstance(resultado, Completo):
@@ -864,7 +904,7 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
         resultado = observacion.repeticion if ligada and observacion.suite_intento == intento_suite(fase) else None
         if resultado is not None and fase.esperar_hasta is None:
             if isinstance(resultado, RechazoLanzador):
-                return pausar_lanzador(estado, resultado)
+                return resolver_rechazo_lanzador(estado, tren, fase, resultado, despachar)
             if isinstance(resultado, Incompleto):
                 return esperar_infraestructura(estado, tren, fase, resultado, observacion.ahora)
             commit = (fase.candidato.C if s.objetivo == "C" else fase.candidato.B if
@@ -1068,11 +1108,15 @@ def paso(estado, observacion):
                 (not fase.solicitud or observacion.ci_recibo == recibo_ci(tren)) and
                 observacion.ci_candidato == "verde" and observacion.suite and
                 observacion.resultado_suite is not None):
+            admitidos = all(isinstance(e.admision, Admitido) for e in miembros)
+            rechazados = any(isinstance(e.admision, Rechazado) for e in miembros)
+            if not admitidos and not rechazados and puede_relanzar(tren, observacion.resultado_suite):
+                return estado, tuple(efectos)
             fase = Corriendo(fase.candidato, observacion.suite, observacion.ci_recibo)
             estado = cambiar_fase(estado, tren, fase)
             nuevo, suite_efectos = avanzar_suite(estado, replace(tren, fase=fase), observacion,
-                all(isinstance(e.admision, Admitido) for e in miembros))
-            if any(isinstance(e.admision, Rechazado) for e in miembros):
+                admitidos)
+            if rechazados:
                 nuevo = replace(nuevo, pausa=Pausa("head-cambiado-en-tren"))
             return nuevo, tuple(efectos) + suite_efectos
         # Los resultados completados quedan incorporados antes de esta puerta.
@@ -1148,6 +1192,10 @@ def datos(valor):
                        if not (isinstance(valor, Entrada) and f.name in (
                                    "partida", "rearmada", "particion", "rearme_ci")
                                and not getattr(valor, f.name))
+                       and not (isinstance(valor, Tren) and f.name == "relanzamientos_automaticos"
+                                and not valor.relanzamientos_automaticos)
+                       and not (isinstance(valor, RechazoLanzador) and f.name == "relanzable"
+                                and valor.relanzable)
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
                                 and valor.ventana is None)})
     if isinstance(valor, tuple):

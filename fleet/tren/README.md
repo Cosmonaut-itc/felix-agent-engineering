@@ -833,6 +833,19 @@ el feedback conserva B y deja C vacío; no inventa una unidad de prueba.
 «Abortar» cierra `ABORTADO`, libera sus entregas con custodia intacta y sin
 rojo, y las readmite por las reglas normales desde el tick siguiente.
 
+El tren relanza automáticamente una suite o repetición ante `salida-sin-recibo`,
+`corrida-interrumpida` o `cobertura-parcial-boat`. Con `salida-sin-recibo`
+reengancha el mismo registro y clave. Los otros dos detalles abren un registro
+y una clave nuevos. Un rechazo no relanzable en otro modo o intento impide
+el relanzamiento automático.
+Tiene dos relanzamientos por lote, compartidos entre suite y diagnóstico. La
+tercera señal pausa el tren y permite las decisiones de la tabla. En
+`pao-tren estado`, el evento `relanzamiento-automatico` muestra el número,
+el límite y el detalle, por ejemplo «relanzado automáticamente 1/2 por
+salida-sin-recibo».
+Para cortar una corrida del tren a propósito, pausa el tren antes de cortarla
+o la relanzará hasta dos veces.
+
 | Motivo de pausa | Detalle | Decisiones admitidas y efecto |
 |---|---|---|
 | `etapa-1` | vacío | `reanudar`: levantar la pausa del repo; siguen vigentes los permisos operativos externos para cada suite. |
@@ -1590,12 +1603,12 @@ El coordinador permite como máximo tres invocaciones ante una salida 255
 o 127. Usa la misma clave y guarda la última salida. Guarda el 125 sin
 reintentar. Un 75 sigue la política de reanudación del tren. Un 64 cierra
 el efecto y pausa `infraestructura` con detalle `lanzador-rechazo`. Si Jale
-guarda un 125 con `PUEUE_INTERRUPTED=1` en `corrida.log` y sin recibo, la
-pausa indica `corrida-interrumpida`. Las demás salidas enteras sin recibo
-pausan con detalle `salida-sin-recibo`, también en Boat y en su caída al desk.
+guarda un 125 con `PUEUE_INTERRUPTED=1` en `corrida.log` y sin recibo, el
+detalle es `corrida-interrumpida`. Las demás salidas enteras sin recibo
+llevan el detalle `salida-sin-recibo`, también en Boat y en su caída al desk.
 `lanzador-rechazo`, `corrida-interrumpida` y `salida-sin-recibo` conservan la ruta de
-`coordinador.log`. Estas pausas también se aplican al recuperar un efecto ya
-fallido. Con `lanzador-rechazo` o `corrida-interrumpida`,
+`coordinador.log`. La política de relanzamientos y pausas también se aplica al
+recuperar un efecto ya fallido. En pausa por `lanzador-rechazo` o `corrida-interrumpida`,
 `reanudar` lanza otro intento con registro y clave nuevos. Con
 `salida-sin-recibo`, `reanudar` reengancha el mismo registro con la misma
 clave y conserva la salida anterior. Si hay un checkout del operador, usa su
@@ -1610,9 +1623,9 @@ recupera un envío del fallback cuyo desk devolvió 75 sin resultado. Si cambia
 el host del modo a `auto` o `desktop`, el intento nuevo usa ese host y su clave
 del desk. Una causa de interrupción, resultado desconocido, cancelación o
 despacho sin VM en Boat abre otro intento con una identidad nueva.
-Un marcador `PARTIAL: boat omitted=N` con N mayor que cero pausa el tren por
-infraestructura con detalle `cobertura-parcial-boat` y `corrida.log` como
-evidencia. Con `reanudar`, el modo afectado usa otro registro y una identidad
+Un marcador `PARTIAL: boat omitted=N` con N mayor que cero produce el detalle
+`cobertura-parcial-boat` con `corrida.log` como evidencia. Con un relanzamiento
+automático o `reanudar`, el modo afectado usa otro registro y una identidad
 nueva. Un rechazo del lanzador prevalece sobre un recibo inválido del otro
 modo. Si se interrumpió el coordinador sin guardar su salida, el efecto
 queda pendiente para recuperar la corrida con la misma identidad. El

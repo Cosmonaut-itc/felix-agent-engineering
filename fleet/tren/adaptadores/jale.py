@@ -1,6 +1,7 @@
 """Recibos jale-recibo@1; sin juicio contra base ni normalización de firmas."""
 import base64
 import binascii
+from dataclasses import replace
 import fcntl
 import hashlib
 from itertools import chain, combinations, islice
@@ -15,8 +16,8 @@ from adaptadores.ejecucion_jale import (ACUSE_CANCELACION, CANCELAR, clave_inici
                                        clave_registro, guardar)
 from adaptadores.hasito import ResultadoInvalido, exigir, leer_json
 from atribucion import id_reproduccion, identidad
-from dominio import (Completo, Diagnosticando, Fallo, Incompleto, Intento, Repeticion,
-                     UnidadRepetida, RechazoLanzador, clave)
+from dominio import (RECHAZOS_RELANZABLES, Completo, Diagnosticando, Fallo, Incompleto,
+                     Intento, RechazoLanzador, Repeticion, UnidadRepetida, clave)
 from git_ops import Publicado, sha
 from ledger import directorio_estado
 from operador import lanzamiento_activo
@@ -196,6 +197,10 @@ def leer_salida(registro, log, codigo, commit, modo, filtros):
             any(registro.glob('codigo-reenganche-*.json'))):
         return RechazoLanzador(resultado.evidencia, 'salida-sin-recibo')
     return resultado
+
+
+def admite_relanzamiento(rechazo):
+    return rechazo.relanzable and rechazo.detalle in RECHAZOS_RELANZABLES
 
 
 class Jale:
@@ -627,8 +632,10 @@ class Jale:
             return None
         if rechazos:
             # Prioriza el envío incierto: con reanudar conserva su identidad.
-            return str(raiz), next((r for r in rechazos if r.detalle == 'salida-sin-recibo'),
-                                  rechazos[0])
+            elegido = next((r for r in rechazos if r.detalle == 'salida-sin-recibo'), rechazos[0])
+            if any(not admite_relanzamiento(r) for r in rechazos if r is not elegido):
+                elegido = replace(elegido, relanzable=False)
+            return str(raiz), elegido
         if any(r is False for r in recibos):
             return None
         if any(r is None or r['codigo'] == 75 for r in recibos):
@@ -742,6 +749,7 @@ class Jale:
         # válido quede en la caché y el intento siguiente no lo vuelva a lanzar.
         impedimento = SIN_IMPEDIMENTO
         en_curso = False
+        rechazos = []
         for n, cache, cache_disponible, desde_base, ultimo, proceso in lanzadas:
             try:
                 if desde_base:
@@ -756,6 +764,8 @@ class Jale:
                             guardar(cache, str(ultimo.relative_to(self.estado)))
             except ResultadoInvalido as exc:
                 r = exc
+            if isinstance(r, RechazoLanzador):
+                rechazos.append(r)
             if r is EN_CURSO:
                 en_curso = True
                 if not paralelo:
@@ -784,8 +794,15 @@ class Jale:
         if impedimento is False:
             return None
         if isinstance(impedimento, RechazoLanzador):
-            return impedimento
+            # Como en la suite: el envío incierto primero, para reengancharlo con su clave.
+            elegido = next((r for r in rechazos if r.detalle == 'salida-sin-recibo'), impedimento)
+            if any(not admite_relanzamiento(r) for r in rechazos if r is not elegido):
+                return replace(elegido, relanzable=False)
+            return elegido
         if impedimento is not SIN_IMPEDIMENTO:
+            for rechazo in rechazos:
+                if not admite_relanzamiento(rechazo):
+                    return rechazo
             return Incompleto(75, str(raiz))
         if fallo_al_lanzar is not None:
             raise fallo_al_lanzar
