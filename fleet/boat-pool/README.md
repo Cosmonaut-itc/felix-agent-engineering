@@ -70,7 +70,7 @@ y avisa aunque Jale alcance a salir durante la gracia.
 El directorio de estado guarda la salida de `alinear` en `alinear-*.log`.
 Si se repiten el código y la huella del resultado anterior, el agente
 reescribe `ultimo.log`. La huella incluye el SHA, la etapa, el código y
-la salida con los dígitos normalizados para ignorar variaciones de tiempo.
+la salida con las duraciones (`ms`, `s`, `min`) normalizadas, para ignorar variaciones de tiempo sin confundir causas como dos códigos HTTP.
 El agente avisa ante fallos de Git, plazos vencidos y códigos inesperados,
 y recuerda hasta las últimas 50 huellas avisadas. Los fallos de Git quedan
 en `estado.json`. Las pasadas sin invocación a `alinear` no generan archivos

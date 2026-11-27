@@ -116,7 +116,8 @@ def guardar_estado(ruta, estado):
 
 
 def huella_resultado(estado):
-    salida = re.sub(r'\d+', '#', estado.get('salida', ''))
+    # Sólo las duraciones varían entre reintentos de una misma causa; un código HTTP distingue causas.
+    salida = re.sub(r'\b\d+(?:[.,]\d+)?\s*(?:ms|s|seg|segundos|min)\b', '#', estado.get('salida', ''))
     resultado = [estado.get('sha'), estado.get('etapa'), estado.get('codigo'), salida]
     return hashlib.sha256(json.dumps(resultado).encode()).hexdigest()
 

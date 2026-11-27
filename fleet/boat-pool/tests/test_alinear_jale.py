@@ -48,7 +48,8 @@ if codigo == 75:
     print('Boat: alineación en curso')
 elif codigo:
     ms = os.environ.get('MS_PRUEBA', '1234')
-    print(f'vm-dos fallo:preparacion after {ms} ms revision_vm=demo ' + 'bx_' + 'falso123',
+    causa = os.environ.get('CAUSA_PRUEBA', 'preparacion')
+    print(f'vm-dos fallo:{causa} after {ms} ms revision_vm=demo ' + 'bx_' + 'falso123',
           file=sys.stderr, flush=True)
 if codigo == 9:
     time.sleep(4)
@@ -222,6 +223,15 @@ class AlinearJale(unittest.TestCase):
         self.assertIn('after 12 ms', inicial.read_text())
         self.assertIn('after 123456 ms', (self.estado / 'ultimo.log').read_text())
         self.assertEqual(self.ultimo_estado()['log'], 'ultimo.log')
+
+    def test_causas_http_distintas_avisan_por_separado(self):
+        self.configurar()
+        self.pasada(1, CAUSA_PRUEBA='petición HTTP rechazada: 429')
+        self.pasada(1, CAUSA_PRUEBA='petición HTTP rechazada: 403')
+        avisos = self.avisos.read_text()
+        self.assertEqual(avisos.count('fallo:petición HTTP rechazada'), 2)
+        self.assertIn('429', avisos)
+        self.assertIn('403', avisos)
 
     def test_exito_con_el_mismo_sha_salta_la_pasada_sin_crear_logs(self):
         self.configurar()
