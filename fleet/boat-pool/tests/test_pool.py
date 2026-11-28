@@ -8,6 +8,8 @@ from pathlib import Path
 import plistlib
 from queue import Queue
 import re
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -151,7 +153,36 @@ class Double:
 def worker():
     state = Path(os.environ['XDG_STATE_HOME']) / 'boat-pool'
     double = Double(state)
-    return pool.main(sys.argv[2:], boat_factory=double.factory, now=lambda: NOW, notify=lambda _: None)
+    return pool.main(sys.argv[2:], boat_factory=double.factory, now=lambda: NOW,
+                     notify=lambda _: None, wake_launcher=lambda *_: None)
+
+
+def wait_for_marker(path):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.02)
+    raise AssertionError('no apareció ' + path.name)
+
+
+def launchd_worker():
+    state = Path(os.environ['XDG_STATE_HOME']) / 'boat-pool'
+    double = Double(state)
+    options = {'boat_factory': double.factory, 'now': lambda: NOW, 'sleep': double.sleep}
+    if sys.argv[1] == 'padre-launchd':
+        with patch.object(pool, '__file__', str(state / 'pool.py')):
+            code = pool.main(sys.argv[2:], **options)
+        if code == 0:
+            (state / 'padre-listo').touch()
+            signal.pause()
+        return code
+
+    (state / 'hijo-listo').touch()
+    wait_for_marker(state / 'continuar-despertar')
+    code = pool.main(sys.argv[1:], **options)
+    pool.atomic_json(state / 'despertar-terminado.json', code)
+    return code
 
 
 class Harness(unittest.TestCase):
@@ -180,6 +211,7 @@ class Harness(unittest.TestCase):
         }
         self.api = Double(self.state)
         self.notices = []
+        self.wake_jobs = []
         self.add_vm()
 
     def add_vm(self, name=NAME, identifier=FAKE_ID, *, apt=True, places=1,
@@ -198,13 +230,16 @@ class Harness(unittest.TestCase):
     def save(self):
         pool.atomic_json(self.config_file, self.config)
 
-    def run_cli(self, *args, factory=None):
+    def run_cli(self, *args, factory=None, wake_launcher=None):
         self.save()
         stdout, stderr = io.StringIO(), io.StringIO()
+        if wake_launcher is None:
+            wake_launcher = lambda repo, _: self.wake_jobs.append(repo)
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             try:
                 code = pool.main(args, boat_factory=factory or self.api.factory,
-                                 now=lambda: self.api.now, sleep=self.api.sleep, notify=self.notices.append)
+                                 now=lambda: self.api.now, sleep=self.api.sleep, notify=self.notices.append,
+                                 wake_launcher=wake_launcher)
             except SystemExit as error:
                 code = error.code
         return code, stdout.getvalue(), stderr.getvalue()
@@ -226,10 +261,10 @@ class Harness(unittest.TestCase):
         self.assertFalse(output)
         self.assertTrue(stderr.startswith(f'boat-pool: {cause}: '), stderr)
 
-    def start_worker(self, *args):
+    def start_worker(self, *args, mode='worker', start_new_session=False):
         self.save()
         process = subprocess.Popen(
-            [sys.executable, '-IB', __file__, 'worker', *args],
+            [sys.executable, '-IB', __file__, mode, *args], start_new_session=start_new_session,
             env={**os.environ, **self.env}, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
@@ -502,6 +537,223 @@ class Harness(unittest.TestCase):
         code, _, stderr = self.run_cli('reservar', '--repo', REPO, '--lote', batch,
                                        '--clases', classes, '--ttl', ttl)
         self.assertEqual(code, 0, stderr)
+
+    def test_reserva_nueva_lanza_despertar_sin_esperar_el_arranque(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+
+        def spawn(command, *, start_new_session, stdin, stdout, stderr):
+            self.assertEqual(command[:-3], [sys.executable, '-IB', str(ROOT / 'boat-pool')])
+            self.assertEqual(command[-3:], ['despertar', '--repo', REPO])
+            self.assertTrue(start_new_session)
+            self.assertEqual((stdin, stdout), (subprocess.DEVNULL, subprocess.DEVNULL))
+            stderr.write(b'error del proceso de prueba\n')
+            with pool.lock(self.state / 'espera.lock', wait=False) as acquired:
+                self.assertTrue(acquired)
+                reserved, = pool.events(self.state / 'eventos.jsonl')
+                self.assertEqual(reserved['evento'], 'reservado')
+            return object()
+
+        with patch.object(pool.subprocess, 'Popen', side_effect=spawn) as launch:
+            code, _, stderr = self.run_cli('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e',
+                                           '--ttl', '900', wake_launcher=pool.launch_wake)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(launch.call_count, 1)
+        self.assertEqual((self.state / 'launchd.err.log').read_text(), 'error del proceso de prueba\n')
+        self.assertFalse(self.api.calls)
+        self.assertEqual(self.api.sleeps, 0)
+
+        self.assertEqual(self.run_cli(*launch.call_args[0][0][-3:])[0], 0)
+        self.assertEqual(self.resume_posts(), [('/sandboxes/' + FAKE_ID + '/resume',
+                                               {'noEnv': True, 'type': 'large', 'ttlSeconds': 9000})])
+        self.assertEqual(self.api.sleeps, 1)
+        self.assertIn('arranque', [item['evento'] for item in self.journal()])
+
+    def test_despertar_termina_tras_term_al_grupo_del_padre(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        # El lanzador usa su Popen real. Este ejecutable inyecta el Boat falso en el hijo.
+        (self.state / 'boat-pool').symlink_to(Path(__file__).resolve())
+        parent = self.start_worker('reservar', '--repo', REPO, '--lote', 'lote',
+                                   '--clases', 'e2e', '--ttl', '900',
+                                   mode='padre-launchd', start_new_session=True)
+        wait_for_marker(self.state / 'padre-listo')
+        wait_for_marker(self.state / 'hijo-listo')
+
+        os.killpg(parent.pid, signal.SIGTERM)
+        self.result(parent, -signal.SIGTERM)
+        (self.state / 'continuar-despertar').touch()
+
+        finished = self.state / 'despertar-terminado.json'
+        wait_for_marker(finished)
+        self.assertEqual(pool.read_json(finished), 0)
+        self.assertEqual(pool.read_json(self.api.path)[FAKE_ID]['state'], 'ready')
+        self.assertIn('arranque', [item['evento'] for item in self.journal()])
+
+    def test_renovar_lote_no_lanza_otro_despertar(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.reserve(classes='e2e')
+        self.api.now += 60
+        self.reserve(classes='e2e', ttl='1800')
+
+        self.assertEqual(self.wake_jobs, [REPO])
+        reserved, renewed = pool.events(self.state / 'eventos.jsonl')
+        self.assertEqual((reserved['evento'], renewed['evento']), ('reservado', 'reservado'))
+        self.assertEqual(renewed['vence'], pool.stamp(NOW + 1860))
+        self.assertFalse(self.api.calls)
+
+    def test_reservar_mismo_lote_durante_el_primer_lanzamiento_no_duplica_despertar(self):
+        args = ('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e', '--ttl', '900')
+
+        def launch(repo, _):
+            self.wake_jobs.append(repo)
+            if len(self.wake_jobs) == 1:
+                self.assertEqual(self.run_cli(*args, wake_launcher=launch)[0], 0)
+
+        self.assertEqual(self.run_cli(*args, wake_launcher=launch)[0], 0)
+        self.assertEqual(self.wake_jobs, [REPO])
+        self.assertEqual([event['evento'] for event in pool.events(self.state / 'eventos.jsonl')],
+                         ['reservado', 'reservado'])
+
+    def test_reserva_de_relevo_no_despierta(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.assertEqual(self.run_cli('reservar', '--repo', REPO, '--lote', 'relevo', '--clases', 'e2e',
+                                      '--vence', str(NOW + 900))[0], 0)
+        self.assertFalse(self.wake_jobs)
+        self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertFalse(self.api.calls)
+
+    def test_despertar_solo_reanuda_vms_aptas_del_repo_y_clase(self):
+        other_repo = 'ejemplo/otro'
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.add_vm('vm-otro-repo', fake_id('efgh2345'), remote_state='archived',
+                    overrides={'repo': other_repo})
+        self.add_vm('vm-otra-clase', fake_id('kmnp2345'), remote_state='archived',
+                    overrides={'limite_clase': {'contract': 1}})
+        self.add_vm('vm-clase-cerrada', fake_id('nprt2345'), remote_state='archived',
+                    overrides={'limite_clase': {'e2e': 0}})
+        self.add_vm('vm-no-apta', fake_id('zyxw2345'), remote_state='archived', apt=False)
+        self.reserve(classes='e2e')
+
+        self.assertEqual(self.run_cli('despertar', '--repo', other_repo)[0], 0)
+        self.assertFalse(self.api.calls)
+        self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertEqual([route for route, _ in self.resume_posts()], ['/sandboxes/' + FAKE_ID + '/resume'])
+
+    def test_despertar_respeta_las_puertas_de_gasto(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.reserve(classes='e2e')
+
+        for category, key in (('planIncluded', 'vmHoursRemaining'), ('wallet', 'balanceDollars')):
+            with self.subTest(category=category), patch.dict(self.api.limits[category], {key: 0}):
+                self.assert_unavailable('puerta', 'despertar', '--repo', REPO)
+        self.assertFalse(self.resume_posts())
+        self.assertEqual([item['puerta'] for item in self.journal() if 'puerta' in item],
+                         ['horas_plan', 'monedero_usd'])
+
+    def test_despertar_omite_lote_vencido_antes_de_ejecutarse(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.reserve(classes='e2e', ttl='300')
+        self.api.now += 300
+
+        self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertFalse(self.api.calls)
+        self.assertEqual([item['evento'] for item in pool.events(self.state / 'eventos.jsonl')],
+                         ['reservado', 'reserva-vencida'])
+
+    def test_despertar_espera_el_apagado_en_curso_antes_de_reanudar(self):
+        self.api.sandbox(FAKE_ID, state='archiving')
+        self.reserve(classes='e2e')
+
+        def finish_stop():
+            self.assertFalse(self.resume_posts())
+            self.api.sandbox(FAKE_ID, state='archived')
+
+        with self.resume_clock({1: finish_stop, 2: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertEqual(len(self.resume_posts()), 1)
+        self.assertEqual(self.api.now, NOW + 2)
+
+    def test_despertar_omite_resume_si_la_pausa_libera_el_lote_en_plena_espera(self):
+        self.api.sandbox(FAKE_ID, state='archiving')
+        self.reserve(classes='e2e')
+
+        def release_during_stop():
+            self.assertEqual(self.run_cli('liberar-reserva', '--repo', REPO, '--lote', 'lote')[0], 0)
+            self.api.sandbox(FAKE_ID, state='archived')
+
+        with self.resume_clock({1: release_during_stop,
+                                2: lambda: self.api.sandbox(FAKE_ID, state='ready')}):
+            self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertFalse(self.writes())
+        self.assertEqual(pool.read_json(self.api.path)[FAKE_ID]['state'], 'archived')
+
+    def test_despertar_con_otro_despertar_del_repo_sale_sin_consultar_boat(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.add_vm('vm-otra', fake_id('efgh2345'))
+        self.reserve(classes='e2e')
+        finish_resume = self.api.sleep
+
+        def check_competing_wake(seconds):
+            calls = self.api.calls.copy()
+            self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+            self.assertEqual(self.api.calls, calls)
+            finish_resume(seconds)
+
+        with patch.object(self.api, 'sleep', side_effect=check_competing_wake) as sleep:
+            self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertEqual(sleep.call_count, 1)
+        self.assertEqual(len(self.resume_posts()), 1)
+
+    def test_despertar_salta_la_vm_con_candado_y_reanuda_la_siguiente(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        other = fake_id('efgh2345')
+        self.add_vm('vm-otra', other, remote_state='archived')
+        self.reserve(classes='e2e')
+
+        with pool.lock(self.state / 'vms' / NAME / 'lock'):
+            self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertEqual([route for route, _ in self.resume_posts()], ['/sandboxes/' + other + '/resume'])
+        self.assertFalse(self.journal())
+        self.assertFalse(any(FAKE_ID in route or NAME in route for _, route, _ in self.api.calls))
+
+    def test_despertar_no_toca_vm_con_arriendo_vivo(self):
+        self.get_lease('medicion', 'contract')
+        self.reserve(classes='e2e')
+        self.api.sandbox(FAKE_ID, state='archived')
+        journal = self.journal()
+        self.api.calls.clear()
+
+        self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertFalse(self.api.calls)
+        self.assertEqual(self.journal(), journal)
+
+    def test_despertar_no_toca_vm_con_turno_que_acepta(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.reserve(classes='e2e')
+        queue = pool.private_dir(self.state / 'espera')
+        pool.atomic_json(queue / 'preparacion.json', {
+            'turno': 'preparacion', 'repo': REPO, 'corrida': 'alinear', 'clase': 'preparar',
+            'prioridad': 'preparar', 'vm': NAME, 'host': socket.gethostname(),
+            'pid': os.getpid(), 'orden': 0, 'vence': pool.stamp(NOW + 300),
+        })
+
+        self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertFalse(self.api.calls)
+        self.assertFalse(self.journal())
+
+    def test_despertar_no_toca_vm_con_operacion_de_energia_pendiente(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.reserve(classes='e2e')
+        marker = self.state / 'vms' / NAME / 'operacion.json'
+
+        for action in ('stop', 'resume'):
+            with self.subTest(action=action):
+                operation = {'id': 'energia-previa', 'sandbox_id': FAKE_ID, 'accion': action,
+                             'desde': pool.stamp(NOW)}
+                pool.atomic_json(marker, operation)
+                self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+                self.assertFalse(self.api.calls)
+                self.assertFalse(self.journal())
+                self.assertEqual(pool.read_json(marker), operation)
 
     def assert_reservation_blocked(self, *args):
         code, output, stderr = self.run_cli(*args)
@@ -2076,6 +2328,48 @@ class Harness(unittest.TestCase):
         self.assertEqual(sum(item['evento'] == 'apagada' for item in self.journal()), 1)
         self.assertTrue(all(other not in route and 'ajena' not in route for _, route, _ in self.api.calls))
 
+    def test_vigilar_renueva_vm_ociosa_con_lote_y_la_apaga_al_liberarlo(self):
+        self.api.now += 30 * 60 + 1
+        self.reserve(classes='e2e')
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        path = '/sandboxes/' + FAKE_ID
+        self.assertEqual(self.writes(), [('PATCH', path, {'ttlSeconds': 9000})])
+        self.assertNotIn('apagada', [item['evento'] for item in self.journal()])
+
+        self.api.calls.clear()
+        self.assertEqual(self.run_cli('liberar-reserva', '--repo', REPO, '--lote', 'lote')[0], 0)
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.assertEqual(self.writes(), [('POST', path + '/stop', None)])
+        self.assertIn('apagada', [item['evento'] for item in self.journal()])
+
+    def test_vigilar_lanza_despertar_para_vm_cubierta_sin_esperar_el_arranque(self):
+        self.reserve(classes='e2e')
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.wake_jobs.clear()
+
+        def launch(repo, state):
+            with pool.lock(state / 'vms' / NAME / 'lock', wait=False) as acquired:
+                self.assertTrue(acquired)
+            self.wake_jobs.append(repo)
+
+        self.assertEqual(self.run_cli('vigilar', wake_launcher=launch)[0], 0)
+        self.assertEqual(self.wake_jobs, [REPO])
+        self.assertFalse(self.writes())
+        self.assertEqual(self.api.sleeps, 0)
+
+        repo, = self.wake_jobs
+        self.assertEqual(self.run_cli('despertar', '--repo', repo)[0], 0)
+        self.assertEqual([route for route, _ in self.resume_posts()], ['/sandboxes/' + FAKE_ID + '/resume'])
+
+    def test_vigilar_apaga_vm_ociosa_con_reserva_de_relevo_viva(self):
+        self.api.now += 30 * 60 + 1
+        self.assertEqual(self.run_cli('reservar', '--repo', REPO, '--lote', 'relevo', '--clases', 'e2e',
+                                      '--vence', str(self.api.now + 900))[0], 0)
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.assertEqual(self.writes(), [('POST', '/sandboxes/' + FAKE_ID + '/stop', None)])
+        self.assertIn('apagada', [item['evento'] for item in self.journal()])
+        self.assertFalse(self.wake_jobs)
+
     def test_vigilar_doble_apagado_concurrente(self):
         self.config['vms'][0]['inactividad_min'] = 0
         workers = [self.start_worker('vigilar') for _ in range(2)]
@@ -3262,4 +3556,6 @@ class Install(unittest.TestCase):
 if __name__ == '__main__':
     if sys.argv[1:2] == ['worker']:
         sys.exit(worker())
+    if sys.argv[1:2] in (['padre-launchd'], ['despertar']):
+        sys.exit(launchd_worker())
     unittest.main()

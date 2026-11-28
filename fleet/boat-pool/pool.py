@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 import errno
 import fcntl
+from hashlib import sha256
 from itertools import chain
 import json
 import math
@@ -73,7 +74,23 @@ def print_unavailable(error):
     print(f'boat-pool: {cause}: {error}', file=sys.stderr)
 
 
+def launch_wake(repo, state):
+    command = Path(__file__).resolve().with_name('boat-pool')
+    try:
+        fd = os.open(state / 'launchd.err.log', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, 'ab') as log:
+            subprocess.Popen([sys.executable, '-IB', str(command), 'despertar', '--repo', repo],
+                             start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=log)
+    except OSError:
+        print_unavailable(Unavailable('apagado', 'no se pudo lanzar despertar'))
+
+
 class InvalidUse(ValueError):
+    pass
+
+
+class WakeSkipped(Exception):
     pass
 
 
@@ -459,6 +476,11 @@ class VM:
             return False
         return self.apt and self.fits([], turn['clase'])
 
+    def covered_by_batch(self, reservations):
+        return self.apt and any(item['repo'] == self.repo and 'vence_solicitado' not in item
+                                and any(self.classes.get(kind, 0) > 0 for kind in item['clases'])
+                                for item in reservations)
+
 
 def fits_reservations(vm, kind, pending, capacity):
     if not pending:
@@ -519,12 +541,13 @@ def pid_alive(pid):
 
 class Pool:
     def __init__(self, config, state, *, boat_factory=Boat, notify=unix_notify,
-                 now=time.time, sleep=time.sleep):
+                 now=time.time, sleep=time.sleep, wake_launcher=launch_wake):
         if integer(config['version'], 1) != 1:
             raise ValueError('versión del pool inválida')
         self.now = now
         self.sleep = sleep
         self.notify = notify
+        self.wake_launcher = wake_launcher
         self.host = socket.gethostname()
         self.prohibited = read_prohibited(config['prohibidos'])
         self.state = private_dir(state)
@@ -784,7 +807,7 @@ class Pool:
             raise BoatError('estado de VM no reanudable')
         return None
 
-    def start(self, vm, state, info):
+    def start(self, vm, state, info, *, before_resume=None):
         pending = self.power_operation(vm)
         self.check_start_credentials(vm, state, info, pending, wait=True)
         if state in READY:
@@ -795,7 +818,8 @@ class Pool:
         requested_at = self.now()
         deadline = time.monotonic() + RESUME_TIMEOUT
         while state not in READY:
-            until = self.resume_step(vm, state, pending, send=True, requested_at=requested_at, deadline=deadline)
+            until = self.resume_step(vm, state, pending, send=True, requested_at=requested_at,
+                                     deadline=deadline, before_resume=before_resume)
             if until is not None or resume_deadline(pending) is None:
                 timeout = RESUME_TIMEOUT if until is None else until - self.now()
                 info = self.wait_power(vm, READY, STARTING | STOPPED, timeout=timeout)
@@ -904,6 +928,8 @@ class Pool:
                     # Un pool anterior que siga en espera decide sólo por `vence`: la marca ya venció para él.
                     reservations.append({**previous, 'vence': stamp(now), 'vencida': True})
                 self.write_reservations(reservations, [('reserva-liberada', stamp(now), previous)])
+        if reserve and until is None and previous is None:
+            self.wake_launcher(repo, self.state)
 
     def reservation_loads(self, repo, now):
         pending = Counter(kind for item in self.reservations(now) if item['repo'] == repo
@@ -1273,6 +1299,29 @@ class Pool:
                 return 0
         return 0 if ttl is None else 69
 
+    def power_vm(self, vm, command, *, before_resume=None):
+        try:
+            leases = vm.leases(self.now(), expire=True)
+            if command == 'apagar' and leases:
+                raise Unavailable('sin_lugar', 'VM con arriendos vivos')
+            self.check_identity(vm)
+            info = self.sandbox_info(vm)
+            state = self.observe(vm, info)
+            if command == 'apagar':
+                pending = self.power_operation(vm)
+                if pending and pending.get('credenciales'):
+                    state = info['state']
+                self.stop(vm, state, wait=True)
+            elif command != 'despertar' or state in STOPPED | STOPPING:
+                if leases and state not in READY:
+                    raise BoatError('VM con arriendos vivos fuera de servicio')
+                self.start(vm, state, info, before_resume=before_resume)
+        except (Unavailable, BoatError) as error:
+            self.reject(str(error), vm)
+            print_unavailable(error)
+            return False
+        return True
+
     def power_command(self, args):
         selected = self.candidates(name=args.nombre)
         if not selected:
@@ -1280,26 +1329,35 @@ class Pool:
         failed = False
         for vm in selected:
             with lock(vm.path / 'lock'):
-                try:
-                    leases = vm.leases(self.now(), expire=True)
-                    if args.command == 'apagar' and leases:
-                        raise Unavailable('sin_lugar', 'VM con arriendos vivos')
-                    self.check_identity(vm)
-                    info = self.sandbox_info(vm)
-                    state = self.observe(vm, info)
-                    if args.command == 'encender':
-                        if leases and state not in READY:
-                            raise BoatError('VM con arriendos vivos fuera de servicio')
-                        self.start(vm, state, info)
-                    else:
-                        pending = self.power_operation(vm)
-                        if pending and pending.get('credenciales'):
-                            state = info['state']
-                        self.stop(vm, state, wait=True)
-                except (Unavailable, BoatError) as error:
-                    self.reject(str(error), vm)
-                    print_unavailable(error)
-                    failed = True
+                failed |= not self.power_vm(vm, args.command)
+        return 75 if failed else 0
+
+    def can_wake(self, vm):
+        with lock(self.state / 'espera.lock'):
+            now = self.now()
+            return (vm.covered_by_batch(self.reservations(now))
+                    and not (vm.path / 'operacion.json').exists()
+                    and not vm.lease_snapshot(now)
+                    and not any(vm.accepts(turn) for turn in self.turns()))
+
+    def wake(self, repo):
+        def confirm(_):
+            if not self.can_wake(vm):
+                raise WakeSkipped
+
+        key = sha256(repo.encode()).hexdigest()
+        with lock(self.state / f'despertar-{key}.lock', wait=False) as acquired:
+            if not acquired:
+                return 0
+            failed = False
+            for vm in self.candidates(repo=repo):
+                with lock(vm.path / 'lock', wait=False) as available:
+                    if not available or not self.can_wake(vm):
+                        continue
+                    try:
+                        failed |= not self.power_vm(vm, 'despertar', before_resume=confirm)
+                    except WakeSkipped:
+                        continue
         return 75 if failed else 0
 
     def status(self):
@@ -1408,11 +1466,13 @@ class Pool:
             if state in STOPPED and info.get('stoppedAt') is not None:
                 if self.now() - epoch(info['stoppedAt']) >= STOPPED_NOTICE:
                     notices['disco:' + vm.name] = 'Retención de disco cerca del límite para ' + vm.name
-            if vm.idle is None or busy:
+            with lock(self.state / 'espera.lock'):
+                covered = vm.covered_by_batch(self.reservations(self.now()))
+            if vm.idle is None or busy or covered:
                 renewable = READY | STOPPED if vm.idle is None else READY
                 if state in renewable and not self.try_renew_vm(vm, info):
                     notices['ttl:' + vm.name] = 'No se pudo renovar el plazo de Boat de ' + vm.name
-                return
+                return covered and not busy and pending is None and state in STOPPED | STOPPING
             if info['state'] not in READY:
                 return
             try:
@@ -1441,14 +1501,18 @@ class Pool:
             with lock(self.state / 'espera.lock'):
                 self.reservations(self.now())
             notices = {}
+            wake_repos = set()
             for vm in candidates:
                 try:
-                    self.watch_vm(vm, notices)
+                    if self.watch_vm(vm, notices):
+                        wake_repos.add(vm.repo)
                 except (Unavailable, BoatError, ValueError, TypeError, OverflowError) as error:
                     detail = str(error) if isinstance(error, (Unavailable, BoatError)) else 'datos de Boat inválidos'
                     with lock(self.state / 'eventos.lock'):
                         append_event(self.state / 'eventos.jsonl',
                                      vm.event('rechazo', self.now(), motivo=detail))
+            for repo in sorted(wake_repos):
+                self.wake_launcher(repo, self.state)
             try:
                 gates = self.gates()
                 for gate in ('horas_plan', 'monedero_usd'):
@@ -1834,6 +1898,7 @@ def parser():
         target = cmd.add_mutually_exclusive_group(required=True)
         target.add_argument('nombre', nargs='?')
         target.add_argument('--todas', action='store_true')
+    commands.add_parser('despertar').add_argument('--repo', required=True)
     commands.add_parser('vigilar')
     commands.add_parser('reporte').add_argument('--dia', type=iso_day)
     return cli
@@ -1860,6 +1925,8 @@ def main(argv=None, **pool_options):
                 args.clases = [label(kind) for kind in args.clases.split(',')]
                 if 'preparar' in args.clases or len(set(args.clases)) != len(args.clases):
                     raise InvalidUse('--clases no admite preparar ni clases repetidas')
+        elif args.command == 'despertar':
+            label(args.repo)
         config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'boat-pool' / 'pool.json'
         state = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'boat-pool'
         try:
@@ -1891,6 +1958,8 @@ def main(argv=None, **pool_options):
             pool.reservation_command(args.repo, args.lote)
         elif args.command in ('encender', 'apagar'):
             return pool.power_command(args)
+        elif args.command == 'despertar':
+            return pool.wake(args.repo)
         elif args.command == 'estado':
             status = pool.status()
             if args.json:
