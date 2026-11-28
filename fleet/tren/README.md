@@ -315,6 +315,37 @@ La cadena termina también en dos casos:
 - A la cuota de la API de GitHub le quedan menos de 1,000 llamadas, o no se
   pudo leer.
 
+### Vigía del lote en vuelo
+
+Un LaunchAgent opcional ejecuta `pao-tren vigia --repo owner/project` cada
+20 s para adelantar el próximo tick. Lee el ledger sin tomar los candados
+del carril ni del programa. Mientras el lote espera CI, consulta el resultado
+del candidato con el mismo lector que el tick. En `Corriendo` y
+`Diagnosticando`, lee los registros de cada efecto de suite de Jale en
+`ejecutando` sin abrir los candados de las corridas. Hay señal cuando todos
+los registros del efecto tienen un `codigo.json` legible, sin cancelación
+ni salida 75 con pendiente de Boat. Si existe `completo.json`, se lee el
+intento que indica. Si un coordinador muere sin dejar `codigo.json`, el
+tick ordinario recupera la corrida. Un repositorio sin inscripción activa,
+en pausa, con una decisión pendiente o sin lote en esas fases se omite en
+silencio.
+
+El vigía deja trabajar al tick si launchd lo muestra en ejecución. Por la
+misma señal puede pedir hasta tres arranques, separados por al menos 20 s.
+La memoria queda en `pao-tren/vigia/<sha256-del-repo>.json` en el directorio
+de estado.
+
+```sh
+python3 -I fleet/tren/instalar.py --repo owner/project --activo --vigia --cargar
+python3 -I fleet/tren/instalar.py --repo owner/project --retirar
+```
+
+`--vigia` exige `--activo`. Reinstalar con `--activo` deja el vigía ya
+instalado. Para quitarlo, usa `--retirar`, que retira ambos agentes, y
+vuelve a instalar el tick con `--activo --cargar` si quieres mantenerlo.
+La línea JSON del vigía queda en `pao-tren/launchd/<label>.vigia/stdout.log`
+en el directorio de estado.
+
 ### Instalar una versión nueva
 
 Todos los carriles corren el mismo programa instalado. Si el tren usa Boat,
@@ -1603,10 +1634,13 @@ vivas o cancélalas a mano.
 La suite de Jale libera el candado del carril al final del tick que lanza
 o consulta los coordinadores. Mientras siga vivo algún modo o intento,
 la fila de la outbox queda en `ejecutando`. Cuando hay resultado, el
-siguiente tick lo recoge del registro durable. Esto puede tardar hasta un
-intervalo de launchd (120 segundos con la configuración habitual). En
-serie, el tick que recoge el primer intento de una repetición lanza el
-segundo.
+siguiente tick lo recoge del registro durable. Con el vigía instalado,
+`Corriendo` y `Diagnosticando` pueden adelantar ese tick en el siguiente
+sondeo de 20 s, sujeto a las guardas del vigía. En `EsperandoCI` (también
+durante la suite inicial) el vigía sólo usa la señal de CI. La cadencia
+ordinaria del tick sigue siendo de 120 s para las recogidas que el vigía
+no adelanta y para las instalaciones sin vigía. En serie, el tick que
+recoge el primer intento de una repetición lanza el segundo.
 
 El plazo de CI deja de aplicar cuando la suite empieza con la solicitud
 vigente. El primer evento `efecto-iniciado` fecha el arranque de la suite.

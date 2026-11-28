@@ -248,5 +248,90 @@ else:
                 instalador.renderizar(REPO, self.home)
 
 
+    def test_activo_con_vigia_instala_y_retira_los_dos_agentes(self):
+        dominio = "gui/" + str(os.getuid())
+        vigia = self.plist.with_name(self.plist.stem + ".vigia.plist")
+        ordenes = []
+        cargados = set()
+
+        def launchctl(argv, *, comprobar=True):
+            ordenes.append(argv)
+            _, accion, destino, *rutas = argv
+            if accion == "print":
+                return subprocess.CompletedProcess(argv, 0 if destino in cargados else 3)
+            if accion == "bootstrap":
+                cargados.add(destino + "/" + Path(rutas[0]).stem)
+            else:
+                self.assertEqual(accion, "bootout")
+                cargados.remove(destino)
+            return subprocess.CompletedProcess(argv, 0)
+
+        with patch.object(instalador, "ejecutar", side_effect=launchctl):
+            self.ejecutar("--activo", "--vigia", "--cargar")
+            tick = plistlib.loads(self.plist.read_bytes())
+            self.assertEqual(tick["ProgramArguments"], [str(self.cli), "tick", "--repo", REPO])
+            logs = Path(tick["StandardOutPath"]).parent.with_name(vigia.stem)
+            self.assertTrue(logs.is_dir())
+            self.assertEqual(plistlib.loads(vigia.read_bytes()), {
+                "Label": vigia.stem,
+                "ProgramArguments": [str(self.cli), "vigia", "--repo", REPO],
+                "StartInterval": 20, "RunAtLoad": False,
+                "EnvironmentVariables": tick["EnvironmentVariables"],
+                "StandardOutPath": str(logs / "stdout.log"),
+                "StandardErrorPath": str(logs / "stderr.log"),
+            })
+            self.assertEqual([o for o in ordenes if o[1] == "bootstrap"], [
+                ["launchctl", "bootstrap", dominio, str(self.plist)],
+                ["launchctl", "bootstrap", dominio, str(vigia)],
+            ])
+            original = vigia.read_bytes()
+            anterior = original + b"\n"
+            vigia.write_bytes(anterior)
+            self.ejecutar("--activo", "--vigia")
+            self.assertEqual(vigia.read_bytes(), original)
+            self.assertEqual([p.read_bytes() for p in vigia.parent.glob(vigia.name + ".bak-*")],
+                             [anterior])
+            self.ejecutar("--retirar")
+        self.assertEqual(cargados, set())
+        self.assertEqual(list(vigia.parent.glob("*.plist")), [])
+        for ruta, contenido in ((self.plist, plistlib.dumps(tick)), (vigia, original)):
+            self.assertEqual([p.read_bytes() for p in ruta.parent.glob(ruta.name + ".retirado-*")],
+                             [contenido])
+
+    def test_sin_vigia_conserva_archivos_comandos_y_salida_de_la_base(self):
+        import shlex
+
+        salida = self.ejecutar("--activo", "--cargar")
+        dominio = "gui/" + str(os.getuid())
+        estado = Path(self.variables["XDG_STATE_HOME"]) / "pao-tren"
+        logs = estado / "launchd" / self.plist.stem
+        bootstrap = ["bootstrap", dominio, str(self.plist)]
+        self.assertEqual(self.llamadas(), [["print", dominio + "/" + self.plist.stem], bootstrap])
+        self.assertEqual(salida, "plist: " + str(self.plist) + "\n" +
+                         shlex.join(["launchctl", *bootstrap]) + "\n")
+        self.assertEqual(list(self.plist.parent.iterdir()), [self.plist])
+        self.assertEqual(set(estado.rglob("*")), {
+            logs.parent, logs, estado / (self.plist.stem + ".instalacion.lock"),
+        })
+        unidad_base = {
+            "Label": self.plist.stem,
+            "ProgramArguments": [str(self.cli), "tick", "--repo", REPO],
+            "StartInterval": 120, "RunAtLoad": True,
+            "EnvironmentVariables": instalador.entorno(self.home),
+            "StandardOutPath": str(logs / "stdout.log"),
+            "StandardErrorPath": str(logs / "stderr.log"),
+        }
+        self.assertEqual(self.plist.read_bytes(), plistlib.dumps(unidad_base))
+
+    def test_vigia_exige_activo(self):
+        salida = io.StringIO()
+        with patch("sys.stderr", salida), self.assertRaises(SystemExit) as error:
+            instalador.main(["--repo", REPO, "--vigia"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("--vigia requiere --activo", salida.getvalue())
+        self.assertFalse(self.plist.parent.exists())
+        self.assertEqual(self.llamadas(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

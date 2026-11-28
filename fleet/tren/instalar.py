@@ -106,43 +106,65 @@ def detener(servicio: str) -> bool:
     return cargado
 
 
-def instalar(repo: str, retirar: bool = False, cargar: bool = False, activo: bool = False) -> None:
+def retirar_unidad(ruta: Path, dominio: str) -> None:
+    detener(dominio + "/" + ruta.stem)
+    if ruta.exists():
+        destino = ruta.with_name(ruta.name + ".retirado-" + sello())
+        ruta.rename(destino)
+        print("retirado: " + str(destino))
+
+
+def instalar_unidad(unidad: dict, ruta: Path, dominio: str, cargar: bool) -> None:
+    contenido = plistlib.dumps(unidad, sort_keys=True)
+    cambiado = not ruta.exists() or ruta.read_bytes() != contenido
+    Path(unidad["StandardOutPath"]).parent.mkdir(parents=True, exist_ok=True)
+    if cambiado:
+        if ruta.exists():
+            respaldo = ruta.with_name(ruta.name + ".bak-" + sello())
+            shutil.copy2(ruta, respaldo)
+            print("respaldo: " + str(respaldo))
+        atomico(ruta, contenido)
+    bootstrap = ["launchctl", "bootstrap", dominio, str(ruta)]
+    print("plist: " + str(ruta))
+    print(shlex.join(bootstrap))
+    if cargar:
+        # El servicio puede seguir con un plist anterior preparado sin --cargar.
+        detener(dominio + "/" + unidad["Label"])
+        ejecutar(bootstrap)
+
+
+def instalar(repo: str, retirar: bool = False, cargar: bool = False, activo: bool = False,
+             vigia: bool = False) -> None:
+    if vigia and not activo:
+        raise ValueError("--vigia requiere --activo")
     home = Path.home()
     label = etiqueta(repo)
     ruta = home / "Library/LaunchAgents" / (label + ".plist")
+    label_vigia = label + ".vigia"
+    ruta_vigia = ruta.with_name(label_vigia + ".plist")
     estado = Path(os.environ.get("XDG_STATE_HOME") or home / ".local/state") / "pao-tren"
     if not estado.is_absolute():
         raise ValueError("XDG_STATE_HOME debe ser absoluto")
     dominio = "gui/" + str(os.getuid())
-    servicio = dominio + "/" + label
-    bootstrap = ["launchctl", "bootstrap", dominio, str(ruta)]
     with bloquear(estado, label):
         if retirar:
-            detener(servicio)
-            if ruta.exists():
-                destino = ruta.with_name(ruta.name + ".retirado-" + sello())
-                ruta.rename(destino)
-                print("retirado: " + str(destino))
+            if ruta_vigia.exists():
+                retirar_unidad(ruta_vigia, dominio)
+            retirar_unidad(ruta, dominio)
             return
         unidad = renderizar(repo, home, activo)
         binario = Path(unidad["ProgramArguments"][0])
         if not binario.is_file() or not os.access(binario, os.X_OK):
             raise ValueError("instala primero pao-tren con bin/pao sync --no-plugins --no-schedule")
-        contenido = plistlib.dumps(unidad, sort_keys=True)
-        cambiado = not ruta.exists() or ruta.read_bytes() != contenido
-        Path(unidad["StandardOutPath"]).parent.mkdir(parents=True, exist_ok=True)
-        if cambiado:
-            if ruta.exists():
-                respaldo = ruta.with_name(ruta.name + ".bak-" + sello())
-                shutil.copy2(ruta, respaldo)
-                print("respaldo: " + str(respaldo))
-            atomico(ruta, contenido)
-        print("plist: " + str(ruta))
-        print(shlex.join(bootstrap))
-        if cargar:
-            # El servicio puede seguir con un plist anterior preparado sin --cargar.
-            detener(servicio)
-            ejecutar(bootstrap)
+        instalar_unidad(unidad, ruta, dominio, cargar)
+        if vigia:
+            logs = Path(unidad["StandardOutPath"]).parent.with_name(label_vigia)
+            unidad_vigia = dict(unidad, Label=label_vigia,
+                               ProgramArguments=[str(binario), "vigia", "--repo", repo],
+                               StartInterval=20, RunAtLoad=False,
+                               StandardOutPath=str(logs / "stdout.log"),
+                               StandardErrorPath=str(logs / "stderr.log"))
+            instalar_unidad(unidad_vigia, ruta_vigia, dominio, cargar)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -152,11 +174,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     accion.add_argument("--retirar", action="store_true", help="bootout y renombrar, sin borrar")
     accion.add_argument("--cargar", action="store_true", help="ejecutar también launchctl bootstrap")
     parser.add_argument("--activo", action="store_true", help="tick activo, sin --seco")
+    parser.add_argument("--vigia", action="store_true", help="instalar el vigía del tick activo")
     args = parser.parse_args(argv)
     if args.activo and args.retirar:
         parser.error("--activo no se combina con --retirar")
+    if args.vigia and not args.activo:
+        parser.error("--vigia requiere --activo")
     try:
-        instalar(args.repo, args.retirar, args.cargar, args.activo)
+        instalar(args.repo, args.retirar, args.cargar, args.activo, args.vigia)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         parser.exit(2, "error de instalación: " + str(exc) + "\n")
     return 0

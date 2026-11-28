@@ -100,6 +100,8 @@ def parser():
     fases.add_argument("--repo", required=True, type=repositorio)
     fases.add_argument("--desde", required=True, type=texto_iso)
     fases.add_argument("--hasta", required=True, type=texto_iso)
+    vigia = comandos.add_parser("vigia")
+    vigia.add_argument("--repo", required=True, type=repositorio)
     panel = comandos.add_parser("panel", help="proyectar el ledger como tren-host@1")
     alcance = panel.add_mutually_exclusive_group(required=True)
     alcance.add_argument("--repo", type=repositorio)
@@ -139,6 +141,9 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
         from fases import medir_fases
         from ledger import filas_fases
         return 0, medir_fases(*filas_fases(args.repo), args.repo, args.desde, args.hasta)
+    if args.comando == "vigia":
+        from vigia import vigilar
+        return 0, vigilar(args.repo, estado_para_espera, inicio=ARRANQUE)
     if args.comando == "panel":
         from panel import publicar
         return 0, publicar(args.repo, ahora)
@@ -492,6 +497,9 @@ def emitir(pasos):
 
 def main():
     args = parser().parse_args()
+    if args.comando == "vigia":
+        codigo, resultado = intento(args)
+        return codigo if resultado is None else emitir([(codigo, resultado)])
     if args.comando != "tick":
         return emitir([intento(args)])
     with ExitStack() as pila:

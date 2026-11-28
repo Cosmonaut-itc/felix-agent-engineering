@@ -72,6 +72,10 @@ def leer_pendiente_boat(log):
     return pendiente
 
 
+def salida_boat_pendiente(estado, log):
+    return estado == 75 and leer_pendiente_boat(log) is not None
+
+
 def identidad_boat_pendiente(registro):
     codigo = registro / 'codigo.json'
     if not codigo.exists() or leer_json(codigo) != 75:
@@ -187,7 +191,7 @@ def leer_recibo(log, codigo, commit, modo, filtros, *, host):
 
 def leer_salida(registro, log, codigo, commit, modo, filtros):
     estado = leer_json(codigo)
-    if estado == 75 and leer_pendiente_boat(log) is not None:
+    if salida_boat_pendiente(estado, log):
         return None
     host = leer_json(registro / 'solicitud.json')[2]
     resultado = leer_recibo(log, estado, commit, modo, filtros, host=host)
@@ -196,6 +200,32 @@ def leer_salida(registro, log, codigo, commit, modo, filtros):
             any(registro.glob('codigo-reenganche-*.json'))):
         return RechazoLanzador(resultado.evidencia, 'salida-sin-recibo')
     return resultado
+
+
+def leer_intento_completo(cache):
+    intento = leer_json(cache)
+    exigir(type(intento) is int and intento >= 0, 'cache-invalida')
+    return intento
+
+
+def registro_listo(raiz, intento):
+    try:
+        cache = raiz / 'completo.json'
+        try:
+            cache.stat()
+        except FileNotFoundError:
+            pass
+        else:
+            intento = str(leer_intento_completo(cache))
+        registro = raiz / intento
+        try:
+            (registro / CANCELAR).stat()
+        except FileNotFoundError:
+            estado = leer_json(registro / 'codigo.json')
+            return type(estado) is int and not salida_boat_pendiente(estado, registro / 'corrida.log')
+    except (OSError, ResultadoInvalido, RecursionError):
+        pass
+    return False
 
 
 class Jale:
@@ -409,6 +439,18 @@ class Jale:
                     activas[registro]['error_barrera_cancelacion'] = type(error).__name__
         return [aviso for _, aviso in prelanzadas]
 
+    def salidas_listas(self, efecto):
+        """Consulta las salidas durables del efecto sin abrir sus candados."""
+        tren_id = efecto.datos[0]
+        if efecto.tipo == 'repetir':
+            raiz = self.estado / clave('repetir', tren_id, efecto.datos[1])
+            corridas, intento = ('1', '2'), efecto.datos[2]
+        else:
+            raiz = self.estado / clave('suite', tren_id)
+            corridas = self.modos
+            intento = efecto.datos[1] if efecto.tipo == 'reanudar-suite' else '0'
+        return all(registro_listo(raiz / corrida, intento) for corrida in corridas)
+
     def corridas_sin_leer(self, efecto):
         tren_id = efecto.datos[0]
         if efecto.tipo == 'repetir':
@@ -577,8 +619,7 @@ class Jale:
                        reenganche):
         cache = raiz / 'completo.json'
         if cache.exists():
-            guardado = leer_json(cache)
-            exigir(type(guardado) is int and guardado >= 0, 'cache-invalida')
+            guardado = leer_intento_completo(cache)
             registro = raiz / str(guardado)
             return registro, self.lanzar(registro, commit, modo, filtros, False)
         registro = raiz / str(intento)
