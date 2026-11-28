@@ -183,6 +183,20 @@ class Instalador(unittest.TestCase):
         self.assertTrue((self.home / 'actions-runner-jale-datos/.runner').exists())
         self.assertFalse(self.dir.exists())
 
+    def test_el_segundo_guard_comparte_la_etiqueta_y_tiene_registro_propio(self):
+        resultado = self.correr('--seco', papel='guard-2')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertEqual(resultado.stdout,
+            f'Descargar actions-runner-osx-arm64-2.338.2.tar.gz, comprobar su sha256 y extraerlo en {self.home}/actions-runner-jale-guard-2\n'
+            'Registrar mini-jale-guard-2 en https://github.com/SEN-HASO/Jale con la etiqueta jale-guard\n'
+            f'Escribir {self.home}/Library/LaunchAgents/local.pao.gha-runner-jale-guard-2.plist y cargarlo en gui/{os.getuid()}\n')
+        self.assertEqual(self.correr(token=TOKEN, papel='guard-2').returncode, 0)
+        self.assertIn('--name mini-jale-guard-2 --labels jale-guard --work', self.leer('config.log'))
+        self.assertTrue((self.home / 'actions-runner-jale-guard-2/.runner').exists())
+        self.assertTrue((self.home / 'Library/LaunchAgents/local.pao.gha-runner-jale-guard-2.plist').exists())
+        self.assertFalse(self.dir.exists())
+        self.assertFalse(self.plist.exists())
+
     def test_jale_conserva_su_salida_seca_y_no_recibe_hook(self):
         for papel in ('guard', 'datos'):
             with self.subTest(papel=papel):
