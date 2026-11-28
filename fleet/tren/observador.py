@@ -376,7 +376,11 @@ class GitHubGit:
 
     def vista(self, entrega):
         vista, cerrar = self._leer_vista(entrega)
-        return cerrar(self._autorizados_observacion) if cerrar else vista
+        if cerrar is not None:
+            vista, releer = cerrar(self._autorizados_observacion)
+            if releer is not None:
+                return releer()
+        return vista
 
     def _leer_vista(self, entrega, paralela=False):
         repo, pr = entrega.repo, entrega.pr
@@ -441,7 +445,7 @@ class GitHubGit:
             if ci is SIN_LEER:
                 ci = self.ci(repo, head).estado
             if ci is None:
-                return replace(vista, completa=False)
+                return replace(vista, completa=False), None
             vista = replace(vista,
                 apto=apto.get("veredicto") == "APTO" and apto.get("head") == head,
                 hallazgos=apto.get("hallazgos_abiertos")
@@ -457,12 +461,18 @@ class GitHubGit:
                 verificado=apto.get("verificado") == "Verificado" and apto.get("head") == head,
                 autorizado=head in autorizados,
                 ventana=autorizados.get(head) if self.activo else None)
-            # Re-read after all reads; a concurrent push cannot use stale evidence.
-            final = self.api("repos/{}/pulls/{}".format(repo, pr))
-            if final["head"]["sha"] != head:
+            return vista, partial(self._releer_vista, vista, repo, base, payload["state"])
+        except (FalloGit, *ERRORES_LECTURA):
+            return replace(vista, completa=False), None
+
+    def _releer_vista(self, vista, repo, base, estado):
+        # Después de las demás lecturas y de merge-tree, comprueba si hubo un push.
+        try:
+            final = self.api("repos/{}/pulls/{}".format(repo, vista.pr))
+            if final["head"]["sha"] != vista.head:
                 return replace(vista, head=final["head"]["sha"], completa=False)
             if (final["base"]["sha"] != base or final["base"]["ref"] != vista.base
-                    or final["state"] != payload["state"]):
+                    or final["state"] != estado):
                 return replace(vista, completa=False)
             return vista
         except (FalloGit, *ERRORES_LECTURA):
@@ -526,7 +536,12 @@ class GitHubGit:
         if self.paralelas > 1:
             with ThreadPoolExecutor(max_workers=self.paralelas) as pool:
                 lecturas = list(pool.map(self._leer_entrega, entregas))
-            vistas = [cerrar(autorizados) if cerrar else vista for vista, cerrar in lecturas]
+                cierres = [cerrar(autorizados) if cerrar is not None else (vista, None)
+                           for vista, cerrar in lecturas]
+                relecturas = [pool.submit(releer) if releer is not None else None
+                              for _, releer in cierres]
+                vistas = [futuro.result() if futuro is not None else vista
+                          for (vista, _), futuro in zip(cierres, relecturas)]
         else:
             vistas = []
             # El camino serial sigue pasando por el método público vista.

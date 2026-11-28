@@ -250,7 +250,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                         remoto, identidad=identidad_commits(config))
                     # Admisión y armado comparten el bare del tren: el tick
                     # siguiente ve el C aterrizado sin sincronizar config["git"].
-                    PARALELAS_TICK_ACTIVO = 4
+                    PARALELAS_TICK_ACTIVO = 8
                     observador = observador or GitHubGit(config, activo=True, almacen=git,
                         paralelas=PARALELAS_TICK_ACTIVO,
                         cache=recursos.enter_context(CacheGitHub(ledger.directorio)))
