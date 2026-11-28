@@ -610,6 +610,7 @@ class Harness(unittest.TestCase):
         for _ in range(2):
             code, _, stderr = self.run_cli('liberar-reserva', '--repo', REPO, '--lote', 'lote')
             self.assertEqual(code, 0, stderr)
+            self.assertEqual(pool.read_json(self.state / 'reservas.json')['reservas'], [])
         code, output, stderr = self.run_cli('estado', '--json')
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(output)['reservas'], [])
@@ -673,6 +674,60 @@ class Harness(unittest.TestCase):
         self.assertEqual(json.loads(output)['reservas'], [
             {'repo': REPO, 'lote': 'lote', 'clases': ['contract', 'e2e'],
              'vence': pool.stamp(NOW + 1920)}])
+
+    def test_reserva_absoluta_liberada_no_se_recrea_con_vence(self):
+        self.reservation_vms()
+        args = ('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'contract,e2e', '--vence')
+        until = NOW + 300
+        self.assertEqual(self.run_cli(*args, str(until))[0], 0)
+        self.api.now = NOW + 120
+        for _ in range(2):
+            self.assertEqual(self.run_cli('liberar-reserva', '--repo', REPO, '--lote', 'lote')[0], 0)
+        self.assertEqual(self.run_cli(*args, str(NOW + 420))[0], 0)
+        code, output, stderr = self.run_cli('estado', '--json')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(output)['reservas'], [])
+        self.get_lease('ajena', 'e2e', '--prioridad', 'suite')
+        self.api.now = until
+        self.assertEqual(self.run_cli('estado', '--json')[0], 0)
+        events = list(pool.events(self.state / 'eventos.jsonl'))
+        self.assertEqual([(e['evento'], e['vence']) for e in events],
+                         [('reservado', pool.stamp(until)), ('reserva-liberada', pool.stamp(until))])
+
+    def test_ttl_reemplaza_una_reserva_absoluta_liberada(self):
+        self.assertEqual(self.run_cli('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e',
+                                      '--vence', str(NOW + 300))[0], 0)
+        self.api.now = NOW + 120
+        self.assertEqual(self.run_cli('liberar-reserva', '--repo', REPO, '--lote', 'lote')[0], 0)
+        self.reserve(ttl='1800')
+        expected = {'repo': REPO, 'lote': 'lote', 'clases': ['contract', 'e2e'],
+                    'vence': pool.stamp(NOW + 1920)}
+        code, output, stderr = self.run_cli('estado', '--json')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(output)['reservas'], [expected])
+        self.assertEqual(pool.read_json(self.state / 'reservas.json')['reservas'], [expected])
+
+    def test_marca_de_reserva_absoluta_liberada_caduca_a_las_3600_s(self):
+        args = ('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e', '--vence')
+        until = NOW + 300
+        self.assertEqual(self.run_cli(*args, str(until))[0], 0)
+        self.api.now = NOW + 120
+        self.assertEqual(self.run_cli('liberar-reserva', '--repo', REPO, '--lote', 'lote')[0], 0)
+        path = self.state / 'reservas.json'
+        self.api.now = until + 3599.75
+        self.assertEqual(self.run_cli(*args, str(until + 4000))[0], 0)
+        mark, = pool.read_json(path)['reservas']
+        self.assertTrue(mark['vencida'])
+        self.assertEqual(mark['vence'], pool.stamp(until))
+
+        self.api.now = until + 3600
+        self.assertEqual(self.run_cli('estado', '--json')[0], 0)
+        self.assertEqual(pool.read_json(path)['reservas'], [])
+        self.assertEqual(self.run_cli(*args, str(until + 4000))[0], 0)
+        code, output, stderr = self.run_cli('estado', '--json')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(output)['reservas'], [
+            {'repo': REPO, 'lote': 'lote', 'clases': ['e2e'], 'vence': pool.stamp(until + 4000)}])
 
     def test_reserva_absoluta_vencida_libera_solo_su_lote(self):
         self.reserve()

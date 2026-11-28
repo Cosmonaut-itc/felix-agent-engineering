@@ -900,6 +900,8 @@ class Pool:
                 reservations.append(reservation)
                 self.write_reservations(reservations, [('reservado', stamp(now), reservation)])
             elif previous is not None:
+                if 'vence_solicitado' in previous:
+                    reservations.append({**previous, 'vencida': True})
                 self.write_reservations(reservations, [('reserva-liberada', stamp(now), previous)])
 
     def reservation_loads(self, repo, now):

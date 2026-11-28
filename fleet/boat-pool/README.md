@@ -103,8 +103,9 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
 - `reservar --repo R --lote ID --clases C1,C2 --vence EPOCH` usa un instante
   Unix en segundos, limitado a 3600 s desde la aplicación. Para una reserva
   del mismo repo y lote ya fijada con `--vence`, Boat conserva el menor
-  vencimiento. Guarda el vencimiento 3600 s tras caducar para descartar
-  reintentos tardíos. `--ttl` sigue renovando desde el reloj de Boat.
+  vencimiento. Si la reserva caduca o se libera, Boat descarta los reintentos
+  con `--vence` hasta 3600 s después del vencimiento guardado.
+  `--ttl` sigue renovando desde el reloj de Boat.
   Un instante alcanzado libera la reserva del lote y devuelve 0. Usa sólo
   una de las opciones `--vence` y `--ttl`.
 - `liberar-reserva --repo R --lote ID` quita la reserva del lote.
