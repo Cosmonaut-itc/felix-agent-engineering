@@ -315,6 +315,51 @@ La cadena termina también en dos casos:
 - A la cuota de la API de GitHub le quedan menos de 1,000 llamadas, o no se
   pudo leer.
 
+### Vigía del lote en vuelo
+
+Un LaunchAgent opcional ejecuta `pao-tren vigia --repo owner/project` cada
+20 s para adelantar el próximo tick. Lee el ledger sin tomar los candados
+del carril ni del programa. Mientras el lote espera CI, consulta el resultado
+del candidato con el mismo lector que el tick. En `Corriendo` y
+`Diagnosticando`, lee los registros de cada efecto de suite de Jale en
+`ejecutando` sin abrir los candados de las corridas. Hay señal cuando todos
+los registros del efecto tienen un `codigo.json` legible, sin cancelación
+ni salida 75 con pendiente de Boat: la misma regla con que el tick decide
+recoger una salida, también cuando el coordinador publicó `null` porque no
+pudo ejecutar el lanzador. Si existe `completo.json`, se lee el
+intento que indica. Una salida presente que no se puede leer termina la
+vuelta con `lectura-fallida`. Si un coordinador muere sin dejar
+`codigo.json`, el tick ordinario recupera la corrida. Tampoco hay señal
+cuando una repetición de diagnóstico reutiliza la salida que otro lote dejó
+en la caché de la base: el vigía sólo mira los registros del lote y esa
+repetición la recoge el tick ordinario. Un repositorio sin inscripción activa,
+en pausa, con una decisión pendiente o sin lote en esas fases se omite en
+silencio.
+
+El vigía deja trabajar al tick si launchd lo muestra en ejecución. Por la
+misma señal puede pedir hasta tres arranques, separados por al menos 20 s.
+La memoria queda en `pao-tren/vigia/<sha256-del-repo>.json` en el directorio
+de estado. La cuenta se guarda, con su hora, justo antes de pedir el
+arranque: si no se puede guardar, el vigía no arranca nada, y un arranque
+que falla consume su lugar.
+
+Cada vuelta da 15 s en total a `gh` y a la consulta a launchd; pasado ese
+plazo no empieza ninguna lectura ni guarda la cuenta. Con la cuenta ya
+guardada, el arranque se pide siempre, con su propio límite de 3 s. La caché
+ETag puede añadir su espera fija de 1 s por operación, y un fallo al
+escribirla no descarta la respuesta de CI ya leída.
+
+```sh
+python3 -I fleet/tren/instalar.py --repo owner/project --activo --vigia --cargar
+python3 -I fleet/tren/instalar.py --repo owner/project --retirar
+```
+
+`--vigia` exige `--activo`. Reinstalar con `--activo` deja el vigía ya
+instalado. Para quitarlo, usa `--retirar`, que retira ambos agentes, y
+vuelve a instalar el tick con `--activo --cargar` si quieres mantenerlo.
+La línea JSON del vigía queda en `pao-tren/launchd/<label>.vigia/stdout.log`
+en el directorio de estado.
+
 ### Instalar una versión nueva
 
 Todos los carriles corren el mismo programa instalado. Si el tren usa Boat,
@@ -1603,10 +1648,13 @@ vivas o cancélalas a mano.
 La suite de Jale libera el candado del carril al final del tick que lanza
 o consulta los coordinadores. Mientras siga vivo algún modo o intento,
 la fila de la outbox queda en `ejecutando`. Cuando hay resultado, el
-siguiente tick lo recoge del registro durable. Esto puede tardar hasta un
-intervalo de launchd (120 segundos con la configuración habitual). En
-serie, el tick que recoge el primer intento de una repetición lanza el
-segundo.
+siguiente tick lo recoge del registro durable. Con el vigía instalado,
+`Corriendo` y `Diagnosticando` pueden adelantar ese tick en el siguiente
+sondeo de 20 s, sujeto a las guardas del vigía. En `EsperandoCI` (también
+durante la suite inicial) el vigía sólo usa la señal de CI. La cadencia
+ordinaria del tick sigue siendo de 120 s para las recogidas que el vigía
+no adelanta y para las instalaciones sin vigía. En serie, el tick que
+recoge el primer intento de una repetición lanza el segundo.
 
 El plazo de CI deja de aplicar cuando la suite empieza con la solicitud
 vigente. El primer evento `efecto-iniciado` fecha el arranque de la suite.

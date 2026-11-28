@@ -417,6 +417,13 @@ def filas_medicion(repo, directorio=None):
     return requests, events
 
 
+def efectos_en_ejecucion(repo):
+    with lectura_medicion(timeout=1.0) as db:
+        return [desde_datos(json.loads(fila[0])) for fila in db.execute(
+            "SELECT e.payload FROM effects e JOIN outbox o ON o.clave=e.clave "
+            "WHERE e.repo=? AND o.estado='ejecutando'", (repo,))]
+
+
 @contextmanager
 def filas_latencia(repo, hasta, directorio=None):
     with lectura_medicion(directorio) as db:
