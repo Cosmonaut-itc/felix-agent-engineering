@@ -209,7 +209,7 @@ def leer_intento_completo(cache):
 
 
 def registro_listo(raiz, intento):
-    """Dice si la salida ya se puede recoger; una salida presente e ilegible lanza ValueError."""
+    """Dice si el tick ya recogería la salida; una salida presente e ilegible lanza ValueError."""
     def existe(ruta):
         try:
             ruta.stat()
@@ -225,8 +225,8 @@ def registro_listo(raiz, intento):
         codigo = registro / 'codigo.json'
         if existe(registro / CANCELAR) or not existe(codigo):
             return False
-        estado = leer_json(codigo)
-        return type(estado) is int and not salida_boat_pendiente(estado, registro / 'corrida.log')
+        # Igual que leer_salida: un código que no es entero también es una salida que recoger.
+        return not salida_boat_pendiente(leer_json(codigo), registro / 'corrida.log')
     except ResultadoInvalido:
         raise ValueError('salida-ilegible') from None
 

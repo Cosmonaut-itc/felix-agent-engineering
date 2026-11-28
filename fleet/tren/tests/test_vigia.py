@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from test_activo import REPO, cli
 from adaptadores.ejecucion_jale import CANCELAR
+from adaptadores.hasito import ResultadoInvalido
 from adaptadores.jale import EN_CURSO, Jale
 from dominio import (Candidato, Certificado, Congelado, Corriendo, Decision, Diagnosticando,
                      Efecto, EsperandoCI, Estado, Fallo, Pausa, Reproduccion, ResultadoCI, Tren, clave,
@@ -71,7 +72,10 @@ class VigiaTests(unittest.TestCase):
 
     def transporte(self, argv, *, timeout, **_):
         self.assertGreater(timeout, 0)
-        self.assertLessEqual(timeout, 15 - self.monotono)
+        if argv[:2] == ["launchctl", "kickstart"]:
+            self.assertEqual(timeout, 3)
+        else:
+            self.assertLessEqual(timeout, 15 - self.monotono)
         if argv[0] == "gh":
             self.llamadas_gh.append(argv)
             if self.error_gh is not None:
@@ -232,6 +236,24 @@ class VigiaTests(unittest.TestCase):
             self.assertEqual(self.cuenta(), cuenta)
         self.assertEqual(self.pateos(), [["kickstart", self.servicio]] * 3)
 
+    def test_el_intervalo_cuenta_desde_el_arranque_anterior(self):
+        self.guardar(self.tren)
+        self.color = "verde"
+        transporte = self.transporte
+
+        def consulta_lenta(argv, **opciones):
+            salida = transporte(argv, **opciones)
+            if argv[:2] == ["launchctl", "print"]:
+                self.ahora += 3
+            return salida
+
+        with patch.object(self, "transporte", side_effect=consulta_lenta):
+            self.ejecutar("pateo", "ci")
+        for hora, motivo in ((120, "espera"), (123, "pateo")):
+            self.ahora = hora
+            self.ejecutar(motivo, "ci")
+        self.assertEqual(len(self.pateos()), 2)
+
     def test_cambiar_tren_c_o_solicitud_reinicia_la_cuenta(self):
         self.color = "verde"
         tren = self.tren
@@ -312,6 +334,19 @@ class VigiaTests(unittest.TestCase):
         self.ejecutar("sin-señal")
         self.assertEqual(self.llamadas_launchctl, [])
         self.assertFalse(self.memoria.exists())
+
+    def test_jale_salida_no_utilizable_da_senal_porque_el_tick_la_recoge(self):
+        jale, raiz = self.preparar_suite_jale()
+        self.registrar_jale(raiz / "contract/1", jale, "contract", 75)
+        registro = raiz / "e2e/1"
+        self.registrar_jale(registro, jale, "e2e")
+        # El coordinador publica null cuando no pudo ejecutar el lanzador.
+        (registro / "codigo.json").write_text("null")
+        self.ejecutar("pateo", "suite")
+        with self.assertRaises(ResultadoInvalido) as fallo:
+            jale.suite(self.candidato, self.tren.id, intento=1, permitir_lanzar=False)
+        self.assertEqual(fallo.exception.resultado.codigo, "salida-no-utilizable")
+        self.assertEqual(self.pateos(), [["kickstart", self.servicio]])
 
     def test_jale_lee_el_intento_fijado_por_completo(self):
         jale, raiz = self.preparar_suite_jale()
@@ -412,6 +447,22 @@ class VigiaTests(unittest.TestCase):
         self.error_launchctl.clear()
         self.error_launchctl["kickstart"] = (5, "", "error privado")
         self.ejecutar("lectura-fallida", "ci")
+        self.assertEqual(self.cuenta(), 1)
+
+    def test_con_la_cuenta_guardada_el_arranque_se_pide_aunque_venza_el_plazo(self):
+        self.guardar(self.tren)
+        self.color = "verde"
+        transporte = self.transporte
+
+        def consulta_lenta(argv, **opciones):
+            salida = transporte(argv, **opciones)
+            if argv[:2] == ["launchctl", "print"]:
+                self.monotono = 15
+            return salida
+
+        with patch.object(self, "transporte", side_effect=consulta_lenta):
+            self.ejecutar("pateo", "ci")
+        self.assertEqual(self.pateos(), [["kickstart", self.servicio]])
         self.assertEqual(self.cuenta(), 1)
 
     def test_sin_poder_guardar_la_cuenta_no_arranca(self):

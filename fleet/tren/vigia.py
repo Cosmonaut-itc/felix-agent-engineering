@@ -66,10 +66,10 @@ def leer_memoria(ruta, llave):
     return 0, 0
 
 
-def despertar(repo, ejecutar, reservar):
+def despertar(repo, consultar, reservar, arrancar):
     servicio = f"gui/{os.getuid()}/{etiqueta(repo)}"
-    consulta = ejecutar(["launchctl", "print", servicio], timeout=3,
-                        capture_output=True, text=True)
+    consulta = consultar(["launchctl", "print", servicio], timeout=3,
+                         capture_output=True, text=True)
     if consulta.returncode != 0:
         if consulta.returncode == errno.ESRCH or re.search(
                 r"\bcould not find (?:specified )?service\b", consulta.stderr or "", re.IGNORECASE):
@@ -82,7 +82,8 @@ def despertar(repo, ejecutar, reservar):
         return "tick-vivo"
     # La cuenta se guarda antes de arrancar: sin ella el tope no se cumple.
     reservar()
-    pateo = ejecutar(["launchctl", "kickstart", servicio], timeout=3,
+    # Con el lugar ya consumido, el arranque se pide aunque el plazo de lectura haya vencido.
+    pateo = arrancar(["launchctl", "kickstart", servicio], timeout=3,
                      capture_output=True, text=True)
     return "pateo" if pateo.returncode == 0 else "lectura-fallida"
 
@@ -136,11 +137,14 @@ def vigilar(repo, leer_estado, *, inicio=None, ejecutar_gh=None, launchctl=None)
             return dict(salida, vigia="tope")
         if pateos and time.time() - ultimo < INTERVALO_S:
             return dict(salida, vigia="espera")
-        cuenta = json.dumps({"clave": llave, "pateos": pateos + 1, "ultimo": time.time()},
-                            sort_keys=True).encode("utf-8")
+
+        def reservar():
+            # La hora es la del arranque que sigue, no la del inicio de la vuelta.
+            atomico(memoria, json.dumps({"clave": llave, "pateos": pateos + 1, "ultimo": time.time()},
+                                        sort_keys=True).encode("utf-8"))
+
         return dict(salida, vigia=despertar(
-            repo, lambda argv, **kw: acotado(launchctl, argv, **kw),
-            lambda: atomico(memoria, cuenta)))
+            repo, lambda argv, **kw: acotado(launchctl, argv, **kw), reservar, launchctl))
     except LimiteGitHub:
         return dict(salida, vigia="limite-github")
     except (*ERRORES_LECTURA, sqlite3.Error, LecturaCIFallida, IndexError, AttributeError,
