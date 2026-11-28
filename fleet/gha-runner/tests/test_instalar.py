@@ -210,11 +210,10 @@ class Instalador(unittest.TestCase):
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         self.assertTrue(self.cargado('jale-guard'))
         self.assertTrue(self.cargado('jale-guard-2'))
-        servicio = plist2.read_text()
-        self.assertIn('<key>Label</key><string>local.pao.gha-runner-jale-guard-2</string>', servicio)
-        self.assertIn(f'<key>WorkingDirectory</key><string>{dir2}</string>', servicio)
-        self.assertIn(f'<key>StandardOutPath</key><string>{self.home}/Library/Logs/pao-gha-runner-jale-guard-2.log</string>',
-                      servicio)
+        # Todo campo del plist que nombra el servicio, la carpeta o el log es el de guard-2.
+        self.assertIn('<key>Label</key><string>local.pao.gha-runner-jale-guard-2</string>', plist2.read_text())
+        self.assertEqual(plist2.read_text(), self.plist.read_text().replace('jale-guard', 'jale-guard-2'))
+        self.assertEqual(self.plist.read_text().count('jale-guard'), 5)
         # Reinstalar uno reinicia sólo su servicio y no vuelve a registrar a ninguno.
         self.assertEqual(self.correr(papel='guard-2').returncode, 0)
         self.assertEqual(self.correr().returncode, 0)
