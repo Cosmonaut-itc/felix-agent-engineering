@@ -18,21 +18,23 @@ STUBS = {
     'sleep': '#!/bin/bash\n',
     'curl': '#!/bin/bash\necho "$*" >> "$FAKE_ROOT/curl.log"\ncp "$FAKE_ROOT/paquete.tgz" "$3"\n',
     'shasum': '#!/bin/bash\ncat > "$FAKE_ROOT/shasum.in"\n[ ! -e "$FAKE_ROOT/sha-mal" ]\n',
+    # Como launchd: un estado por Label, y no carga dos veces el mismo Label.
     'launchctl': '''#!/bin/bash
 echo "$*" >> "$FAKE_ROOT/launchctl.log"
+campo() { sed -n "s:.*<key>$1</key><string>\\(.*\\)</string>.*:\\1:p" "$2"; }
 case "$1" in
-  print) [ -e "$FAKE_ROOT/cargado" ] ;;
-  bootout) rm "$FAKE_ROOT/cargado" ;;
+  print) [ -e "$FAKE_ROOT/cargado-${2##*/}" ] ;;
+  bootout) rm "$FAKE_ROOT/cargado-${2##*/}" ;;
   bootstrap)
     case "$3" in
       *hasito-noche.plist)
         hook="$HOME/.local/lib/pao-gha-runner/solo-main.sh"
         [ -x "$hook" ] && grep -Fx "ACTIONS_RUNNER_HOOK_JOB_STARTED=$hook" "$HOME/actions-runner-hasito-noche/.env" >/dev/null || exit 1 ;;
     esac
-    : > "$FAKE_ROOT/cargado"
-    papel=${3##*/local.pao.gha-runner-}
-    papel=${papel%.plist}
-    [ -e "$FAKE_ROOT/mudo" ] || echo 'Listening for Jobs' >> "$HOME/Library/Logs/pao-gha-runner-$papel.log" ;;
+    label=$(campo Label "$3")
+    [ ! -e "$FAKE_ROOT/cargado-$label" ] || exit 5
+    : > "$FAKE_ROOT/cargado-$label"
+    [ -e "$FAKE_ROOT/mudo" ] || echo 'Listening for Jobs' >> "$(campo StandardOutPath "$3")" ;;
 esac
 ''',
 }
@@ -69,6 +71,9 @@ class Instalador(unittest.TestCase):
         return subprocess.run(['bash', str(SCRIPT), *args, *([papel] if papel else [])], env=self.entorno,
                               text=True, capture_output=True,
                               **({'input': token + '\n'} if token else {'stdin': subprocess.DEVNULL}))
+
+    def cargado(self, servicio):
+        return (self.fake / f'cargado-local.pao.gha-runner-{servicio}').exists()
 
     def leer(self, nombre):
         ruta = self.fake / nombre
@@ -145,7 +150,7 @@ class Instalador(unittest.TestCase):
         resultado = self.correr('--retirar', token='token-de-retiro')
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         self.assertIn('args=remove\ntoken=token-de-retiro\n', self.leer('config.log'))
-        self.assertFalse((self.fake / 'cargado').exists())
+        self.assertFalse(self.cargado('jale-guard'))
         self.assertFalse(self.dir.exists())
         self.assertFalse(self.plist.exists())
         self.assertEqual(len(list(self.home.glob('actions-runner-jale-guard.retirado-*'))), 1)
@@ -174,7 +179,7 @@ class Instalador(unittest.TestCase):
         self.assertEqual(self.correr(token=TOKEN).returncode, 0)
         resultado = self.correr('--retirar')
         self.assertEqual(resultado.returncode, 2)
-        self.assertTrue((self.fake / 'cargado').exists())
+        self.assertTrue(self.cargado('jale-guard'))
 
     def test_cada_papel_tiene_su_registro_y_su_directorio(self):
         (self.fake / 'mudo').touch()
@@ -182,6 +187,63 @@ class Instalador(unittest.TestCase):
         self.assertIn('--name mini-jale-datos --labels jale-datos', self.leer('config.log'))
         self.assertTrue((self.home / 'actions-runner-jale-datos/.runner').exists())
         self.assertFalse(self.dir.exists())
+
+    def test_el_segundo_guard_comparte_la_etiqueta_y_tiene_registro_propio(self):
+        resultado = self.correr('--seco', papel='guard-2')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertEqual(resultado.stdout,
+            f'Descargar actions-runner-osx-arm64-2.338.2.tar.gz, comprobar su sha256 y extraerlo en {self.home}/actions-runner-jale-guard-2\n'
+            'Registrar mini-jale-guard-2 en https://github.com/SEN-HASO/Jale con la etiqueta jale-guard\n'
+            f'Escribir {self.home}/Library/LaunchAgents/local.pao.gha-runner-jale-guard-2.plist y cargarlo en gui/{os.getuid()}\n')
+        self.assertEqual(self.correr(token=TOKEN, papel='guard-2').returncode, 0)
+        self.assertIn('--name mini-jale-guard-2 --labels jale-guard --work', self.leer('config.log'))
+        self.assertTrue((self.home / 'actions-runner-jale-guard-2/.runner').exists())
+        self.assertTrue((self.home / 'Library/LaunchAgents/local.pao.gha-runner-jale-guard-2.plist').exists())
+        self.assertFalse(self.dir.exists())
+        self.assertFalse(self.plist.exists())
+
+    def test_los_dos_guard_conviven_y_cada_uno_se_reinstala_y_se_retira_solo(self):
+        dir2 = self.home / 'actions-runner-jale-guard-2'
+        plist2 = self.plist.with_name('local.pao.gha-runner-jale-guard-2.plist')
+        self.assertEqual(self.correr(token=TOKEN).returncode, 0)
+        resultado = self.correr(token=TOKEN, papel='guard-2')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertTrue(self.cargado('jale-guard'))
+        self.assertTrue(self.cargado('jale-guard-2'))
+        # Todo campo del plist que nombra el servicio, la carpeta o el log es el de guard-2.
+        self.assertIn('<key>Label</key><string>local.pao.gha-runner-jale-guard-2</string>', plist2.read_text())
+        self.assertEqual(plist2.read_text(), self.plist.read_text().replace('jale-guard', 'jale-guard-2'))
+        self.assertEqual(self.plist.read_text().count('jale-guard'), 5)
+        # Reinstalar uno reinicia sólo su servicio y no vuelve a registrar a ninguno.
+        self.assertEqual(self.correr(papel='guard-2').returncode, 0)
+        self.assertEqual(self.correr().returncode, 0)
+        self.assertEqual(self.leer('config.log').count('args='), 2)
+        prefijo = f'bootout gui/{os.getuid()}/local.pao.gha-runner-jale-'
+        self.assertEqual([linea for linea in self.leer('launchctl.log').splitlines() if linea.startswith('bootout')],
+                         [prefijo + 'guard-2', prefijo + 'guard'])
+        self.assertTrue(self.cargado('jale-guard'))
+        self.assertTrue(self.cargado('jale-guard-2'))
+        # Retirar guard-2 deja a guard cargado y con sus archivos.
+        resultado = self.correr('--retirar', token='token-de-retiro', papel='guard-2')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertFalse(self.cargado('jale-guard-2'))
+        self.assertFalse(dir2.exists())
+        self.assertFalse(plist2.exists())
+        self.assertTrue(self.cargado('jale-guard'))
+        self.assertTrue((self.dir / '.runner').exists())
+        self.assertTrue(self.plist.exists())
+        # Y al revés: retirar guard deja a guard-2.
+        self.assertEqual(self.correr(token=TOKEN, papel='guard-2').returncode, 0)
+        resultado = self.correr('--retirar', token='token-de-retiro')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertFalse(self.cargado('jale-guard'))
+        self.assertFalse(self.dir.exists())
+        self.assertFalse(self.plist.exists())
+        self.assertTrue(self.cargado('jale-guard-2'))
+        self.assertTrue((dir2 / '.runner').exists())
+        self.assertTrue(plist2.exists())
+        self.assertEqual(len(list(self.home.glob('actions-runner-jale-guard.retirado-*'))), 1)
+        self.assertEqual(len(list(self.home.glob('actions-runner-jale-guard-2.retirado-*'))), 1)
 
     def test_jale_conserva_su_salida_seca_y_no_recibe_hook(self):
         for papel in ('guard', 'datos'):
@@ -261,7 +323,7 @@ class Instalador(unittest.TestCase):
         self.assertEqual(len(list(self.home.glob('actions-runner-hasito-noche.retirado-*'))), 1)
         self.assertEqual(len(list((self.home / 'Library/LaunchAgents').glob(
             'local.pao.gha-runner-hasito-noche.plist.retirado-*'))), 1)
-        self.assertFalse((self.fake / 'cargado').exists())
+        self.assertFalse(self.cargado('hasito-noche'))
 
     def test_argumentos_invalidos(self):
         for args in (['--otro', 'guard'], ['--seco', '--retirar', 'guard'], ['guard', 'datos'], ['otro'], []):

@@ -470,8 +470,9 @@ REMOTE_RUN_HOST=desk remote-run start --carril rapido --sha <HEAD40> \
 REMOTE_RUN_HOST=desk remote-run wait <id>
 ```
 
-El guion prueba cada intérprete disponible de los tres solicitados. Las
-fixtures se conservan deliberadamente: el código nuevo no borra archivos.
+El guion prueba cada intérprete disponible de los tres solicitados. Cada
+prueba borra sus fixtures al terminar y el guion borra su directorio aislado al
+salir.
 
 ## Suite y atribución (U4)
 
@@ -678,6 +679,8 @@ contiene IDs de lote/entrega, SHAs y números de PR, motivos de un enum y texto
 fijo; no se transportan otros campos del diagnóstico ni del config privado.
 En Hasito se publica la plantilla `bash scripts/mini/run.sh --repetir <resultado.json>
 --sha <SHA-causal> --worktree <worktree-en-SHA> --veces 2 --unidad check=unidad`.
+En caja se publica la misma plantilla sobre `bash scripts/tren/lanzador`, con
+`--evidencia <evidencia> --nombre <nombre>` al final, porque su lanzador los exige.
 En Jale se publica `bash scripts/test-hosts/run-remote.sh <host> <log>
 <modo> <SHA-causal> <unidad>`. Con host `boat` el comando empieza con
 `SEN_RUN_OWNER=<agente>`, porque Boat sólo admite corridas con un dueño válido.
@@ -1370,6 +1373,26 @@ reanudación del mismo tren sin saltar la barrera, y aborto tras recuperar una
 lectura incierta del CAS sin perder el éxito. La suite comprueba además el
 aborto que espera acreditación y C contenido en un main posterior.
 
+## Adaptador de caja
+
+La configuración privada por repo admite `"adaptador": "caja"` con
+`"lanzador"`, la ruta absoluta a `scripts/tren/lanzador` del checkout de caja.
+Ese lanzador habla el contrato de Hasito: recibe los mismos argumentos y
+escribe recibos `suite-resultado@1` y `suite-repeticion@1`. Por eso PAO usa la
+clase `Hasito`. Cambian dos cosas. El estado vive en
+`$XDG_STATE_HOME/pao-tren/caja`. El comando de reproducción que publica cada
+devolución nombra `scripts/tren/lanzador`. Caja ignora `lanzador_hasito`, así
+que sin `lanzador` la selección falla. Esta selección no inscribe ni activa el
+repositorio.
+
+```json
+{
+  "remoto": "https://github.com/owner/caja.git",
+  "adaptador": "caja",
+  "lanzador": "/path/to/caja/scripts/tren/lanzador"
+}
+```
+
 ## Adaptador de Jale (U9)
 
 La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
@@ -1583,4 +1606,6 @@ como error de infraestructura.
 
 La regresión U9 y toda la suite del tren, dividida exhaustivamente entre dos
 procesos aislados para el carril rápido, se verifican en el host de pruebas con
-`bash fleet/tren/tests/remoto-u9.sh --completa`. El guion conserva la evidencia.
+`bash fleet/tren/tests/remoto-u9.sh --completa`. El guion imprime los logs de
+los dos procesos y borra sus fixtures al salir; las rutas `EVIDENCIA` que
+imprime ya no existen cuando termina.

@@ -23,6 +23,7 @@ class ComandoFeedbackTests(unittest.TestCase):
     jale = Fallo("apps/api/src/a.contract.test.ts", "abc", "solo-candidato",
                  "contract", "contract", "jale")
     hasito = Fallo("tests/auth.vitest.ts", "abc", "solo-candidato", "vitest")
+    caja = Fallo("lint", "abc", "solo-candidato", "lint", "lint", "caja-desk")
 
     def fase_atribuida(self, fallo, argv):
         solicitud = Reproduccion(clave("reproduccion", (fallo.parte, fallo.check, fallo.unidad),
@@ -109,6 +110,40 @@ class ComandoFeedbackTests(unittest.TestCase):
         self.assertEqual(detalle["fallos"][0]["comando"],
             "bash scripts/test-hosts/run-remote.sh auto '<log>' contract "
             + self.candidato.C + " apps/api/src/a.contract.test.ts")
+
+    def test_caja_publica_su_lanzador_con_evidencia_y_nombre(self):
+        argv = ("bash", "/privado/caja/scripts/tren/lanzador", "--repetir", "/privado/resultado.json",
+                "--sha", self.causal, "--worktree", "/privado/arbol", "--veces", "2",
+                "--unidad", "lint=lint", "--evidencia", "/privado/evidencia", "--nombre", "repro-x")
+        inicial, efecto = self.atribuir(self.caja, argv)
+        self.comprobar_atribuido(self.caja, self.publicar(inicial, efecto),
+            "bash scripts/tren/lanzador --repetir '<resultado.json>' --sha " + self.causal
+            + " --worktree '<worktree-en-" + self.causal + ">' --veces 2 --unidad lint=lint"
+            " --evidencia '<evidencia>' --nombre '<nombre>'")
+
+    def test_solo_caja_agrega_parte_al_efecto_guardado(self):
+        for fallo, esperado in ((self.caja, {"parte": "caja-desk"}), (self.hasito, {}),
+                                (self.jale, {})):
+            with self.subTest(parte=fallo.parte):
+                _, efecto = self.atribuir(fallo, ())
+                guardado = json.loads(efecto.datos[2])["fallos"][0]
+                self.assertEqual({k: v for k, v in guardado.items() if k == "parte"}, esperado)
+
+    def test_expulsar_por_juicio_publica_comando_de_caja_sobre_c(self):
+        inicial = estado()
+        fase = Diagnosticando(self.candidato, (self.caja,))
+        tren = Tren("lote", (inicial.entradas[0].entrega.recibo,), fase)
+        pausa = Pausa("necesita-juicio", detalle="sin-costo-de-suite-sana")
+        pausado = replace(inicial, trenes=(tren,), pausa=pausa)
+        decision = Decision("decision", pausado.repo, tren.id, "expulsar", 1,
+                            "motivo", 100, "pausa", pausa)
+        nuevo, efectos = paso(pausado, observacion(decision=decision, pausa_id="pausa"))
+        cuerpo = self.publicar(nuevo, next(e for e in efectos if e.tipo == "devolver"))
+        detalle = json.loads(cuerpo.split("\n", 3)[3])
+        self.assertEqual(detalle["fallos"][0]["comando"],
+            "bash scripts/tren/lanzador --repetir '<resultado.json>' --sha " + self.candidato.C
+            + " --worktree '<worktree-en-" + self.candidato.C + ">' --veces 2 --unidad lint=lint"
+            " --evidencia '<evidencia>' --nombre '<nombre>'")
 
 
 class FeedbackTests(unittest.TestCase):

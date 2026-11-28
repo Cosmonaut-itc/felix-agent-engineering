@@ -2,6 +2,7 @@
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ LINEA_FIJA = "pao-tren: tick en curso; no se registró nada"
 class CandadoConPlazoTests(unittest.TestCase):
     def setUp(self):
         self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-7414-"))
+        self.addCleanup(shutil.rmtree, self.raiz)
         self.ledger = Ledger(self.raiz)
         self.addCleanup(self.ledger.close)
 

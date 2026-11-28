@@ -26,12 +26,14 @@ exec(compile(_contract.read_bytes(), str(_contract), 'exec'), c.__dict__)
 
 
 EMITTER = Path(__file__).with_name('client_rpc.py')
+REMOTE_RUN = Path(__file__).with_name('client_remote_run.py')
 # CC3-P1: each daemon read of the CC1 turn uses half of CC2's .4 s batch.
 READ_SECONDS = .2
 SEAL_SECONDS = 1.0  # Bounds only the seal wait, never the whole turn.
 STATUS = {'hold': 'held', 'cancel-no-payload': 'started', 'signal': 'signalled',
           'signal-manual': 'signalled', 'retire-held': 'retired', 'retire-interrupted': 'retired'}
 _RPC = None
+_REMOTE_RUN = None
 
 
 def rpc_module():
@@ -61,24 +63,52 @@ class Unavailable(Exception):
 
 
 class InstalledAdapters:
-    """Fail closed for formats whose ownership requires command inspection.
+    """Fixed launcher routing. A local installation can accredit remote-run."""
 
-    remote-run's owns_task, Jale's observe, apotheca's task_record and the
-    vigilante's manual classifier require command fields. Neither a group,
-    cwd, label nor an unverified manifest alone replaces that check. These
-    installed formats therefore cannot authenticate CC0 evidence without
-    forbidden reads. Future launcher deliveries must supply an accredited
-    fixed adapter; the wire cannot install one or assert its own receipts.
-    """
+    def __init__(self, engine=None, exclusion='coordinated', record=None, reservation=None):
+        self.engine, self.exclusion = engine, exclusion
+        self.record, self.reservation = record, reservation
+
+    def adapter(self, request, *, read_record=None):
+        if request['launcher'] != 'remote-run' or self.exclusion != 'filtered':
+            raise Unavailable('unsupported')
+        c.token(request['ref'])
+        global _REMOTE_RUN
+        if _REMOTE_RUN is None:
+            try:
+                source = REMOTE_RUN.read_bytes()
+            except FileNotFoundError:
+                raise Unavailable('unsupported') from None
+            module = types.ModuleType('client_remote_run')
+            module.c, module.Unavailable = c, Unavailable
+            exec(compile(source, str(REMOTE_RUN), 'exec'), module.__dict__)
+            _REMOTE_RUN = module
+        return _REMOTE_RUN.installed(self.engine, read_record or self.record, self.reservation)
+
+    def supports(self, request):
+        try:
+            self.adapter(request)
+        except Unavailable:
+            return False
+        return True
+
     def observe(self, request, state, reservation):
-        raise Unavailable('unsupported')
+        return self.adapter(request).observe(request, state, reservation)
 
-    def verify(self, request, observation, reservation):
-        raise Unavailable('unsupported')
+    def verify(self, request, observation, reservation, *, state=None):
+        self.adapter(request).verify(request, observation, reservation, state=state)
 
-    def recover(self, request, state, reservation, process, daemon):
-        raise Unavailable('unsupported')
+    def recover(self, request, state, reservation, process, daemon, *, recorded=None):
+        read_record = None
+        if recorded is not None:
+            # The collector inherits a copy of the current phase, not SQLite.
+            def read_record(key):
+                fields = ('launcher', 'ref', 'action_id', 'phase')
+                return recorded if all(key[k] == recorded['request'][k] for k in fields) else None
+        return self.adapter(request, read_record=read_record).recover(request, state, reservation, process, daemon)
 
+    def observe_posterior(self, request, state, reservation):
+        return self.adapter(request).observe(request, state, reservation, posterior=True)
 
 def reservations(engine, open_only=False):
     """Read-only seam for host writers; caller holds the real control.lock.
@@ -149,12 +179,17 @@ class ClientActions:
 
     def __init__(self, engine, adapter=None, rpc=None, birth=None, exclusion=None):
         self.engine = engine
-        self.adapter = adapter if adapter is not None else InstalledAdapters()
         self.rpc = rpc  # Test seam: a synthetic conversation inside the real emit().
         self.birth = birth if birth is not None else getattr(engine, 'client_birth', None)
         # CC7's installation fixes the profile; the wire never selects it.
         profile = exclusion if exclusion is not None else getattr(engine, 'client_exclusion', 'coordinated')
         self.exclusion = profile if profile in c.EXCLUSION_PROFILES else 'coordinated'
+        self.adapter = adapter if adapter is not None else InstalledAdapters(
+            engine, self.exclusion, self.record, self.reservation)
+
+    def supports(self, request):
+        supports = getattr(self.adapter, 'supports', None)
+        return supports is None or supports(request)
 
     def dispatch(self, raw):
         try:
@@ -231,7 +266,10 @@ class ClientActions:
                     raise Unavailable('unsupported')
                 observed = self.observe(request, self.authority(), None)
                 identity, reason = observed['identity'], None
-            except (Unavailable, OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError):
+            except Unavailable as error:
+                if error.reason in ('not_found', 'identity'):
+                    reason = error.reason
+            except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError):
                 pass
             result.update(launcher=request['launcher'], ref=request['ref'], identity=identity, reason=reason)
         return c.validate_response(result, request)
@@ -318,12 +356,15 @@ class ClientActions:
         finally:
             pueue.timeout, pueue.deadline = saved
 
-    def observe(self, r, state, reservation):
+    def observe(self, r, state, reservation, *, posterior=False):
         # Without CC7's `filtered` profile a remote-run effect is never attributable:
         # its mutating phases, and its per-run capability, answer unsupported.
         if r['launcher'] == 'remote-run' and r['op'] != 'finish' and self.exclusion != 'filtered':
             raise Unavailable('unsupported')
-        observation = self.bounded(self.adapter.observe, r, state, reservation)
+        read = self.adapter.observe
+        if posterior:
+            read = getattr(self.adapter, 'observe_posterior', read)
+        observation = self.bounded(read, r, state, reservation)
         c.keys(observation, 'group identity')
         c.identity(observation['identity'])
         if observation['group'] not in self.engine.profile:
@@ -603,7 +644,7 @@ class ClientActions:
         """Q of CC1: after the seal, in the same life D, with its own read deadline."""
         state = self.authority()
         before = self.daemon_life(state, r['expected']['generation'])
-        observed = self.observe(r, state, reservation)
+        observed = self.observe(r, state, reservation, posterior=True)
         if observed['group'] != group:
             raise Unavailable('identity')
         life = self.daemon_life(state, observed['identity']['generation'])
@@ -638,10 +679,9 @@ class ClientActions:
 class Reconciler:
     """CC2: bounded copy / collect / compare. Never sends a Pueue mutation.
 
-    recover is a fixed adapter's evidence-only interface. It returns observation,
-    settled (a positive exclusion of late RPCs, NOT child death), effect_applied
-    (durable launcher evidence bound to the phase key and child's PID/birth), and optional
-    finish (a full CC0 request authenticated by verify). The collector runs in
+    The stock adapter returns observation and an optional finish authenticated
+    by verify. Only pre-stock adapters can supply settled and effect_applied.
+    The collector runs in
     a disposable process, outside control.lock; no result lock can stall guard.
     """
     limit = 8
@@ -765,6 +805,8 @@ class Reconciler:
         stock = self.actions.stock(process)
         if stock and record['response']['status'] == 'unknown':
             return self.collect_stock(item)
+        if not self.actions.supports(r):
+            raise Unavailable('unsupported')
         if item['generation'] != item['state']['generation']:
             raise Unavailable('startup')
         if 'daemon_stamp' in item:
@@ -778,10 +820,21 @@ class Reconciler:
         if process and process.get('pid') is not None and not stock:
             if self.birth is None or self.birth(process['pid']) == process['birth']:
                 raise Unavailable('rpc_unresolved')
-        evidence = self.actions.adapter.recover(r, item['state'], reservation, process, daemon)
+        fixed = isinstance(self.actions.adapter, InstalledAdapters)
+        if fixed:
+            daemon = None if self.offline else daemon  # Only a live snapshot can close a stock action.
+            evidence = self.actions.adapter.recover(r, item['state'], reservation, process, daemon, recorded=record)
+        else:
+            if callable(daemon):
+                daemon = daemon()
+            evidence = self.actions.adapter.recover(r, item['state'], reservation, process, daemon)
         if daemon is None:
             raise Unavailable('startup')
-        c.keys(evidence, 'observation settled finish' + (' effect_applied' if 'effect_applied' in evidence else ''))
+        fields = 'observation finish'
+        if 'settled' in evidence:
+            fields += ' settled' + (' effect_applied' if 'effect_applied' in evidence else '')
+        c.keys(evidence, fields)
+        evidence.setdefault('settled', False)
         observed = evidence['observation']
         c.keys(observed, 'group identity')
         c.identity(observed['identity'])
@@ -810,7 +863,8 @@ class Reconciler:
                     or finish['mode'] != reservation['mode'] or finish['expected'] != observed['identity']
                     or reservation['acceptance'] is not None and finish['acceptance'] != reservation['acceptance']):
                 raise Unavailable('identity')
-            self.actions.adapter.verify(finish, observed, reservation)
+            if not fixed:
+                self.actions.adapter.verify(finish, observed, reservation)
         return dict(kind='evidence', observation=observed, finish=finish, effect_applied=evidence.get('effect_applied'))
 
     def collect_stock(self, item):
@@ -825,11 +879,15 @@ class Reconciler:
         r = record['request']
 
         def posterior(receipt):
-            if self.offline or type(self.actions.adapter) is InstalledAdapters:
+            if self.offline or not self.actions.supports(r):
                 raise Unavailable('unsupported')
-            daemon = self.engine.pueue.status()  # After the seal, inside the batch deadline.
-            evidence = self.actions.adapter.recover(r, item['state'], reservation, record['process'], daemon)
-            observed = evidence['observation']
+            read = getattr(self.actions.adapter, 'observe_posterior', None)
+            if read is not None:
+                observed = read(r, item['state'], reservation)
+            else:
+                daemon = self.engine.pueue.status()  # After the seal, inside the batch deadline.
+                evidence = self.actions.adapter.recover(r, item['state'], reservation, record['process'], daemon)
+                observed = evidence['observation']
             c.keys(observed, 'group identity')
             c.identity(observed['identity'])
             if observed['group'] != reservation['group']:  # An absence has no group: the reservation's.
@@ -845,16 +903,23 @@ class Reconciler:
     def gather(self, copies, offline):
         proposals = []
         self.offline = offline
-        try:
-            self.engine.pueue.timeout = self.seconds / 2
-            self.engine.pueue.deadline = time.monotonic() + self.seconds / 2
-            daemon = (None if type(self.actions.adapter) is InstalledAdapters else
-                      json.loads(Path(offline).read_text()) if offline else self.engine.pueue.status())
-        except (OSError, ValueError, subprocess.SubprocessError):
-            daemon = None
+        self.engine.pueue.timeout = self.seconds / 2
+        self.engine.pueue.deadline = time.monotonic() + self.seconds / 2
+        daemon, read_daemon = None, False
+
+        def snapshot():
+            nonlocal daemon, read_daemon
+            if not read_daemon:
+                read_daemon = True
+                try:
+                    daemon = json.loads(Path(offline).read_text()) if offline else self.engine.pueue.status()
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    pass
+            return daemon
+
         for item in copies:
             try:
-                proposal = self.collect(item, daemon)
+                proposal = self.collect(item, snapshot)
             except Unavailable as error:
                 proposal = dict(kind='retain', reason=error.reason)
             except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError, AttributeError):
@@ -893,7 +958,10 @@ class Reconciler:
                     return [dict(kind='retain', reason='evidence_missing') for _ in copies]
                 chunk = os.read(read_fd, 65536)
                 if not chunk:
-                    proposals = json.loads(raw)
+                    try:
+                        proposals = json.loads(raw)
+                    except ValueError:
+                        break
                     if type(proposals) is list and len(proposals) == len(copies):
                         return proposals
                     break
@@ -921,8 +989,7 @@ class Reconciler:
             with self.engine.connect() as db:
                 state = self.engine.state(db)
             generation = self.apply_generation(state, item, offline)
-            if (state['generation'] != item['state']['generation'] or generation != item['generation']
-                    or current['revision'] != old['revision']
+            if (current['revision'] != old['revision']
                     or current['digest'] != old['digest']
                     or current.get('process') != old.get('process')
                     or reservation['revision'] != before['revision']
@@ -931,6 +998,24 @@ class Reconciler:
                 return False  # Discard; the rotating index rereads on a later tick.
             if current['response']['status'] == 'finished':
                 return False
+            verification = None
+            if isinstance(self.actions.adapter, InstalledAdapters) and r['launcher'] == 'remote-run':
+                if proposal['kind'] == 'stock' and proposal.get('post') is not None:
+                    verification = r, dict(group=reservation['group'], identity=r['expected'])
+                elif proposal['kind'] == 'evidence' and proposal['finish'] is not None:
+                    verification = proposal['finish'], proposal['observation']
+            if state['generation'] != item['state']['generation'] or generation != item['generation']:
+                if verification is None:
+                    return False  # Discard; the rotating index rereads on a later tick.
+                proposal = dict(kind='retain', reason='startup')
+            elif verification is not None:
+                try:
+                    self.actions.adapter.verify(*verification, reservation, state=state)
+                except Unavailable as error:
+                    if proposal['kind'] == 'stock' and error.reason not in ('identity', 'startup'):
+                        proposal = dict(proposal, post=None)
+                    else:
+                        proposal = dict(kind='retain', reason=error.reason)
             reason = proposal.get('reason', 'evidence_missing')
             if reason not in c.REASONS:
                 reason = 'evidence_missing'
@@ -1056,7 +1141,8 @@ class Reconciler:
         Reviewing cached evidence never replaces collection for an open action;
         refresh its copy after applying so the next proposal binds to new state.
         Native copies read only PID/birth/file identity, not ps generation.
-        No adapter, process wait or collection occurs here.
+        Only local revalidation of a proposed stock attribution or finish can
+        use the fixed adapter here. No daemon read, process wait or collection.
         """
         copies = self.copies(offline, protected=True, advance=False)
         pending = []
@@ -1097,8 +1183,8 @@ class Reconciler:
             return 0  # Failure preserves every reservation, including at startup.
 
 
-def main(engine, stdin, stdout, birth=None, exclusion=None):
+def main(engine, stdin, stdout, birth=None, exclusion=None, adapter=None):
     raw = stdin.read(c.MAX_BYTES + 1)
-    result, code = ClientActions(engine, birth=birth, exclusion=exclusion).dispatch(raw)
+    result, code = ClientActions(engine, adapter=adapter, birth=birth, exclusion=exclusion).dispatch(raw)
     stdout.write(canonical(result) + '\n')
     return code
