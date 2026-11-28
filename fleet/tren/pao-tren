@@ -2,6 +2,7 @@
 """Entrega durable, planificación en sombra y tick de repos inscritos activos."""
 import argparse
 from contextlib import ExitStack
+from datetime import datetime, timezone
 import importlib
 import json
 import os
@@ -17,13 +18,14 @@ ARRANQUE = time.monotonic()
 
 # Script location is trusted, independent of cwd, including python -I invocations.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cache_github import CacheGitHub
 from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion,
                      admision_entrada, datos, paso)
 from inscripcion import activacion, modo
 from ledger import (CandadoOcupado, Ledger, candado_programa, directorio_estado, filas_medicion,
                     lectura_medicion)
 from medicion import decision_json, instante_iso, medir
-from observador import ERRORES_LECTURA, GitHubGit, configuracion, sha
+from observador import ERRORES_LECTURA, GitHubGit, LimiteGitHub, configuracion, sha
 from sombra import paso_sombra
 
 
@@ -154,6 +156,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
     if args.comando in ("juicio", "pausa") and plazo is None:
         return 2, {"error": "PAO_TREN_PLAZO_CANDADO_S inválido: segundos, número no negativo"}
     ledger = Ledger()
+    recursos = ExitStack()
     ahora = time.time() if ahora is None else ahora
     try:
         if args.comando in ("juicio", "pausa"):
@@ -196,9 +199,10 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                 try:
                     if observador is None:
                         ruta = args.config or ledger.directorio / "config.json"
-                        observador = GitHubGit(configuracion(ruta, args.repo), sombra=True)
+                        observador = GitHubGit(configuracion(ruta, args.repo), sombra=True,
+                            cache=recursos.enter_context(CacheGitHub(ledger.directorio)))
                     observacion = observador.observar(estado, ahora)
-                except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                except (*ERRORES_LECTURA, LimiteGitHub):
                     # Custodia durable aun sin observación; no inventa admisión.
                     observacion = Observacion(ahora, "", ())
                 vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
@@ -248,7 +252,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                     # siguiente ve el C aterrizado sin sincronizar config["git"].
                     PARALELAS_TICK_ACTIVO = 4
                     observador = observador or GitHubGit(config, activo=True, almacen=git,
-                                                        paralelas=PARALELAS_TICK_ACTIVO)
+                        paralelas=PARALELAS_TICK_ACTIVO,
+                        cache=recursos.enter_context(CacheGitHub(ledger.directorio)))
                     if adaptador is None:
                         adaptador = seleccionar(config, git)
                 if isinstance(adaptador, Jale):
@@ -259,7 +264,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
             estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
             if observador is None:
                 ruta = args.config or ledger.directorio / "config.json"
-                observador = GitHubGit(configuracion(ruta, args.repo), sombra=doble_camino)
+                observador = GitHubGit(configuracion(ruta, args.repo), sombra=doble_camino,
+                    cache=recursos.enter_context(CacheGitHub(ledger.directorio)))
             observacion = observador.observar(estado, ahora)
             reductor = paso_sombra if doble_camino else paso
             nuevo, efectos = reductor(estado, observacion)
@@ -276,6 +282,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
         print(f"{TICK_EN_CURSO}; no se registró nada ({detalle})", file=sys.stderr, flush=True)
         return 75, {"candado": "ocupado", "registrado": False}
     finally:
+        recursos.close()
         ledger.close()
 
 
@@ -415,9 +422,16 @@ def error_entrada(exc):
     return 2, {"error": "entrada u observación inválida", "clase": type(exc).__name__}
 
 
+def error_limite(exc):
+    reinicio = datetime.fromtimestamp(exc.reinicio, timezone.utc).isoformat()
+    return 75, {"error": "limite-github", "recurso": exc.recurso, "reinicio": reinicio}
+
+
 def intento(args, instalando=False):
     try:
         return ejecutar(args, instalando=instalando)
+    except LimiteGitHub as exc:
+        return error_limite(exc)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         return error_entrada(exc)
     except sqlite3.Error:
@@ -426,7 +440,8 @@ def intento(args, instalando=False):
 
 def ticks(args):
     if args.seco:
-        return [intento(args)]
+        yield intento(args)
+        return
     inicial = programa()
     # Instalar durante un tick no debe mezclar versiones a medio paso.
     for modulo in PEREZOSOS:
@@ -450,15 +465,22 @@ def ticks(args):
     def esperar():
         if time.monotonic() + INTERVALO_SONDEO_CI_S > limite or not seguir():
             return False
-        try:
-            ruta = args.config or directorio_estado() / "config.json"
-            observador = GitHubGit(configuracion(ruta, args.repo), ejecutar=gh, activo=True)
-        except ERRORES_LECTURA:
-            return False
-        return esperar_ci(args.repo, limite, estado_para_espera, observador.ci_candidato,
-                          vigente, time.sleep, time.monotonic)
+        directorio = directorio_estado()
+        with CacheGitHub(directorio) as cache:
+            try:
+                ruta = args.config or directorio / "config.json"
+                observador = GitHubGit(configuracion(ruta, args.repo), ejecutar=gh, activo=True,
+                                        cache=cache)
+            except ERRORES_LECTURA:
+                return False
+            return esperar_ci(args.repo, limite, estado_para_espera, observador.ci_candidato,
+                              vigente, time.sleep, time.monotonic)
 
-    return encadenar(lambda: intento(args), lambda: huella(args.repo), seguir, esperar=esperar)
+    try:
+        yield from encadenar(lambda: intento(args), lambda: huella(args.repo), seguir,
+                              esperar=esperar)
+    except LimiteGitHub as exc:
+        yield error_limite(exc)
 
 
 def emitir(pasos):
