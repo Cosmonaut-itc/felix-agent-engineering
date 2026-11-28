@@ -267,14 +267,20 @@ class Ledger:
             self.evento(estado.repo, "operativo", ahora,
                         {"estado": datos(estado), "efectos": datos(efectos), "consumido": consumido})
 
-    def terminales_hasta(self, repo, instante):
-        from dominio import Terminal
+    def estado_operativo_hasta(self, repo, instante):
         fila = self.db.execute("SELECT payload FROM events WHERE repo=? AND tipo='operativo' "
                                "AND instante<=? ORDER BY seq DESC LIMIT 1", (repo, instante)).fetchone()
-        if fila is None:
-            return set()
-        estado = desde_datos(json.loads(fila[0])["estado"])
-        return {tren.id for tren in estado.trenes if isinstance(tren.fase, Terminal)}
+        return inicial(repo) if fila is None else desde_datos(json.loads(fila[0])["estado"])
+
+    def relevos_boat(self, repo):
+        """Vencimiento por lote, o None si su liberación quedó confirmada."""
+        relevos = {}
+        for fila in self.db.execute(
+                "SELECT payload FROM events WHERE repo=? "
+                "AND tipo IN ('relevo-boat', 'relevo-boat-liberado') ORDER BY seq", (repo,)):
+            payload = json.loads(fila[0])
+            relevos[payload["lote"]] = payload.get("hasta")
+        return relevos
 
     def efecto_iniciado(self, repo, clave, evidencia=None):
         """El efecto pasó por iniciar_efecto en algún tick: su IO pudo ocurrir.

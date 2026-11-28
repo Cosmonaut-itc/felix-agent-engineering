@@ -298,8 +298,23 @@ La cadena termina también en dos casos:
 
 ### Instalar una versión nueva
 
-Todos los carriles corren el mismo programa instalado. Instala con el candado
-del programa tomado:
+Todos los carriles corren el mismo programa instalado. Si el tren usa Boat,
+actualiza el checkout y copia el pool nuevo bajo el mismo candado del
+programa. Antes de ejecutar el comando, asigna a `checkout` la ruta
+absoluta del checkout instalado y a `sha` el SHA ya descargado.
+
+```sh
+pao-tren candado -- sh -c '
+  git -C "$1" merge --ff-only "$2" &&
+  "$1/fleet/boat-pool/install.sh"
+' sh "$checkout" "$sha"
+```
+
+El tren está enlazado al checkout. Al completar la instalación, el pool
+nuevo está disponible para el siguiente tick. El instalador recarga
+`vigilar`, que funciona con sus propios candados.
+
+En una instalación del tren sin Boat, usa el comando de avance del checkout.
 
 ```sh
 pao-tren candado -- git -C <checkout instalado> merge --ff-only <sha>
@@ -1392,8 +1407,24 @@ inscribe ni activa repositorios.
 configurados y sólo puede tener claves `contract` y `e2e`.
 Tras confirmar el estado del tick activo y antes de drenar sus efectos,
 `"boat_pool"` (por omisión `~/.local/bin/boat-pool`) reserva por 30 min los
-modos Boat del lote vivo y libera la reserva al cerrar el lote o pausar el
-carril. Si el drenado produce otra pausa, libera la reserva al guardarla.
+modos Boat del lote vivo. Al observar el cierre de un lote, el tren fija su
+vencimiento de relevo a 300 s, intenta guardarlo y pide el recorte con
+`reservar --vence` aunque falle el registro. Cada tick reintenta los recortes
+vigentes. Boat conserva el menor vencimiento aplicado y deja de contar la
+reserva al alcanzarlo. Si el tren muere después de guardar el cierre y antes
+de guardar el vencimiento y llamar a Boat, el primer tick que recupere el
+cierre fija los 300 s desde ese tick. Si se recupera en el tick siguiente,
+el relevo se desplaza una cadencia.
+
+El tren renueva al vivo aunque falle un recorte. Tras confirmar la reserva
+del vivo, o en pausa, el tick intenta liberar los terminales del relevo. En
+pausa también libera la reserva del vivo, incluida una pausa guardada al
+drenar. Cuando pasa el vencimiento de un relevo, el tren pide liberar su
+reserva hasta confirmarlo o hasta 1800 s después de ese vencimiento. Si
+Boat sigue caído, la reserva larga vence por su TTL de 1800 s desde la
+última renovación. Para actualizar ambos programas, sigue
+[Instalar una versión nueva](#instalar-una-versión-nueva).
+
 `"boat_esperar_s": 180` fija cuánto espera Boat un lugar con prioridad
 `tren` antes de enviar al desk en la misma invocación. Acepta enteros entre
 0 y 7200 y vale 180 por omisión. Las repeticiones filtradas usan el host de

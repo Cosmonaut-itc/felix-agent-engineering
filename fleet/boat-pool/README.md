@@ -18,6 +18,21 @@ El instalador copia el programa a `~/.local/lib/boat-pool`, lo enlaza en
 fleet/boat-pool/install.sh
 ```
 
+Si el tren usa Boat, actualiza ambos desde el checkout instalado bajo el
+candado del programa. Antes de ejecutar el comando, asigna a `checkout`
+la ruta absoluta del checkout y a `sha` el SHA ya descargado.
+
+```sh
+pao-tren candado -- sh -c '
+  git -C "$1" merge --ff-only "$2" &&
+  "$1/fleet/boat-pool/install.sh"
+' sh "$checkout" "$sha"
+```
+
+El instalador copia el pool y recarga `vigilar` bajo el candado. El tick
+siguiente ya puede usar el pool nuevo. Véase
+[Instalar una versión nueva](../tren/README.md#instalar-una-versión-nueva).
+
 El LaunchAgent ejecuta `vigilar` al cargar y cada cinco minutos. Cada VM
 puede indicar su propio `inactividad_min` o usar el valor global. Con
 `inactividad_min: null`, `vigilar` conserva la VM encendida.
@@ -134,7 +149,15 @@ de log. El stderr del agente queda en `launchd.err.log`.
   Mientras viva la reserva, un turno ajeno al tren entra sólo si deja lugar
   para las clases pendientes. Los arriendos vivos del tren cubren sus clases.
   Si la reserva impide la concesión hasta vencer la espera, `pedir` devuelve `sin_lugar`.
-- `liberar-reserva --repo R --lote ID` quita la reserva al terminar el lote.
+- `reservar --repo R --lote ID --clases C1,C2 --vence EPOCH` usa un instante
+  Unix en segundos, limitado a 3600 s desde la aplicación. Para una reserva
+  del mismo repo y lote ya fijada con `--vence`, Boat conserva el menor
+  vencimiento. Si la reserva caduca o se libera, Boat descarta los reintentos
+  con `--vence` hasta 3600 s después del vencimiento guardado.
+  `--ttl` sigue renovando desde el reloj de Boat.
+  Un instante alcanzado libera la reserva del lote y devuelve 0. Usa sólo
+  una de las opciones `--vence` y `--ttl`.
+- `liberar-reserva --repo R --lote ID` quita la reserva del lote.
   Se puede repetir. Si el tren omite la liberación, la reserva vence sola.
 - `estado [--json]` muestra VMs, arriendos, lugares, puertas de arranque y reservas vivas.
 - `encender NOMBRE|--todas` y `apagar NOMBRE|--todas` actúan sobre VMs

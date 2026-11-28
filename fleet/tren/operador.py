@@ -251,7 +251,8 @@ class Snapshots:
                 sin_recibo.append((ruta, tren))
         if sin_recibo:
             ahora = time.time() if ahora is None else ahora
-            vencidos = self.ledger.terminales_hasta(self.repo, ahora - RETENCION_SIN_RECIBO_S)
+            previo = self.ledger.estado_operativo_hasta(self.repo, ahora - RETENCION_SIN_RECIBO_S)
+            vencidos = {t.id for t in previo.trenes if isinstance(t.fase, Terminal)}
             usadas.update(ruta for ruta, tren in sin_recibo if tren not in vencidos)
         for ruta, checkout in filas[1:]:
             if ruta in usadas:
