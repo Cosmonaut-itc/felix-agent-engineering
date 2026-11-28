@@ -7,12 +7,15 @@ siempre proceden de la observación fresca. No modifica el reductor puro.
 from copy import copy
 from dataclasses import replace
 import json
+import os
+import sqlite3
 import subprocess
+import time
 
 from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
                      Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, base_vieja, clave,
                      datos, desde_datos, paso)
-from efectos import EfectoFallido, ejecutar
+from efectos import EfectoFallido, ejecutar, prelanzar_ci
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
 from operador import FalloSnapshot, Snapshots
@@ -60,6 +63,93 @@ def resumen_outbox(ledger, repo):
             for r, efecto, espera in outbox_en_orden(ledger, repo, estado, set())]
 
 
+PLAZO_RESERVA_BOAT_S = 10
+PLAZO_RELEVO_BOAT_S = 300
+PLAZO_LOTE_BOAT_S = 1800
+
+
+def actualizar_reserva_boat(ledger, config, adaptador, anterior, estado, ahora):
+    clases = getattr(adaptador, "clases_boat", ())
+    if not clases:
+        return
+    activo = next((t for t in estado.trenes if not isinstance(t.fase, Terminal)), None)
+    terminales = [t.id for t in reversed(estado.trenes) if isinstance(t.fase, Terminal)]
+    repo = estado.repo
+    opciones_clases = ("--clases", ",".join(clases))
+
+    def registrar(tipo, instante, payload):
+        try:
+            ledger.evento(repo, tipo, instante, payload)
+        except sqlite3.Error:
+            # El paso ya se guardó. La reserva puede continuar sin este evento.
+            pass
+
+    # La espera del ledger no consume el plazo de los subprocesos.
+    restante = PLAZO_RESERVA_BOAT_S
+
+    def ejecutar_boat(comando, lote, *opciones):
+        nonlocal restante
+        inicio = time.monotonic()
+        try:
+            binario = os.path.expanduser(config.get("boat_pool", "~/.local/bin/boat-pool"))
+            argv = [binario, comando, "--repo", repo, "--lote", lote, *opciones]
+            if restante <= 0:
+                raise subprocess.TimeoutExpired(argv, PLAZO_RESERVA_BOAT_S)
+            subprocess.run(argv, check=True, timeout=restante, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError) as exc:
+            fallo = {"lote": lote, "comando": comando, "clase": type(exc).__name__}
+            if isinstance(exc, subprocess.CalledProcessError):
+                fallo["codigo"] = exc.returncode
+        else:
+            return True
+        finally:
+            restante -= time.monotonic() - inicio
+        registrar("fallo-reserva-boat", ahora, fallo)
+        return False
+
+    try:
+        relevos = ledger.relevos_boat(repo) if terminales else {}
+        cierre = anterior.id if anterior is not None else None
+        historicos = set()
+        if any(lote not in relevos and lote != cierre for lote in terminales):
+            # Un ledger anterior a este contrato puede tener terminales sin evento.
+            previo = ledger.estado_operativo_hasta(repo, ahora - PLAZO_RELEVO_BOAT_S)
+            historicos = {t.id for t in previo.trenes if isinstance(t.fase, Terminal)}
+    except sqlite3.Error:
+        return
+
+    pendientes = []
+    for lote in terminales:
+        if lote in relevos:
+            hasta = relevos[lote]
+        elif lote not in historicos:
+            instante = time.time()
+            hasta = instante + PLAZO_RELEVO_BOAT_S
+            registrar("relevo-boat", instante, {"lote": lote, "hasta": hasta})
+        else:
+            continue
+        if hasta is None:
+            continue
+        pendientes.append((lote, hasta))
+        if hasta > time.time():
+            ejecutar_boat("reservar", lote, *opciones_clases, "--vence", str(hasta))
+
+    if activo is not None:
+        if estado.pausa:
+            ejecutar_boat("liberar-reserva", activo.id)
+        elif not ejecutar_boat("reservar", activo.id, *opciones_clases, "--ttl", str(PLAZO_LOTE_BOAT_S)):
+            return
+
+    for lote, hasta in pendientes:
+        instante = time.time()
+        if instante >= hasta + PLAZO_LOTE_BOAT_S:
+            continue
+        if estado.pausa or activo is not None or instante >= hasta:
+            if ejecutar_boat("liberar-reserva", lote):
+                registrar("relevo-boat-liberado", ahora, {"lote": lote})
+
+
 def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
          escritor=None):
     """El llamador mantiene el candado durante TODO el tick, incluido el IO.
@@ -74,6 +164,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     # Sólo para entregas aún no incorporadas: conserva la primera admisión
     # muestreada en custodia, sin importar ningún lote simulado de sombra.
     estado = ledger.estado(repo, operativo=True)
+    trenes_antes = estado.trenes
     config = getattr(observador, "config", {})
     snapshots = Snapshots(ledger, repo, git, config)
     if adaptador is not None and hasattr(adaptador, "operador"):
@@ -94,7 +185,10 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     previo.limpiar(estado)
     observacion = observador.observar(estado, ahora)
     activo = next((t for t in estado.trenes if not isinstance(t.fase, Terminal)), None)
-    if activo is not None and ledger.efecto_iniciado(repo, clave("suite", activo.id)):
+    consulta = getattr(adaptador, "suite_con_coordinador", None)
+    if activo is not None and ledger.efecto_iniciado(
+            repo, clave("suite", activo.id),
+            None if consulta is None else (lambda: consulta(activo.id))):
         observacion = replace(observacion, suite_iniciada=True)
     if not estado.pausa and any(isinstance(t.fase, Diagnosticando) for t in estado.trenes):
         observacion = replace(
@@ -103,13 +197,17 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             repeticiones_en_paralelo=getattr(adaptador, "repeticiones_paralelas", 1) > 1)
     previo.limpiar(estado, observacion)
 
-    def prelanzadas(nuevo):
-        consultar = getattr(adaptador, "prelanzadas_sin_leer", None)
-        if consultar is not None:
-            esperando = {t.id for t in estado.trenes if isinstance(t.fase, EsperandoCI)}
-            for tren in nuevo.trenes:
-                if tren.id in esperando and isinstance(tren.fase, Terminal):
-                    yield from consultar(tren.id)
+    def guardar_paso(nuevo, efectos, consumido=None, fallo=None):
+        cancelar = getattr(adaptador, "cancelar_corridas", None)
+        prelanzadas = ()
+        if cancelar is not None:
+            cerrados = {t.id for t in nuevo.trenes if isinstance(t.fase, Terminal)}
+            terminales = [t for t in trenes_antes if t.id in cerrados and
+                          not isinstance(t.fase, Terminal)]
+            if terminales:
+                prelanzadas = cancelar(terminales)
+        ledger.guardar_paso(nuevo, efectos, ahora, consumido, fallo_operador=fallo,
+                            prelanzadas=prelanzadas)
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()
@@ -189,13 +287,38 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             frontera("resultado-guardado", efecto)
         return estado, fallo_operador
 
+    def reintentar_prelanzamiento(nuevo):
+        aplazado = getattr(adaptador, "prelanzamiento_aplazado", None)
+        if nuevo.pausa or aplazado is None:
+            return
+        for tren in nuevo.trenes:
+            if not isinstance(tren.fase, EsperandoCI) or not aplazado(tren.id):
+                continue
+            # Si falta publicar CI, el efecto hará el prelanzamiento tras publicar.
+            if any(efecto.tipo == "solicitar-ci" and efecto.datos == (tren.id,) and
+                   fila["estado"] != "resultado"
+                   for fila, efecto, _ in outbox_en_orden(ledger, repo, nuevo, set())):
+                continue
+            vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+            if any(not isinstance(admision_entrada(e, vistas, observacion), Admitido)
+                   for e in nuevo.entradas if e.entrega.recibo in tren.recibos):
+                continue
+            aviso = prelanzar_ci(adaptador, tren, observacion)
+            if aviso is not None:
+                ledger.evento(repo, "prelanzamiento-fallido", ahora, aviso)
+
     def terminar(nuevo, efectos):
-        nuevo, fallo = drenar(nuevo, observacion)
+        # La reserva pasa al lote vivo antes de que su prelanzamiento aplazado pida VMs.
+        actualizar_reserva_boat(ledger, config, adaptador, activo, nuevo, ahora)
+        reintentar_prelanzamiento(nuevo)
+        drenado, fallo = drenar(nuevo, observacion)
         if fallo is not None:
-            ledger.guardar_paso(nuevo, (), ahora, fallo_operador=fallo)
+            ledger.guardar_paso(drenado, (), ahora, fallo_operador=fallo)
             frontera("paso-guardado", None)
-        snapshots.limpiar(nuevo, previo.pendientes(repo), ahora)
-        return {"modo": "activo", "estado": datos(nuevo), "efectos": datos(efectos),
+            activo_confirmado = next((t for t in nuevo.trenes if not isinstance(t.fase, Terminal)), None)
+            actualizar_reserva_boat(ledger, config, adaptador, activo_confirmado, drenado, ahora)
+        snapshots.limpiar(drenado, previo.pendientes(repo), ahora)
+        return {"modo": "activo", "estado": datos(drenado), "efectos": datos(efectos),
                 "outbox": resumen_outbox(ledger, repo)}
 
     # Una muerte con el marcador durable puede haber producido IO sin ACK.
@@ -231,7 +354,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         efectos = recuperados + efectos
         frontera("decision-reducida", None)
         nuevo = limpiar(nuevo)
-        ledger.guardar_paso(nuevo, efectos, ahora, prelanzadas=prelanzadas(nuevo))
+        guardar_paso(nuevo, efectos)
         frontera("paso-guardado", None)
         return terminar(nuevo, efectos)
     # La limpieza no crea pausas: sólo retiene el push, incluso al reanudar.
@@ -266,7 +389,6 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 break
     nuevo, efectos = paso(estado, observacion)
     nuevo = limpiar(nuevo)
-    ledger.guardar_paso(nuevo, efectos, ahora, consumido, fallo_operador=fallo,
-                        prelanzadas=prelanzadas(nuevo))
+    guardar_paso(nuevo, efectos, consumido, fallo)
     frontera("paso-guardado", None)
     return terminar(nuevo, efectos)

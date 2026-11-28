@@ -55,9 +55,10 @@ run('render(fixture);globalThis.h=S.hosts[0]');
  }
  if(input.scenario==='startup-waits'){
    // SEN-6417: each wait and hold lives in the fused free-slot cell, never in a separate line.
-   assert.equal((elements.app.innerHTML.match(/Esperando cuotas y Docker<\/span><span>reanudación automática/g)||[]).length,6);
+   const waitingGroups = ['caja','hasito','jale','jale-verify','otros','pesadas','rapidas'];
+   assert.equal((elements.app.innerHTML.match(/Esperando cuotas y Docker<\/span><span>reanudación automática/g)||[]).length,waitingGroups.length);
    assert.match(elements.app.innerHTML,/Retenido al reiniciar<\/span><span>pausa de origen desconocido &lt;script&gt; · resolver con <span class="mono">control.py reanudar suites<\/span>/);
-   for(const g of ['hasito','jale','jale-verify','otros','pesadas','rapidas'])
+   for(const g of waitingGroups)
      assert(!elements.app.innerHTML.includes('control.py reanudar '+g+'<'));
    assert.doesNotMatch(elements.app.innerHTML,/Pausa tras reinicio: resolver por SSH|>Reanudar<|data-resume|startup-hold|startup-wait/);
    console.log('UI startup waits pipeline OK');return;
@@ -134,8 +135,8 @@ run('render(fixture);globalThis.h=S.hosts[0]');
    console.log('UI startup pauses OK: manual, unknown origin and ambiguous launch');return;
  }
  if(input.scenario==='desk'){
-   for(const [mode,cap,slots] of [['dia',14,{hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3}],
-                                ['noche',18,{hasito:2,jale:7,'jale-verify':1,otros:2,pesadas:3,rapidas:3}]]){
+   for(const [mode,cap,slots] of [['dia',15,{caja:1,hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3}],
+                                ['noche',20,{caja:2,hasito:2,jale:7,'jale-verify':1,otros:2,pesadas:3,rapidas:3}]]){
      context.c={...run('h.control'),mode,cap,slots,desired:slots};
      run('h.control=c;for(const [g,n] of Object.entries(c.slots)) h.groups[g]={slots:n}');
      const full=run("slotControls(h,'jale',h.groups.jale,0)");
@@ -183,12 +184,12 @@ run('render(fixture);globalThis.h=S.hosts[0]');
    // The rack stamps every later reply of the same receipt with its own, later time.
    context.answer={...context.answer,served_at:1794664800};
    const ec=context.expired.hosts[0].snapshot.control;
-   ec.revision=3;ec.mode='dia';ec.cap=14;ec.expires_at=null;ec.slots={hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3};ec.desired=ec.slots;
+   ec.revision=3;ec.mode='dia';ec.cap=15;ec.expires_at=null;ec.slots={caja:1,hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3};ec.desired=ec.slots;
    run('render(expired);globalThis.h=S.hosts[0]');
    assert.doesNotMatch(elements.app.innerHTML,/Lugares ajustados/);
-   assert.equal(run('h.control.cap'),14);assert.equal(run('h.groups.jale.slots'),5);
+   assert.equal(run('h.control.cap'),15);assert.equal(run('h.groups.jale.slots'),5);
    run("acceptSlots(slotKey(h),{request:{op:'slots',host:'desk',action_id:'confirm-000001'},group:'jale'},answer)");
-   assert.equal(run('h.control.cap'),14);assert.equal(run('h.groups.jale.slots'),5);
+   assert.equal(run('h.control.cap'),15);assert.equal(run('h.groups.jale.slots'),5);
    assert.doesNotMatch(elements.toast.innerHTML,/Deshacer/);assert.match(elements.toast.innerHTML,/venció/);
    // A lost POST persists across reload; a late applied GET must obey the same fence.
    context.fetch=async()=>({ok:true,status:200,json:async()=>context.answer});

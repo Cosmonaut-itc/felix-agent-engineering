@@ -30,6 +30,7 @@ GROUP_LIMITS = {
     "otros": {"dia": 2, "noche": 2},
     "pesadas": {"dia": 2, "noche": 3},
     "rapidas": {"dia": 3, "noche": 3},
+    "caja": {"dia": 1, "noche": 2},
 }
 # Sólo el desk: fleet/rack/snapshot.py lee pause y resume con su CPU.
 PRESSURE_THRESHOLDS = {
@@ -53,6 +54,8 @@ MINI_PROFILE = {"suites": 3, "default": 1, "rapidas": 3}
 POLICY_HASH = hashlib.sha256(json.dumps(MINI_PROFILE, sort_keys=True).encode()).hexdigest()
 DESK_POLICY_HASH = hashlib.sha256(json.dumps(dict(groups=GROUP_LIMITS, events_utc=[5, 14]),
                                            sort_keys=True).encode()).hexdigest()
+# Persisted hash of the six-group desk table before SEN-7640.
+PRE_CAJA_DESK_POLICY_HASH = '49947387b96d61944dabacbd8a0fe2d885bc257389ae4524752b0b820cb84957'
 HOST_SCHEMA = 'rack-host-control@1'
 ID = re.compile(r'[A-Za-z0-9-]{8,64}')
 LOG_MAX_BYTES = 1024 * 1024
@@ -727,8 +730,10 @@ def validate_host_request(request, host='mini'):
     return request
 
 
-def validate_vector(slots, host='mini'):
-    if type(slots) is not dict or set(slots) != set(MINI_PROFILE if host == 'mini' else GROUP_LIMITS):
+def validate_vector(slots, host='mini', *, groups=None):
+    if groups is None:
+        groups = MINI_PROFILE if host == 'mini' else GROUP_LIMITS
+    if type(slots) is not dict or set(slots) != set(groups):
         raise ValueError('Vector incompleto')
     for value in slots.values():
         validate_limit(value)
@@ -1405,9 +1410,12 @@ class MiniControl:
             raise ValueError('Autoridad inválida')
         if 'pueue_data' in value and (type(value['pueue_data']) is not str or not Path(value['pueue_data']).is_absolute()):
             raise ValueError('Directorio de datos Pueue inválido')
-        validate_vector(value['desired'], self.host)
+        previous_groups = None
+        if migrating and self.host == 'desk' and value['policy_hash'] == PRE_CAJA_DESK_POLICY_HASH:
+            previous_groups = self.profile.keys() - {'caja'}
+        validate_vector(value['desired'], self.host, groups=previous_groups)
         overrides = value['overrides']
-        if type(overrides) is not dict or not set(overrides) <= set(self.profile):
+        if type(overrides) is not dict or not set(overrides) <= value['desired'].keys():
             raise ValueError('Ajustes inválidos')
         calculated = dict(MINI_PROFILE)
         if self.host == 'desk':
@@ -1798,6 +1806,10 @@ class MiniControl:
         # Native birth; a private harness may install a synthetic one, never the wire.
         return getattr(self, 'client_birth', None) or priority_helper().birth
 
+    def client_actions_options(self):
+        return dict(adapter=getattr(self, 'client_adapter', None),
+                    birth=self.client_birth_reader(), exclusion=self.client_exclusion)
+
     def rpc_endpoint(self, authority):
         # The runtime directory follows the accredited PID; the secret follows
         # the data directory validated by preparar. Older authorities use the
@@ -1825,17 +1837,13 @@ class MiniControl:
                 # Keep the guard/preparer's exclusion until its normal exit.
                 handles[-1].client_pending[self.directory.resolve()] = (self, offline)
                 return 0
-            return client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
-                                             birth=self.client_birth_reader(),
-                                             exclusion=self.client_exclusion).run(offline=offline)
+            return client_module().Reconciler(self, **self.client_actions_options()).run(offline=offline)
         except ADMISSION_ERRORS:
             return 0  # Collection failure cannot suppress the protective guard.
 
     def client_reconcile_turn(self, offline=None):
         try:
-            reconciler = client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
-                                                    birth=self.client_birth_reader(),
-                                                    exclusion=self.client_exclusion)
+            reconciler = client_module().Reconciler(self, **self.client_actions_options())
             return reconciler, offline, reconciler.protected_turn(offline)
         except ADMISSION_ERRORS:
             return None  # The guard has already run; retry on its next turn.
@@ -3046,7 +3054,7 @@ class MiniControl:
         finally:
             event = result.pop('evento')
             if blocks and event == 'guard_fin':event='retenido'
-            # Fixed whitelist, six managed groups, bounded to <4 KiB per summary.
+            # Fixed cause whitelist and at most 16 entries per summary.
             log(self.directory,event,tick_id=tick,bloqueos=blocks,**result)
         if failure is not None:
             raise failure
@@ -3264,8 +3272,7 @@ def main():
                       env=dict(HOME=str(Path.home()), PATH='/usr/bin:/bin:/opt/homebrew/bin', LANG='C'), cwd=Path.home())
         pueue.timeout = 1.0  # Client reads cannot hold control.lock indefinitely.
         engine = MiniControl(pueue, directory, host=host)
-        return client_module().main(engine, sys.stdin.buffer, sys.stdout, birth=priority_helper().birth,
-                                    exclusion=engine.client_exclusion)
+        return client_module().main(engine, sys.stdin.buffer, sys.stdout, **engine.client_actions_options())
     if args.sin_efecto and args.command != 'resolver-admision':
         parser.error('--sin-efecto sólo para resolver-admision')
     if args.command == 'resolver-admision' and (args.host != 'desk' or args.group is not None):

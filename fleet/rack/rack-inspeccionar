@@ -11,7 +11,7 @@ import urllib.request
 
 # La URL real del panel vive fuera del repositorio público.
 CONFIG = os.path.join(os.environ.get('XDG_CONFIG_HOME') or os.path.expanduser('~/.config'), 'pao', 'rack-url')
-PRODUCT = {'comprador': 'Hasito', 'hasito': 'Hasito', 'sen-checkin': 'Jale',
+PRODUCT = {'caja': 'Caja', 'comprador': 'Hasito', 'hasito': 'Hasito', 'sen-checkin': 'Jale',
            'jale': 'Jale', 'personal-agent-orchestration': 'PAO',
            'felix-agent-engineering': 'PAO', 'marhbe': 'MARHBE'}
 

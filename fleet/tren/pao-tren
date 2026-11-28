@@ -91,6 +91,11 @@ def parser():
     medicion.add_argument("--repo", required=True, type=repositorio)
     medicion.add_argument("--desde", required=True, type=instante_iso)
     medicion.add_argument("--hasta", required=True, type=instante_iso)
+    latencia = comandos.add_parser("latencia", help="medir horas de espera y sus causas")
+    latencia.add_argument("--repo", required=True, type=repositorio)
+    latencia.add_argument("--desde", required=True, type=instante_iso)
+    latencia.add_argument("--hasta", type=instante_iso)
+    latencia.add_argument("--prs", type=Path, help="JSON de gh pr list con number,mergedAt,state")
     fases = comandos.add_parser("fases")
     fases.add_argument("--repo", required=True, type=repositorio)
     fases.add_argument("--desde", required=True, type=texto_iso)
@@ -118,6 +123,18 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
     if args.comando == "medir":
         requests, events = filas_medicion(args.repo)
         return 0, medir(requests, events, args.repo, args.desde, args.hasta)
+    if args.comando == "latencia":
+        from latencia import medir_latencia
+        from ledger import filas_latencia
+        hasta = args.hasta if args.hasta is not None else (time.time() if ahora is None else ahora)
+        prs = None
+        if args.prs is not None:
+            with args.prs.open(encoding="utf-8") as archivo:
+                prs = json.load(archivo)
+            if not isinstance(prs, list):
+                raise ValueError("--prs requiere un arreglo JSON")
+        with filas_latencia(args.repo, hasta) as filas:
+            return 0, medir_latencia(*filas, args.repo, args.desde, hasta, prs)
     if args.comando == "fases":
         from fases import medir_fases
         from ledger import filas_fases
@@ -220,6 +237,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                 if activacion(args.repo) != "activo":
                     return 2, {"error": "tick activo requiere inscripción activa"}
                 from adaptadores import seleccionar
+                from adaptadores.jale import Jale
                 from git_ops import GitTren, identidad_commits
                 from operativo import tick
                 if observador is None or git is None:
@@ -238,6 +256,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                         cache=recursos.enter_context(CacheGitHub(ledger.directorio)))
                     if adaptador is None:
                         adaptador = seleccionar(config, git)
+                if isinstance(adaptador, Jale):
+                    adaptador.limite_cancelacion = getattr(args, "limite_cancelacion", None)
                 return 0, tick(ledger, args.repo, observador, ahora, git, adaptador, frontera,
                                escritor)
             doble_camino = modo(args.repo) == "sombra"
@@ -286,6 +306,8 @@ def plazo_candado():
 ENCADENADOS = 8
 CUOTA_MINIMA = 1000
 PLAZO_ESPERA_CI_S = 100
+# Reserva 10 s del intervalo de launchd para cerrar el paso y sus efectos.
+PLAZO_TICK_CANCELACION_S = 110
 INTERVALO_SONDEO_CI_S = 20
 # Quien instala conserva el candado este tiempo: cubre el arranque de un proceso.
 GRACIA_INSTALACION_S = 5
@@ -425,6 +447,7 @@ def ticks(args):
     for modulo in PEREZOSOS:
         importlib.import_module(modulo)
     limite = ARRANQUE + PLAZO_ESPERA_CI_S
+    args.limite_cancelacion = ARRANQUE + PLAZO_TICK_CANCELACION_S
 
     def vigente():
         return inicial is not None and programa() == inicial

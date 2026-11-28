@@ -18,6 +18,21 @@ El instalador copia el programa a `~/.local/lib/boat-pool`, lo enlaza en
 fleet/boat-pool/install.sh
 ```
 
+Si el tren usa Boat, actualiza ambos desde el checkout instalado bajo el
+candado del programa. Antes de ejecutar el comando, asigna a `checkout`
+la ruta absoluta del checkout y a `sha` el SHA ya descargado.
+
+```sh
+pao-tren candado -- sh -c '
+  git -C "$1" merge --ff-only "$2" &&
+  "$1/fleet/boat-pool/install.sh"
+' sh "$checkout" "$sha"
+```
+
+El instalador copia el pool y recarga `vigilar` bajo el candado. El tick
+siguiente ya puede usar el pool nuevo. Véase
+[Instalar una versión nueva](../tren/README.md#instalar-una-versión-nueva).
+
 El LaunchAgent ejecuta `vigilar` al cargar y cada cinco minutos. Cada VM
 puede indicar su propio `inactividad_min` o usar el valor global. Con
 `inactividad_min: null`, `vigilar` conserva la VM encendida.
@@ -27,33 +42,127 @@ El LaunchAgent usa los valores del entorno de launchd.
 
 Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}`. Cada peso es un entero entre 1 y `lugares` y las clases sin peso declarado ocupan un lugar por arriendo.
 
+## Alineación automática de Jale
+
+`fleet/boat-pool/install-alinear-jale.sh` carga `local.pao.boat-alinear-jale`
+en la sesión gráfica y deja un ejemplo con `activo: false` si falta la
+configuración. Con la alineación activa, el agente consulta `origin/main`
+al cargar y cada cinco minutos, actualiza un worktree dedicado con HEAD
+separado e invoca `boat-pilot.py alinear`. Si el worktree está sucio, avisa
+y conserva los cambios.
+
+Cuando `alinear` ya esté en `main` de Jale, copia el ejemplo a
+`~/.config/boat-pool/alinear-jale.json` y cambia `activo` a `true` para
+permitir el uso de Boat. Puedes indicar `repo` si el clon vive fuera de
+`~/VSCODE/REPOS/SEN-CheckIn` y `worktree` para elegir otra ruta dedicada.
+El worktree predeterminado es `main/` dentro del directorio de estado
+`~/.local/state/boat-pool/alinear-jale/`. El agente usa `XDG_CONFIG_HOME` y
+`XDG_STATE_HOME` si están definidos en el entorno de launchd. Para apagar
+la alineación, pon `activo: false`. Surte efecto desde la siguiente pasada.
+
+Jale espera las corridas vigentes antes de preparar cada VM. Si falla una
+preparación, Jale la intenta hasta tres veces por revisión y después salta
+esa VM. El agente guarda el código de salida de `alinear` en `estado.json`.
+
+- **0** indica que las VMs quedaron alineadas o se saltaron sin un fallo
+  nuevo. El agente vacía el historial de avisos y omite `alinear` en las
+  siguientes pasadas para el mismo SHA.
+- **1** indica que falló alguna VM. El agente avisa con las líneas `fallo:`
+  y vuelve a invocar a Jale en la siguiente pasada, incluso con el mismo SHA.
+- **75** indica que la alineación quedó pendiente porque otro proceso
+  tiene el candado o está preparando una VM. El agente lo registra en el
+  log y vuelve a invocar a Jale en la siguiente pasada sin avisar.
+- Cualquier otro código, como el **143** de una interrupción, se avisa y
+  se reintenta en la siguiente pasada.
+
+La pasada de `alinear` tiene un plazo de cinco horas para las dos VMs en
+serie. Al vencer, el agente envía `SIGTERM` al grupo y le da 120 s de
+gracia. Jale ejecuta su limpieza al recibir `SIGTERM` o `SIGHUP`, suelta
+los arriendos y sale con 143. Si el comando sigue activo tras la gracia,
+el agente envía `SIGKILL`. El agente registra el plazo vencido como fallo
+y avisa aunque Jale alcance a salir durante la gracia.
+
+El directorio de estado guarda la salida de `alinear` en `alinear-*.log`.
+Si se repiten el código y la huella del resultado anterior, el agente
+reescribe `ultimo.log`. La huella incluye el SHA, la etapa, el código y
+la salida con las duraciones (`ms`, `s`, `min`) normalizadas, para ignorar variaciones de tiempo sin confundir causas como dos códigos HTTP.
+El agente avisa ante fallos de Git, plazos vencidos y códigos inesperados,
+y recuerda hasta las últimas 50 huellas avisadas. Los fallos de Git quedan
+en `estado.json`. Las pasadas sin invocación a `alinear` no generan archivos
+de log. El stderr del agente queda en `launchd.err.log`.
+
 ## Operación
 
-- `pedir --repo R --corrida ID --clase C [--prioridad P] [--esperar S] [--ttl S]`
+- `pedir --repo R --corrida ID --clase C [--candidatas A,B] [--prioridad P] [--esperar S] [--ttl S]`
   devuelve un JSON con el arriendo, nombre de VM, ID en Boat y vencimiento.
+  `--candidatas A,B` limita la concesión a esas VMs de `pool.json` del mismo
+  repositorio y sólo se admite en clases distintas de `preparar`.
   Entre las VMs con cupo, `pedir` pospone las que tienen un apagado pendiente
-  o cuyo último evento de energía para el ID vigente es un apagado. Elige por
-  menor proporción de lugares ocupados y desempata en el orden de
-  `pool.json`. Un diario ilegible deja la VM al final. Si la lectura del
-  diario falla al validar la candidata, `pedir` prueba con las demás.
+  o cuyo último evento de energía para el ID vigente es un apagado. Mientras
+  sigue una reanudación, da preferencia a las candidatas que ya están listas.
+  Elige por menor proporción de lugares ocupados y desempata en el orden de
+  `pool.json`. Un diario ilegible deja la VM al final. Si la lectura del diario
+  falla al validar la candidata, `pedir` prueba con las demás.
   Cuando el pool confirma que una VM está lista después de un evento
   `apagada` del mismo ID y sin un apagado pendiente, registra `encendida`.
   La VM vuelve al orden por carga.
   Los valores predeterminados son prioridad `otra`, espera de cero segundos
   para un lugar y arriendo de 900 segundos. La espera admite de 0 a 7200 s
-  y el arriendo de 300 a 3600 s. Una reanudación tiene su propio plazo.
+  y el arriendo de 300 a 3600 s. Una VM está arrancando cuando Boat la
+  muestra en arranque o detenida y su marca en `operacion.json` para ese ID
+  registra un `inicio` de hace menos de 420 s. Para marcas anteriores se
+  toma `desde` como `inicio`. Cualquier pedido que tenga la VM como candidata
+  puede adoptar esa reanudación y deja libre el candado de la VM entre
+  consultas. Si a los 90 s del último POST Boat aún la muestra detenida,
+  `pedir` puede reenviar el `resume` y renovar `desde`. Los reenvíos
+  conservan `inicio`. Si Boat la muestra en arranque, `pedir` sigue
+  consultando su estado. Un pedido que sigue una reanudación permite al
+  siguiente turno elegible arrancar otra VM detenida. Las concesiones
+  cuando una VM queda lista siguen el orden de la fila.
+  `pedir` publica el plazo del turno antes de enviar el POST. Mientras alguna
+  candidata arranca, el turno puede durar más que `--esperar` y se extiende
+  hasta el mayor plazo de esas reanudaciones. Si a los 420 s
+  del primer POST Boat sigue sin confirmar que la VM está lista, el pedido
+  la rechaza con `Boat no confirmó el cambio de estado`. Si otro proceso
+  tiene el candado al vencer el plazo o tras limpiar la marca, un pedido
+  que siguió la reanudación tiene hasta 10 s de margen para observar la VM.
+  Tras limpiar la marca, el margen se cuenta desde la primera contención
+  sin marca. Si el último sondeo encuentra un intento iniciado después
+  del vencimiento del que seguía el pedido, rechaza esa candidata.
+  Un pedido nuevo puede iniciar otra reanudación de una VM detenida con
+  una marca ya vencida cuando se cumplan 90 s desde el último POST. Hasta
+  entonces puede seguir sondeando dentro de su `--esperar` y probar
+  otras candidatas. Estados como `error` o `cancelled` provocan el rechazo
+  inmediato. Si `pedir` no consigue un arriendo, sale con 75.
 - `pedir --repo R --corrida ID --clase preparar --vm NOMBRE` reserva toda
   la VM para el repositorio dueño aunque el registro indique `apta: false`.
-  Mientras el turno espera, la VM deja de otorgar lugares. Una vez que los
-  arriendos vigentes terminan, `preparar` tiene prioridad sobre `tren`,
-  `suite` y `otra`.
+  Cuando la reserva del tren lo permite, un turno `preparar` impide que la VM
+  siga otorgando lugares y tiene prioridad sobre `tren`, `suite` y `otra`
+  una vez que terminan los arriendos vigentes.
 - `latido ARRIENDO [--ttl S]` renueva el arriendo desde el momento actual.
   El lanzador lo llama cada `ttl/3`. Si sale 69, el lanzador termina la
   corrida e informa la pérdida del arriendo.
 - `soltar ARRIENDO` libera el lugar y se puede repetir.
-- `estado [--json]` muestra VMs, arriendos, lugares y puertas de arranque.
+- `reservar --repo R --lote ID --clases C1,C2 --ttl S` anuncia un lote del tren
+  al formarlo, antes del CI. Repetirlo con el mismo repo y lote reemplaza
+  las clases y renueva el vencimiento. El TTL admite de 300 a 3600 s.
+  Mientras viva la reserva, un turno ajeno al tren entra sólo si deja lugar
+  para las clases pendientes. Los arriendos vivos del tren cubren sus clases.
+  Si la reserva impide la concesión hasta vencer la espera, `pedir` devuelve `sin_lugar`.
+- `reservar --repo R --lote ID --clases C1,C2 --vence EPOCH` usa un instante
+  Unix en segundos, limitado a 3600 s desde la aplicación. Para una reserva
+  del mismo repo y lote ya fijada con `--vence`, Boat conserva el menor
+  vencimiento. Si la reserva caduca o se libera, Boat descarta los reintentos
+  con `--vence` hasta 3600 s después del vencimiento guardado.
+  `--ttl` sigue renovando desde el reloj de Boat.
+  Un instante alcanzado libera la reserva del lote y devuelve 0. Usa sólo
+  una de las opciones `--vence` y `--ttl`.
+- `liberar-reserva --repo R --lote ID` quita la reserva del lote.
+  Se puede repetir. Si el tren omite la liberación, la reserva vence sola.
+- `estado [--json]` muestra VMs, arriendos, lugares, puertas de arranque y reservas vivas.
 - `encender NOMBRE|--todas` y `apagar NOMBRE|--todas` actúan sobre VMs
-  declaradas y registradas. Una VM con arriendos vivos se protege del apagado.
+  declaradas y registradas. `encender` espera hasta 420 s a que Boat confirme
+  la reanudación. Una VM con arriendos vivos se protege del apagado.
 - Los lanzadores piden arriendos desde la MacBook. En otros hosts, si el
   comando no está instalado, si falta `pool.json` o ante otra salida 75,
   usan su host habitual. La primera línea de stderr de una salida 75 es

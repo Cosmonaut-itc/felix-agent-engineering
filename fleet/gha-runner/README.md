@@ -5,7 +5,7 @@ mes de runners de GitHub para repositorios privados. Los gates rápidos de Jale
 corren en Boat, pero dos trabajos no pueden ir ahí: el guard que decide qué
 recibe Boat y las unitarias que leen datos excluidos de Boat. Con unos 190
 pushes al día, esos dos trabajos agotarían los minutos en menos de una semana.
-Dos runners en la Mini los corren sin costo.
+Tres runners en la Mini los corren sin costo.
 
 ## Qué instala
 
@@ -13,7 +13,8 @@ Dos runners en la Mini los corren sin costo.
 
 | Papel | Trabajo | Etiqueta | Nombre |
 |---|---|---|---|
-| `guard` | «Política de exportación a Boat» | `jale-guard` | `mini-jale-guard` |
+| `guard` | «Política de exportación a Boat» y «Selección de web en sombra» | `jale-guard` | `mini-jale-guard` |
+| `guard-2` | Los mismos que `guard` | `jale-guard` | `mini-jale-guard-2` |
 | `datos` | «Unitarias con datos o recursos excluidos de Boat» | `jale-datos` | `mini-jale-datos` |
 | `hasito-noche` | Gate completo nocturno de Hasito sobre `main` | `hasito-noche` | `mini-hasito-noche` |
 | `hasito-ci` | CI de los PR de Hasito; hoy ningún workflow lo pide | `hasito-ci` | `mini-hasito-ci` o `desk-hasito-ci` |
@@ -22,13 +23,19 @@ Cada runner toma un trabajo a la vez y GitHub guarda su fila. Van separados
 porque los trabajos de Boat esperan al guard, que tarda segundos: con un solo
 runner, el guard haría fila detrás de unitarias de varios minutos.
 
+`guard-2` es un segundo runner con la etiqueta `jale-guard`. GitHub entrega
+cada trabajo que pide esa etiqueta al runner que esté libre, así que la fila
+del guard se reparte entre los dos sin cambiar ningún workflow. Existe porque
+los trabajos del guard de un lote del tren de merges esperaban detrás de los
+de los PR: el 2026-11-28 la política de un lote esperó 10.4 min.
+
 Para los papeles de Jale instala:
 
 - El runner oficial `actions/runner` 2.338.2 para macOS arm64, en
   `~/actions-runner-jale-<papel>`. `instalar.sh` fija su sha256 y no extrae un
   paquete que no coincida.
 - Un registro de repositorio en `SEN-HASO/Jale`. Los trabajos lo piden con
-  `runs-on: [self-hosted, jale-<papel>]`.
+  `runs-on: [self-hosted, jale-<papel>]`; `guard-2` atiende los de `jale-guard`.
 - El LaunchAgent `local.pao.gha-runner-jale-<papel>`, con log en
   `~/Library/Logs/pao-gha-runner-jale-<papel>.log`.
 
@@ -41,7 +48,8 @@ gh api -X POST repos/SEN-HASO/Jale/actions/runners/registration-token -q .token 
   | ssh mini 'bash ~/.local/share/personal-agent-orchestration/fleet/gha-runner/instalar.sh guard'
 ```
 
-Repite el comando con `datos`. Cada instalación pide su propio token.
+Repite el comando con `guard-2` y con `datos`. Cada instalación pide su propio
+token.
 
 El token de registro dura una hora y viaja por stdin. `instalar.sh` se lo pasa
 a `config.sh` por entorno, nunca por argumentos. Termina cuando el runner
@@ -123,7 +131,7 @@ Conserva las demás líneas de `.env` y deja una sola línea
 `ACTIONS_RUNNER_HOOK_JOB_STARTED` con la ruta absoluta de esa copia antes de
 arrancar el servicio. Si falla la copia o la configuración, no carga launchd.
 Una reinstalación actualiza el hook y reinicia el servicio: `.env` se lee al
-arrancar. Los papeles `guard` y `datos` no reciben hook.
+arrancar. Los papeles `guard`, `guard-2` y `datos` no reciben hook.
 
 Comprueba en la Mini que la copia es ejecutable y que `.env` apunta a ella:
 
@@ -269,8 +277,9 @@ la versión en `github.com/actions/runner/releases`.
 - **Fuera de Pueue.** Los trabajos no pasan por los grupos `suites` ni
   `rapidas` y la guardia de la Mini no los pausa. La carga queda acotada por
   los propios runners: un trabajo a la vez cada uno. Los de Jale se reservan
-  para esos dos trabajos; los pesados van a Boat o a `remote-run`. El tercer
-  runner `hasito-noche` se reserva para el gate nocturno completo de Hasito.
+  para los trabajos de la tabla; los pesados van a Boat o a `remote-run`. Con
+  `guard-2` pueden correr dos trabajos del guard a la vez. El runner
+  `hasito-noche` se reserva para el gate nocturno completo de Hasito.
 - **Servicios de la Mini a la vista.** Un trabajo alcanza los puertos locales,
   como el Postgres de pruebas en `127.0.0.1:5435`. Un workflow que corre aquí
   no debe apuntar a ellos.

@@ -71,10 +71,11 @@ class DeskFixture(unittest.TestCase):
 
 class DeskSlotsTests(DeskFixture):
     def test_verified_table_caps_and_reserved_default(self):
-        self.assertEqual(control.GROUP_LIMITS, {'hasito':{'dia':1,'noche':2}, 'jale':{'dia':5,'noche':7},
+        self.assertEqual(control.GROUP_LIMITS, {'caja':{'dia':1,'noche':2},
+                         'hasito':{'dia':1,'noche':2}, 'jale':{'dia':5,'noche':7},
                          'jale-verify':{'dia':1,'noche':1}, 'otros':{'dia':2,'noche':2},
                          'pesadas':{'dia':2,'noche':3}, 'rapidas':{'dia':3,'noche':3}})
-        for when, mode, cap in (('2026-11-14T13:59:59','noche',18), ('2026-11-14T14:00:00','dia',14)):
+        for when, mode, cap in (('2026-11-14T13:59:59','noche',20), ('2026-11-14T14:00:00','dia',15)):
             self.now = utc(when)
             self.assertTrue(self.engine.reconcile())
             v = self.engine.view()
@@ -114,9 +115,9 @@ class DeskSlotsTests(DeskFixture):
         self.assertEqual(self.engine.handle(self.request('max-00000001',delta=1))['status'],'rejected')
         result = self.engine.handle(self.request('repair-000001'))
         self.assertEqual(result['status'],'applied')
-        self.assertGreater(sum(result['result']['desired'].values()),14)
+        self.assertGreater(sum(result['result']['desired'].values()),15)
         with self.assertRaises(ValueError):
-            control.validate_target(target, dict(target,jale=7,otros=4), 'desk',14)
+            control.validate_target(target, dict(target,jale=7,otros=4), 'desk',15)
 
     def test_before_event_exact_undo_and_original_expirations(self):
         first = self.request(); self.assertEqual(self.engine.handle(first)['status'],'applied')
@@ -634,22 +635,26 @@ class DeskInstallTests(DeskFixture):
         installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
         home = self.root/'table-home'
         library = home/'.local/lib/pao-pueue-desk'; library.mkdir(parents=True)
-        target = library/'control.py'; target.write_text('# installed old controller\n')
+        target = library/'control.py'
+        source = Path(control.__file__).read_text()
+        target.write_text(source.replace('    "caja": {"dia": 1, "noche": 2},\n', ''))
+        spec = importlib.util.spec_from_file_location('desk_before_caja', target)
+        old = importlib.util.module_from_spec(spec); spec.loader.exec_module(old)
         directory = home/'.local/state/pao/pueue-desk'
         self.now = utc('2026-11-15T16:00:00')
-        for g, n in control.desk_profile(self.now).items():
+        del self.p.groups['caja']
+        for g, n in old.desk_profile(self.now).items():
             self.p.groups[g]['parallel_tasks'] = n
-        engine = control.MiniControl(self.p, directory, clock=lambda:self.now, generation=lambda:self.gen, host='desk')
+        engine = old.MiniControl(self.p, directory, clock=lambda:self.now, generation=lambda:self.gen, host='desk')
         with control.locked(directory):
             engine.adopt(self.root/'pid')
         v = engine.view()
-        request = dict(schema=control.HOST_SCHEMA, op='slots', action_id='migration-old-001', dry_run=False,
+        request = dict(schema=old.HOST_SCHEMA, op='slots', action_id='migration-old-001', dry_run=False,
                        expected={k:v[k] for k in ('revision','policy_hash','generation','mode','slots')},
                        change=dict(group='otros', delta=-1))
         self.assertEqual(engine.handle(request)['status'], 'applied')
-        source = Path(control.__file__).read_text().replace('"jale": {"dia": 5, "noche": 7}',
-                                                            '"jale": {"dia": 4, "noche": 7}').replace(
-                            '"otros": {"dia": 2, "noche": 2}', '"otros": {"dia": 3, "noche": 2}')
+        # The deployment preflight expects the new group to exist before it reads the queue.
+        self.p.groups['caja'] = dict(status='Running', parallel_tasks=control.desk_profile(self.now)['caja'])
         candidate = self.root/'candidate'; candidate.mkdir()
         (candidate/'control.py').write_text(source)
         import shutil
@@ -675,6 +680,7 @@ class DeskInstallTests(DeskFixture):
         with old.connect() as db:
             before = old.state(db)
             receipt = db.execute('SELECT * FROM host_actions').fetchall()
+        self.assertNotIn('caja', before['desired'])
         self.p.calls.clear()
         with self.assertRaises(ValueError):
             engine.view()  # runtime must keep failing closed on the old hash
@@ -708,7 +714,7 @@ class DeskInstallTests(DeskFixture):
         self.assertIsNone(error, 'La migración debe terminar: ' + str(error))
         self.assertTrue(stores)
         self.assertEqual(engine.view()['slots'], new.desk_profile(self.now))
-        self.assertEqual(self.p.calls, [('parallel','jale',4), ('parallel','otros',3)])
+        self.assertEqual(self.p.calls, [('parallel','otros',2)])
         with engine.connect() as db:
             self.assertEqual(db.execute('SELECT * FROM host_actions').fetchall(), receipt)
         self.assertEqual(target.read_bytes(), (installer.SOURCE/'control.py').read_bytes())

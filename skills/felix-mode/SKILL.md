@@ -170,7 +170,9 @@ que demuestra:
   con él y no escribas guiones de suite. Su salida 75 marca un fallo del
   arnés o de la infraestructura, y la misma corrida se relanza con su
   opción de reanudar. La salida 75 no cuenta como ronda ni como suite roja,
-  y no pide corrección ni ronda delta.
+  y no pide corrección ni ronda delta. `run-remote.sh boat` de Jale no tiene
+  opción de reanudar. Su 75 sin `RESULT` canónico se relanza con la misma
+  invocación, y su 75 con él es una suite roja.
 
 ## Modelos y transporte
 
@@ -224,7 +226,7 @@ que demuestra:
 - **Alto riesgo.** Corre `interrogate` con dos revisores independientes:
   gpt-6.2-sol en `high` por Transporte, siempre como Reviewer A, y opus-5.5
   en `high`, el asiento Claude que trae la hoja. Ese asiento corre sólo en
-  las rondas completas de alto riesgo. Vetas sus hallazgos con **Prueba**.
+  las rondas completas de alto riesgo y en el **Par de Jale**. Vetas sus hallazgos con **Prueba**.
   Cuentan como señales: escrituras a producción o a un sistema de cliente
   (ICG, ERP, pagos, CFDI, nómina), migraciones o borrado de datos,
   autenticación y permisos, cálculos de dinero o impuestos, contratos entre
@@ -334,6 +336,16 @@ que demuestra:
   completa no vio. Un head nuevo que sólo incorpora la rama destino conserva
   su APTO sin ronda cuando lo permite el paso 3 del
   [procedimiento de merge](references/merge.md).
+- **Par de Jale.** El paso 2 de
+  [Entrega al tren](references/merge.md#entrega-al-tren) puede pedir, justo
+  antes de entregar, el veredicto que falte de gpt-6.2-sol en `high` o de
+  opus-5.5 en `high` sobre el SHA que entregas. Un revisor que no revisó el
+  cambio hace una ronda completa sobre el diff completo, con el brief
+  original. Uno que revisó un head anterior hace la ronda que fija **Ronda
+  delta**: una delta desde ese head, o una completa cuando esa regla la
+  exige. Es la única excepción al revisor único de **Normal** y de **Ronda
+  delta**, y la única ronda que corre aunque `apto-vigente` imprima `APTO
+  vigente`. Un NO APTO de cualquiera de los dos sigue **Rondas**.
 - **Hallazgos.** El brief de todo revisor pide critical y warning. En nivel
   normal pide también los nits de gravedad alta, que son riesgos asumidos.
   Pide cerrar el reporte con `Nits descartados: <n>`, la cuenta de los

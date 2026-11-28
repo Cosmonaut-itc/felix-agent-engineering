@@ -23,7 +23,7 @@ bitácora. Una persona debe revisarlas. Todo lo demás es MANUAL.
 | Grupo | Tope en minutos |
 | --- | ---: |
 | rapidas | 10 |
-| suites, hasito, otros, jale | 45 |
+| suites, caja, hasito, otros, jale | 45 |
 | pesadas | 150 |
 | default y cualquier otro | 45 |
 

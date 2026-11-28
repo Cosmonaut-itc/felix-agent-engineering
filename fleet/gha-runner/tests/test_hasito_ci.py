@@ -33,6 +33,10 @@ class HasitoCI(unittest.TestCase):
     correr = base.Instalador.correr
     leer = base.Instalador.leer
 
+    def hay_servicio_cargado(self):
+        # systemctl marca «cargado»; launchctl, «cargado-<Label>».
+        return any(self.fake.glob('cargado*'))
+
     def preparar(self, sistema):
         (self.fake / 'uname').write_text(sistema + '\n')
         self.entorno['EXPECTED_TOKEN'] = TOKEN
@@ -152,7 +156,7 @@ cat "$FAKE_ROOT/bibliotecas"
                 for archivo in self.raiz.rglob('*'):
                     if archivo.is_file():
                         self.assertNotIn(TOKEN.encode(), archivo.read_bytes(), archivo)
-                self.assertFalse((self.fake / 'cargado').exists())
+                self.assertFalse(self.hay_servicio_cargado())
                 self.assertFalse(self.dir.exists())
                 self.assertFalse(self.servicio.exists())
                 retirados = set(self.home.glob('actions-runner-hasito-ci.retirado-*'))
@@ -174,7 +178,7 @@ cat "$FAKE_ROOT/bibliotecas"
                 resultado = self.instalar()
                 self.assertEqual(resultado.returncode, 7, resultado.stderr)
                 self.assertIn('--name ', self.leer('config.log'))
-                self.assertFalse((self.fake / 'cargado').exists())
+                self.assertFalse(self.hay_servicio_cargado())
                 self.assertFalse(self.servicio.exists())
                 self.assertNotIn('bootstrap', self.leer('launchctl.log'))
                 self.assertNotIn('enable --now', self.leer('systemctl.log'))
@@ -187,14 +191,14 @@ cat "$FAKE_ROOT/bibliotecas"
                 resultado = self.instalar()
                 self.assertEqual(resultado.returncode, 1, resultado.stderr)
                 self.assertIn('no llegó a escuchar', resultado.stderr)
-                self.assertFalse((self.fake / 'cargado').exists())
+                self.assertFalse(self.hay_servicio_cargado())
 
     def test_arranque_linux_fallido_no_deja_unidad_activa(self):
         self.preparar('Linux x86_64')
         (self.fake / 'arranque-falla').touch()
         resultado = self.instalar()
         self.assertNotEqual(resultado.returncode, 0)
-        self.assertFalse((self.fake / 'cargado').exists())
+        self.assertFalse(self.hay_servicio_cargado())
         self.assertIn('--user disable', self.leer('systemctl.log'))
 
     def test_papel_en_sistema_equivocado_nombra_host_correcto(self):
@@ -223,7 +227,7 @@ cat "$FAKE_ROOT/bibliotecas"
                 self.assertIn('sha256', resultado.stderr)
                 self.assertIn(sha, self.leer('shasum.in'))
                 self.assertFalse((self.dir / 'config.sh').exists())
-                self.assertFalse((self.fake / 'cargado').exists())
+                self.assertFalse(self.hay_servicio_cargado())
 
     def test_dependencias_faltantes_se_listan_antes_de_registrar(self):
         self.preparar('Linux x86_64')
@@ -233,7 +237,7 @@ cat "$FAKE_ROOT/bibliotecas"
         self.assertIn('libicu74', resultado.stderr)
         self.assertIn('libkrb5-3', resultado.stderr)
         self.assertEqual(self.leer('config.log'), '')
-        self.assertFalse((self.fake / 'cargado').exists())
+        self.assertFalse(self.hay_servicio_cargado())
 
     def test_sin_lttng_registra_como_el_desk(self):
         self.preparar('Linux x86_64')
@@ -241,7 +245,7 @@ cat "$FAKE_ROOT/bibliotecas"
         resultado = self.instalar()
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         self.assertIn('--name desk-hasito-ci', self.leer('config.log'))
-        self.assertTrue((self.fake / 'cargado').exists())
+        self.assertTrue(self.hay_servicio_cargado())
 
     def test_biblioteca_no_resuelta_falla_aunque_dpkg_diga_instalado(self):
         self.preparar('Linux x86_64')

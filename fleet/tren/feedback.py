@@ -9,8 +9,8 @@ import re
 import shlex
 import subprocess
 
-from adaptadores.jale import MODOS
-from dominio import LANZADOR_JALE, Rechazado
+from adaptadores.jale import HOSTS, MODOS
+from dominio import LANZADOR_JALE, Rechazado, argv_repetir_publico
 from observador import sha
 
 
@@ -33,7 +33,7 @@ def comando_publico(fallo):
     args = argv[2:]
     carril = args[:2] if args[:2] == ["--carril", "rapido"] else []
     posicionales = args[len(carril):]
-    if posicionales[0:1] in (["auto"], ["mini"], ["desktop"]):
+    if posicionales[:1] and posicionales[0] in HOSTS:
         if len(posicionales) != 5:
             raise ValueError("Comando de reproducción de Jale inválido")
         host, _, modo, commit, unidad = posicionales
@@ -41,7 +41,10 @@ def comando_publico(fallo):
             raise ValueError("Comando de reproducción de Jale inválido")
         if not sha(commit):
             raise ValueError("SHA de reproducción inválido")
-        return shlex.join(["bash", LANZADOR_JALE, *carril, host, "<log>", modo, commit, unidad])
+        comando = shlex.join(["bash", LANZADOR_JALE, *carril, host, "<log>", modo, commit, unidad])
+        # Boat sólo admite corridas con un dueño válido; el lector pone el suyo.
+        return ("SEN_RUN_OWNER=" + shlex.quote("<agente>") + " " + comando
+                if host == "boat" else comando)
     if args[0] == "--repetir":
         args = args[2:]
     elif args[0] != "--sha":
@@ -50,9 +53,8 @@ def comando_publico(fallo):
     commit = args[indice] if indice < len(args) else None
     if not sha(commit):
         raise ValueError("SHA de reproducción inválido")
-    return shlex.join(["bash", "scripts/mini/run.sh", "--repetir", "<resultado.json>",
-        "--sha", commit, "--worktree", "<worktree-en-" + commit + ">",
-        "--veces", "2", "--unidad", fallo["check"] + "=" + fallo["unidad"]])
+    return shlex.join(argv_repetir_publico(fallo.get("parte"), fallo["check"], fallo["unidad"],
+                                           commit, "<resultado.json>", "<worktree-en-" + commit + ">"))
 
 
 class EscritorGitHub:

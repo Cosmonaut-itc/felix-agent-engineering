@@ -2,6 +2,7 @@
   "repos": {
     "owner/project": {
       "git": "/path/to/local/checkout",
+      "boat_pool": "~/.local/bin/boat-pool",
       "excluir_alto_riesgo": true,
       "etiquetas_alto_riesgo": ["alto-riesgo"],
       "heads_autorizados": [],

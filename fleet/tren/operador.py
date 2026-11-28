@@ -83,6 +83,13 @@ class Snapshots:
             raise FalloSnapshot("sha-no-disponible")
         self.comando_git(checkout, "update-ref", ref, commit)
 
+    def disponer(self, commit):
+        """Trae un commit del clon del tren al repositorio del checkout del operador."""
+        try:
+            self.traer(self.checkout.resolve(), commit)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            raise FalloSnapshot("sha-no-disponible") from None
+
     def relativa(self, valor, checkout):
         if not isinstance(valor, str) or not Path(valor).is_absolute():
             return None
@@ -244,7 +251,8 @@ class Snapshots:
                 sin_recibo.append((ruta, tren))
         if sin_recibo:
             ahora = time.time() if ahora is None else ahora
-            vencidos = self.ledger.terminales_hasta(self.repo, ahora - RETENCION_SIN_RECIBO_S)
+            previo = self.ledger.estado_operativo_hasta(self.repo, ahora - RETENCION_SIN_RECIBO_S)
+            vencidos = {t.id for t in previo.trenes if isinstance(t.fase, Terminal)}
             usadas.update(ruta for ruta, tren in sin_recibo if tren not in vencidos)
         for ruta, checkout in filas[1:]:
             if ruta in usadas:

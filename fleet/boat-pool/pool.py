@@ -44,7 +44,10 @@ GATES = {
     'monedero_usd': ('wallet', 'balanceDollars'),
 }
 POWER_TIMEOUT = 90
+RESUME_TIMEOUT = 420
+POWER_UNCONFIRMED = 'Boat no confirmó el cambio de estado'
 SUITE_MAX = 7200
+RESERVATION_TTL_MAX = 3600
 AUTO_STOP_CLOCK_TOLERANCE = 60
 RENEW_BEFORE = 48 * 3600
 RENEW_FOR = 7 * 86400
@@ -98,6 +101,17 @@ def iso_datetime(value):
 
 def epoch(value):
     return iso_datetime(value).timestamp() if isinstance(value, str) else number(value)
+
+
+def resume_deadline(operation):
+    if operation and operation['accion'] == 'resume':
+        return epoch(operation.get('inicio', operation['desde'])) + RESUME_TIMEOUT
+    return None
+
+
+def resume_replaced(followed_until, until):
+    # El inicio de la marca nueva cae fuera del intento que seguía este pedido.
+    return followed_until is not None and until is not None and until - RESUME_TIMEOUT >= followed_until
 
 
 def creation_midnight(created):
@@ -327,6 +341,8 @@ class VM:
             if operation['accion'] not in ('resume', 'stop'):
                 raise ValueError('acción inválida')
             epoch(operation['desde'])
+            if operation['accion'] == 'resume' and 'inicio' in operation:
+                epoch(operation['inicio'])
         return operation
 
     def last_power_event(self):
@@ -365,11 +381,15 @@ class VM:
     def lease_path(self, token):
         return private_dir(self.path / 'arriendos') / (token + '.json')
 
-    def finish_lease_change(self):
-        pending = self.path / 'arriendo-pendiente.json'
+    def pending_lease_change(self):
         try:
-            change = read_json(pending)
+            return read_json(self.path / 'arriendo-pendiente.json')
         except FileNotFoundError:
+            return None
+
+    def finish_lease_change(self):
+        change = self.pending_lease_change()
+        if change is None:
             return
         event = change['evento']
         if not any(item.get('cambio') == event['cambio'] for item in self.read_events()):
@@ -379,7 +399,7 @@ class VM:
             remove(path)
         else:
             atomic_json(path, change['arriendo'])
-        remove(pending)
+        remove(self.path / 'arriendo-pendiente.json')
 
     def change_lease(self, kind, when, lease):
         event = self.event(kind, when, arriendo=lease['arriendo'], repo=lease['repo'],
@@ -390,11 +410,29 @@ class VM:
         })
         self.finish_lease_change()
 
+    def lease_files(self):
+        for path in (self.path / 'arriendos').glob('*.json'):
+            try:
+                yield path.stem, read_json(path)
+            except FileNotFoundError:
+                continue
+
+    def lease_snapshot(self, now):
+        # espera.lock serializa los cambios vivos. La VM puede estar recuperando un cambio pendiente.
+        change = self.pending_lease_change()
+        leases = dict(self.lease_files())
+        if change is not None:
+            token = change['evento']['arriendo']
+            if change['arriendo'] is None:
+                leases.pop(token, None)
+            else:
+                leases[token] = change['arriendo']
+        return [lease for lease in leases.values() if epoch(lease['vence']) > now]
+
     def leases(self, now, *, expire=False):
         self.finish_lease_change()
         live = []
-        for path in (self.path / 'arriendos').glob('*.json'):
-            lease = read_json(path)
+        for _, lease in self.lease_files():
             expiry = epoch(lease['vence'])
             if expiry > now:
                 live.append(lease)
@@ -417,7 +455,33 @@ class VM:
             return False
         if turn['clase'] == 'preparar':
             return turn['vm'] == self.name
+        if 'candidatas' in turn and self.name not in turn['candidatas']:
+            return False
         return self.apt and self.fits([], turn['clase'])
+
+
+def fits_reservations(vm, kind, pending, capacity):
+    if not pending:
+        return True
+    loads = [(candidate, leases + ([{'clase': kind}] if candidate is vm else []))
+             for candidate, leases in capacity]
+    if len(pending) > sum(max(0, vm.places - vm.used_places(leases)) for vm, leases in loads):
+        return False
+
+    def place(index):
+        if index == len(pending):
+            return True
+        kind = pending[index]
+        for vm, leases in loads:
+            if vm.fits(leases, kind):
+                leases.append({'clase': kind})
+                matched = place(index + 1)
+                leases.pop()
+                if matched:
+                    return True
+        return False
+
+    return place(0)
 
 
 @dataclass
@@ -647,13 +711,23 @@ class Pool:
                    for item in vm.read_events()):
             append_event(vm.journal, vm.event(kind, when, operacion=operation['id']))
 
-    def send_power(self, vm, action):
+    def send_power(self, vm, action, *, restart=False, before_resume=None):
         self.validate(vm)
         previous = self.power_operation(vm)
-        if (action == 'resume' and previous and previous['accion'] == 'resume'
-                and self.now() - epoch(previous['desde']) < POWER_TIMEOUT):
-            raise BoatError('reanudación anterior sin confirmar')
-        operation = {'id': uuid4().hex, 'sandbox_id': vm.id, 'accion': action, 'desde': stamp(self.now())}
+        now = self.now()
+        operation = {'id': uuid4().hex, 'sandbox_id': vm.id, 'accion': action, 'desde': stamp(now)}
+        if action == 'resume':
+            until = resume_deadline(previous)
+            operation['inicio'] = operation['desde']
+            if until is not None:
+                if not restart and now >= until:
+                    raise BoatError(POWER_UNCONFIRMED)
+                if now - epoch(previous['desde']) < POWER_TIMEOUT:
+                    raise BoatError('reanudación anterior sin confirmar')
+                if not restart:
+                    operation['inicio'] = previous.get('inicio', previous['desde'])
+            if before_resume is not None:
+                before_resume(resume_deadline(operation))
         if action == 'stop' and previous and (previous['accion'] == 'resume' or previous.get('credenciales')):
             operation['credenciales'] = True
         atomic_json(vm.path / 'operacion.json', operation)
@@ -661,40 +735,77 @@ class Pool:
         self.boat.power(vm, action, ttl=vm.auto_stop_ttl)
         if action == 'resume':
             self.record_power_event(vm, operation, 'arranque', epoch(operation['desde']))
+        return operation
 
-    def wait_power(self, vm, target, pending):
-        deadline = time.monotonic() + POWER_TIMEOUT
+    def wait_power(self, vm, target, pending, *, timeout=POWER_TIMEOUT):
+        deadline = time.monotonic() + timeout
         while True:
             info = self.sandbox_info(vm)
             state = self.observe(vm, info)
             if state in target:
                 return info
             if state not in pending or time.monotonic() >= deadline:
-                raise BoatError('Boat no confirmó el cambio de estado')
+                raise BoatError(POWER_UNCONFIRMED)
             self.sleep(1)
+
+    def check_start_credentials(self, vm, state, info, pending, *, wait):
+        if pending and pending.get('credenciales'):
+            self.stop_unverified(vm, self.sandbox_info(vm)['state'], wait=wait)
+            raise BoatError('Boat no acreditó la ausencia de credenciales al reanudar')
+        if state in READY and resume_deadline(pending) is not None:
+            self.check_resumed(vm, info, pending, wait=wait)
+
+    def resume_step(self, vm, state, pending, *, send, requested_at, deadline, before_resume=None):
+        until = resume_deadline(pending)
+        can_restart = False
+        if until is not None:
+            now = self.now()
+            retry_at = epoch(pending['desde']) + POWER_TIMEOUT
+            if state not in STARTING | STOPPED:
+                raise BoatError(POWER_UNCONFIRMED)
+            if now >= until:
+                can_restart = send and state in STOPPED and requested_at > until and now >= retry_at
+                if until < requested_at < retry_at:
+                    remaining = deadline - time.monotonic()
+                    if not can_restart and remaining > 0:
+                        # El último POST aún puede confirmarse dentro de la espera del pedido.
+                        return None
+                    can_restart = can_restart and remaining >= 0
+                if not can_restart:
+                    raise BoatError(POWER_UNCONFIRMED)
+            elif state in STARTING or not send or now < retry_at:
+                return until
+        if state in STOPPED and send:
+            with lock(self.state / 'arranques.lock'):
+                self.check_gates(vm)
+                operation = self.send_power(vm, 'resume', restart=can_restart, before_resume=before_resume)
+            return resume_deadline(operation)
+        if state not in STARTING | STOPPED:
+            raise BoatError('estado de VM no reanudable')
+        return None
 
     def start(self, vm, state, info):
         pending = self.power_operation(vm)
-        if pending and pending.get('credenciales'):
-            self.stop_unverified(vm, self.sandbox_info(vm)['state'], wait=True)
-            raise BoatError('Boat no acreditó la ausencia de credenciales al reanudar')
+        self.check_start_credentials(vm, state, info, pending, wait=True)
         if state in READY:
-            if pending and pending['accion'] == 'resume':
-                self.check_resumed(vm, info, pending, wait=True)
             return info
-        if state in STOPPING:
+        if state in STOPPING and resume_deadline(pending) is None:
             self.wait_power(vm, STOPPED, STOPPING)
             state = 'archived'
-        if state in STOPPED:
-            with lock(self.state / 'arranques.lock'):
-                self.check_gates(vm)
-                self.send_power(vm, 'resume')
-        elif state not in STARTING:
-            raise BoatError('estado de VM no reanudable')
-        info = self.wait_power(vm, READY, STARTING | STOPPED)
+        requested_at = self.now()
+        deadline = time.monotonic() + RESUME_TIMEOUT
+        while state not in READY:
+            until = self.resume_step(vm, state, pending, send=True, requested_at=requested_at, deadline=deadline)
+            if until is not None or resume_deadline(pending) is None:
+                timeout = RESUME_TIMEOUT if until is None else until - self.now()
+                info = self.wait_power(vm, READY, STARTING | STOPPED, timeout=timeout)
+                break
+            self.sleep(min(1, max(0, deadline - time.monotonic())))
+            info = self.sandbox_info(vm)
+            state = self.observe(vm, info)
+            pending = self.power_operation(vm)
         pending = self.power_operation(vm)
-        if pending and pending['accion'] == 'resume':
-            self.check_resumed(vm, info, pending, wait=True)
+        self.check_start_credentials(vm, 'ready', info, pending, wait=True)
         return info
 
     def check_resumed(self, vm, info, pending, *, wait):
@@ -722,12 +833,100 @@ class Pool:
         else:
             self.observe(vm)
 
+    def flush_reservation_events(self, data, *, recover=False):
+        journal = self.state / 'eventos.jsonl'
+        with lock(self.state / 'eventos.lock'):
+            recorded = {event.get('cambio') for event in events(journal)} if recover else set()
+            for event in data['eventos_pendientes']:
+                if event['cambio'] not in recorded:
+                    append_event(journal, event)
+        atomic_json(self.state / 'reservas.json', {'reservas': data['reservas']})
+
+    def write_reservations(self, reservations, changes):
+        data = {'reservas': reservations, 'eventos_pendientes': [
+            {'evento': kind, 'en': when, 'cambio': uuid4().hex, **self.reservation_data(reservation)}
+            for kind, when, reservation in changes
+        ]}
+        atomic_json(self.state / 'reservas.json', data)
+        self.flush_reservation_events(data)
+
+    @staticmethod
+    def reservation_data(reservation):
+        return {key: reservation[key] for key in ('repo', 'lote', 'clases', 'vence')}
+
+    def reservations(self, now, *, include_expired=False):
+        # El lector y las escrituras de reservas comparten espera.lock.
+        try:
+            data = read_json(self.state / 'reservas.json')
+        except FileNotFoundError:
+            return []
+        if data.get('eventos_pendientes'):
+            self.flush_reservation_events(data, recover=True)
+        kept, expired = [], []
+        for item in data['reservas']:
+            end = epoch(item['vence'])
+            if end > now and not item.get('vencida'):
+                kept.append(item)
+                continue
+            if not item.get('vencida'):
+                expired.append(('reserva-vencida', item['vence'], item))
+            # Un reintento tardío de --vence puede traer un EPOCH posterior.
+            if 'vence_solicitado' in item and end + RESERVATION_TTL_MAX > now:
+                kept.append({**item, 'vencida': True})
+        if expired or len(kept) != len(data['reservas']):
+            self.write_reservations(kept, expired)
+        return kept if include_expired else [item for item in kept if not item.get('vencida')]
+
+    def reservation_command(self, repo, batch, classes=None, ttl=None, *, until=None):
+        with lock(self.state / 'espera.lock'):
+            now = self.now()
+            reserve = classes is not None and (until is None or until > now)
+            if reserve and not any(vm.repo == repo for vm in self.vms.values()):
+                raise InvalidUse('repositorio sin VMs en el pool')
+            reservations = self.reservations(now, include_expired=True)
+            previous = next((item for item in reservations if (item['repo'], item['lote']) == (repo, batch)), None)
+            if previous is not None and previous.get('vencida') and (not reserve or until is not None):
+                return
+            if previous is not None:
+                reservations.remove(previous)
+            if reserve:
+                end = now + ttl if until is None else min(until, now + RESERVATION_TTL_MAX)
+                if until is not None and previous is not None and 'vence_solicitado' in previous:
+                    end = min(end, epoch(previous['vence']))
+                    until = min(until, previous['vence_solicitado'])
+                reservation = {'repo': repo, 'lote': batch, 'clases': classes, 'vence': stamp(end)}
+                if until is not None:
+                    reservation['vence_solicitado'] = until
+                reservations.append(reservation)
+                self.write_reservations(reservations, [('reservado', stamp(now), reservation)])
+            elif previous is not None:
+                if 'vence_solicitado' in previous:
+                    # Un pool anterior que siga en espera decide sólo por `vence`: la marca ya venció para él.
+                    reservations.append({**previous, 'vence': stamp(now), 'vencida': True})
+                self.write_reservations(reservations, [('reserva-liberada', stamp(now), previous)])
+
+    def reservation_loads(self, repo, now):
+        pending = Counter(kind for item in self.reservations(now) if item['repo'] == repo
+                          for kind in item['clases'])
+        if not pending:
+            return [], []
+        capacity = []
+        for vm in self.candidates(repo=repo):
+            leases = vm.lease_snapshot(now)
+            if vm.apt:
+                capacity.append((vm, leases))
+            for lease in leases:
+                if lease.get('prioridad') == 'tren' and lease.get('repo') == repo:
+                    pending[lease['clase']] -= 1
+        return list(pending.elements()), capacity
+
     def turns(self):
         waiting = []
         now = self.now()
         for path in private_dir(self.state / 'espera').glob('*.json'):
             turn = read_json(path)
-            if ('vence' not in turn or epoch(turn['vence']) <= now
+            if ('vence' not in turn
+                    or max(epoch(turn['vence']), epoch(turn.get('comprobando_hasta', 0))) <= now
                     or turn['host'] != self.host or not pid_alive(turn['pid'])):
                 remove(path)
             else:
@@ -747,23 +946,48 @@ class Pool:
                     leases = vm.leases(now)
                     fits = vm.fits(leases, kind)
                     operation = vm.read_power_operation()
-                    stopping = (operation is not None and operation['sandbox_id'] == vm.id
-                                and self.stop_pending(operation))
+                    if operation and operation['sandbox_id'] != vm.id:
+                        operation = None
+                    resuming = resume_deadline(operation) is not None
                     stopped = vm.last_power_event() == 'apagada'
-                    order[vm.name] = (not fits, stopping or stopped, vm.used_places(leases) / vm.places)
+                    stopping = self.stop_pending(operation)
+                    order[vm.name] = (not fits, (stopped or stopping) and not resuming, resuming,
+                                      vm.used_places(leases) / vm.places)
             except (JournalError, OSError, KeyError, TypeError, ValueError, OverflowError):
                 continue
-        return sorted(candidates, key=lambda vm: order.get(vm.name, (True, True, math.inf)))
+        return sorted(candidates, key=lambda vm: order.get(vm.name, (True, True, True, math.inf)))
 
-    def claim(self, candidates, turn, path, locks):
+    def registered_resume_deadline(self, vm):
+        try:
+            operation = vm.read_power_operation()
+            if operation and operation['sandbox_id'] == vm.id:
+                return resume_deadline(operation)
+        except (OSError, KeyError, TypeError, ValueError, OverflowError):
+            pass  # La validación con el candado registra y avisa de las marcas ilegibles.
+        return None
+
+    def claim(self, candidates, turn, path, followed, reclaim_by, locks, blocked):
         contended = False
         eligible = False
+        locked_until = -math.inf
+        priority = PRIORITY[turn['prioridad']]
         with lock(self.state / 'espera.lock'):
             queue = self.turns()
             for vm in candidates:
                 if not locks.enter_context(lock(vm.path / 'lock', wait=False)):
                     locks.close()
                     contended = True
+                    until = self.registered_resume_deadline(vm)
+                    if until is not None:
+                        followed_until = followed.get(vm.id)
+                        if resume_replaced(followed_until, until):
+                            until = followed_until
+                        elif until > self.now():
+                            followed[vm.id] = until
+                        locked_until = max(locked_until, until + LOCK_WAIT)
+                    elif vm.id in followed:
+                        until = reclaim_by.setdefault(vm.id, self.now() + LOCK_WAIT)
+                        locked_until = max(locked_until, until)
                     continue
                 try:
                     identifier, prepared, apt = vm.registration(self.now())
@@ -784,20 +1008,58 @@ class Pool:
                 if not vm.accepts(turn):
                     locks.close()
                     continue
-                eligible = True
                 try:
                     leases = vm.leases(self.now())
                 except JournalError:
+                    eligible = True
                     locks.close()
                     continue
-                first = next((item for item in queue if vm.accepts(item) and (
-                    item['clase'] == 'preparar' or vm.fits(leases, item['clase'])
-                )), None)
-                if first is not None and first['turno'] == turn['turno'] and vm.fits(leases, turn['clase']):
-                    remove(path)
-                    return vm, leases, contended, eligible
+                accepting = [item for item in queue
+                             if PRIORITY[item['prioridad']] <= priority and vm.accepts(item)
+                             and (item['clase'] == 'preparar' or vm.fits(leases, item['clase']))]
+                fits = vm.fits(leases, turn['clase'])
+                other_classes = {item['clase'] for item in accepting if item['prioridad'] != 'tren'}
+                if other_classes:
+                    pending, capacity = self.reservation_loads(turn['repo'], self.now())
+                    refused = {kind for kind in other_classes if not fits_reservations(vm, kind, pending, capacity)}
+                    if turn['prioridad'] != 'tren' and fits and turn['clase'] in refused:
+                        blocked.add(vm.name)
+                    accepting = [item for item in accepting if item['prioridad'] == 'tren'
+                                 or item['clase'] not in refused]
+                first = accepting[0] if accepting else None
+                # Un turno que sigue otra VM conserva su lugar para conceder cuando esté lista.
+                starter = next((item for item in accepting if item.get('reanudando') in (None, vm.name)), None)
+                can_grant = fits and first is not None and first['turno'] == turn['turno']
+                can_resume = fits and starter is not None and starter['turno'] == turn['turno']
+                if (can_grant or can_resume or vm.id in followed
+                        or self.registered_resume_deadline(vm) is not None):
+                    if can_resume and not turn.get('reanudando'):
+                        # El turno sigue vivo mientras se comprueba si hace falta el primer POST.
+                        turn['comprobando_hasta'] = stamp(self.now() + RESUME_TIMEOUT)
+                        atomic_json(path, turn)
+                    return vm, leases, can_grant, can_resume, contended, eligible, locked_until
+                eligible = True
                 locks.close()
-        return None, [], contended, eligible
+        return None, [], False, False, contended, eligible, locked_until
+
+    def ask_resume(self, vm, state, pending, waits, *, send, requested_at, deadline, before_resume):
+        if resume_deadline(pending) is None and state in STARTING | STOPPING:
+            # Boat también puede iniciar una transición sin una marca local.
+            timeout = RESUME_TIMEOUT if state in STARTING else POWER_TIMEOUT
+            until = waits.setdefault((vm.id, timeout), self.now() + timeout)
+            if self.now() >= until:
+                raise BoatError(POWER_UNCONFIRMED)
+            return until
+        return self.resume_step(vm, state, pending, send=send, requested_at=requested_at, deadline=deadline,
+                                before_resume=before_resume)
+
+    def extend_turn(self, turn, path, expiry, resuming):
+        current = epoch(turn['vence'])
+        if expiry > current or resuming != turn.get('reanudando') or 'comprobando_hasta' in turn:
+            with lock(self.state / 'espera.lock'):
+                turn.pop('comprobando_hasta', None)
+                turn.update(vence=stamp(max(current, expiry)), reanudando=resuming)
+                atomic_json(path, turn)
 
     def ask(self, args):
         if args.vm in self.vms and self.vms[args.vm].repo != args.repo:
@@ -805,56 +1067,143 @@ class Pool:
         turn = {'turno': uuid4().hex, 'repo': args.repo, 'corrida': args.corrida,
                 'clase': args.clase, 'vm': args.vm, 'prioridad': args.prioridad,
                 'orden': time.time_ns(), 'host': self.host, 'pid': os.getpid(), 'descartadas': []}
+        if args.candidatas is not None:
+            for name in args.candidatas:
+                if name not in self.vms:
+                    raise InvalidUse(f'VM fuera del pool: {name}')
+                if self.vms[name].repo != args.repo:
+                    raise InvalidUse(f'la VM pertenece a otro repositorio: {name}')
+            turn['candidatas'] = args.candidatas
         candidates = [vm for vm in self.candidates(repo=args.repo, name=args.vm) if vm.accepts(turn)]
         if not candidates:
             raise Unavailable('sin_vm', 'sin VM apta o registrada')
         path = private_dir(self.state / 'espera') / (turn['turno'] + '.json')
         with lock(self.state / 'espera.lock'):
             started = time.monotonic()
-            now = self.now()
-            turn.update(desde=stamp(now), vence=stamp(now + args.esperar + LOCK_WAIT))
+            requested_at = self.now()
+            turn.update(desde=stamp(requested_at), vence=stamp(requested_at + args.esperar + LOCK_WAIT))
             atomic_json(path, turn)
         deadline = started + args.esperar
         last_error = None
         rechecked = False
+        waits = {}
+        followed = {}
+        ready_by = {}
+        reclaim_by = {}
+        blocked = set()
+        reservation_delayed = False
         try:
             while candidates:
-                ordered = self.ask_order(candidates, turn['clase'])
-                with ExitStack() as locks:
-                    vm, leases, contended, eligible = self.claim(ordered, turn, path, locks)
-                    if vm is not None:
+                blocked.clear()
+                ordered = iter(self.ask_order(candidates, turn['clase']))
+                contended = eligible = False
+                resume_until = turn_until = -math.inf
+                wait_before_resume = -math.inf
+                waiting_to_restart = False
+                adopted = None
+                while True:
+                    error = None
+                    with ExitStack() as locks:
+                        vm, leases, can_grant, can_resume, busy, accepted, locked_until = self.claim(
+                            ordered, turn, path, followed, reclaim_by, locks, blocked)
+                        contended |= busy
+                        eligible |= accepted
+                        resume_until = max(resume_until, locked_until)
+                        turn_until = max(turn_until, locked_until)
+                        if vm is None:
+                            break
+                        resuming = turn.get('reanudando')
                         try:
                             self.check_identity(vm)
                             info = self.sandbox_info(vm)
                             state = self.observe(vm, info)
-                            if leases and state not in READY:
-                                raise BoatError('VM con arriendos vivos fuera de servicio')
-                            info = self.start(vm, state, info)
-                        except JournalError as error:
-                            self.reject(str(error), nombre=vm.name, repo=args.repo, corrida=args.corrida)
-                            last_error = error
-                        except (Unavailable, BoatError) as error:
-                            self.reject(str(error), vm, repo=args.repo, corrida=args.corrida)
-                            last_error = error
+                            pending = self.power_operation(vm)
+                            pending_until = resume_deadline(pending)
+                            if resume_replaced(followed.get(vm.id), pending_until):
+                                raise BoatError(POWER_UNCONFIRMED)
+                            if can_grant or (can_resume and state not in READY):
+                                if leases and state not in READY:
+                                    raise BoatError('VM con arriendos vivos fuera de servicio')
+                                self.check_start_credentials(vm, state, info, pending, wait=False)
+                            if state in READY:
+                                if (not can_grant and vm.name not in blocked
+                                        and (pending_until is not None or vm.id in followed)
+                                        and vm.fits(leases, turn['clase'])):
+                                    # El primero de la fila también tiene que observar READY.
+                                    until = ready_by.setdefault(vm.id, self.now() + LOCK_WAIT)
+                                    resume_until = max(resume_until, until)
+                                    turn_until = max(turn_until, until)
+                                    wait_before_resume = max(wait_before_resume, until)
+                                if resuming == vm.name:
+                                    resuming = None
+                            else:
+                                ready_by.pop(vm.id, None)
+                                send = can_resume and (self.now() >= wait_before_resume or pending_until is not None)
+                                until = self.ask_resume(
+                                    vm, state, pending, waits, send=send, requested_at=requested_at, deadline=deadline,
+                                    before_resume=lambda expiry: self.extend_turn(
+                                        turn, path, expiry + LOCK_WAIT, vm.name),
+                                )
+                                if until is not None:
+                                    if state in STARTING | STOPPED:
+                                        if pending_until is not None or state in STOPPED:
+                                            followed[vm.id] = until
+                                        else:
+                                            followed.setdefault(vm.id, None)
+                                        if can_resume:
+                                            resuming = vm.name
+                                        elif adopted is None:
+                                            # Primero busca una VM que este turno pueda arrancar.
+                                            adopted = vm.name
+                                    else:
+                                        wait_before_resume = max(wait_before_resume, until)
+                                    resume_until = max(resume_until, until)
+                                    turn_until = max(turn_until, until + LOCK_WAIT)
+                                else:
+                                    waiting_to_restart |= pending_until is not None
+                                    if resuming == vm.name:
+                                        resuming = None
+                        except JournalError as rejected:
+                            self.reject(str(rejected), nombre=vm.name, repo=args.repo, corrida=args.corrida)
+                            error = rejected
+                        except (Unavailable, BoatError) as rejected:
+                            self.reject(str(rejected), vm, repo=args.repo, corrida=args.corrida)
+                            error = rejected
                         else:
-                            if vm.idle is not None:
-                                self.try_renew_vm(vm, info)
-                            now = self.now()
-                            lease = {'arriendo': uuid4().hex, 'repo': args.repo, 'corrida': args.corrida,
-                                     'host': self.host, 'pid': os.getpid(), 'clase': args.clase,
-                                     'desde': stamp(now), 'latido': stamp(now),
-                                     'vence': stamp(now + args.ttl)}
-                            vm.change_lease('concedido', now, lease)
-                            return {'arriendo': lease['arriendo'], 'vm': vm.name,
-                                    'id': vm.id, 'vence': lease['vence']}
-                if vm is not None:
-                    turn['descartadas'].append(vm.name)
-                    rechecked = False
-                    candidates.remove(vm)
-                    if candidates:
+                            eligible = True
+                            if can_grant and state in READY:
+                                if vm.idle is not None:
+                                    self.try_renew_vm(vm, info)
+                                # Otra VM pudo conceder durante la consulta a Boat.
+                                # Quien toma espera.lock primero nunca espera el candado de una VM.
+                                with lock(self.state / 'espera.lock'):
+                                    now = self.now()
+                                    pending, capacity = (self.reservation_loads(args.repo, now)
+                                                         if args.prioridad != 'tren' else ([], []))
+                                    if fits_reservations(vm, args.clase, pending, capacity):
+                                        grant = self.grant(vm, args, now)
+                                        remove(path)
+                                        return grant
+                                    blocked.add(vm.name)
+                    if error is not None:
+                        last_error = error
+                        blocked.discard(vm.name)
+                        turn['descartadas'].append(vm.name)
+                        rechecked = False
+                        candidates.remove(vm)
                         with lock(self.state / 'espera.lock'):
+                            turn.pop('comprobando_hasta', None)
+                            if turn.get('reanudando') == vm.name:
+                                turn.pop('reanudando')
                             atomic_json(path, turn)
-                    continue
+                    else:
+                        self.extend_turn(turn, path, turn_until, resuming)
+                # Una candidata ocupada aún podría dar a este turno su propio arranque.
+                resuming = turn.get('reanudando') or (adopted if not contended else None)
+                self.extend_turn(turn, path, turn_until, resuming)
+                reservation_delayed |= bool(blocked)
+                if not candidates:
+                    break
                 if not (contended or eligible or rechecked):
                     candidates = [vm for vm in self.candidates(repo=args.repo, name=args.vm)
                                   if vm.accepts(turn)]
@@ -863,17 +1212,29 @@ class Pool:
                     rechecked = True
                     continue
                 attempt_until = started + LOCK_WAIT if contended and args.esperar == 0 else deadline
-                remaining = attempt_until - time.monotonic()
+                resume_remaining = resume_until - self.now()
+                remaining = max(attempt_until - time.monotonic(), resume_remaining)
                 if remaining <= 0:
                     break
-                self.sleep(min(0.25, remaining))
+                self.sleep(min(1 if resume_remaining > 0 or waiting_to_restart else 0.25, remaining))
                 rechecked = False
+            # Sin candidatas, el último error explica la salida. Al vencer la espera, la reserva que frenó al turno.
+            if candidates and reservation_delayed:
+                raise Unavailable('sin_lugar', 'sin lugar al vencer la espera (una reserva del tren frenó el turno)')
             if last_error is not None:
                 raise last_error
             raise Unavailable('sin_lugar', 'sin lugar al vencer la espera')
         finally:
             with lock(self.state / 'espera.lock'):
                 remove(path)
+
+    def grant(self, vm, args, now):
+        lease = {'arriendo': uuid4().hex, 'repo': args.repo, 'corrida': args.corrida,
+                 'host': self.host, 'pid': os.getpid(), 'clase': args.clase,
+                 'prioridad': args.prioridad,
+                 'desde': stamp(now), 'latido': stamp(now), 'vence': stamp(now + args.ttl)}
+        vm.change_lease('concedido', now, lease)
+        return {'arriendo': lease['arriendo'], 'vm': vm.name, 'id': vm.id, 'vence': lease['vence']}
 
     def lease_command(self, token, ttl=None):
         if not TOKEN.fullmatch(token):
@@ -891,22 +1252,24 @@ class Pool:
                     lease = read_json(path)
                 except FileNotFoundError:
                     continue
-                now = self.now()
                 expiry = epoch(lease['vence'])
-                if expiry <= now:
-                    vm.change_lease('vencido', expiry, lease)
-                    return 0 if ttl is None else 69
-                if ttl is None:
-                    vm.change_lease('soltado', now, lease)
-                else:
+                if ttl is not None and expiry > self.now():
                     try:
                         self.power_operation(vm)
                     except BoatError:
                         return 69
-                    lease.update(latido=stamp(now), vence=stamp(now + ttl))
-                    atomic_json(path, lease)
-                    if vm.idle is not None:
-                        self.try_renew_vm(vm)
+                with lock(self.state / 'espera.lock'):
+                    now = self.now()
+                    if expiry <= now:
+                        vm.change_lease('vencido', expiry, lease)
+                        return 0 if ttl is None else 69
+                    if ttl is None:
+                        vm.change_lease('soltado', now, lease)
+                    else:
+                        lease.update(latido=stamp(now), vence=stamp(now + ttl))
+                        atomic_json(path, lease)
+                if ttl is not None and vm.idle is not None:
+                    self.try_renew_vm(vm)
                 return 0
         return 0 if ttl is None else 69
 
@@ -962,7 +1325,9 @@ class Pool:
         except BoatError:
             gates = {name: {'valor': None, 'minimo': minimum, 'abierta': False}
                      for name, minimum in self.thresholds.items()}
-        return {'vms': rows, 'puertas': gates}
+        with lock(self.state / 'espera.lock'):
+            reservations = [self.reservation_data(item) for item in self.reservations(self.now())]
+        return {'vms': rows, 'puertas': gates, 'reservas': reservations}
 
     def cache_auto_stop(self, vm, info):
         path = vm.path / 'auto-stop.json'
@@ -1073,6 +1438,8 @@ class Pool:
         with lock(self.state / 'vigilar.lock', wait=False) as acquired:
             if not acquired:
                 return
+            with lock(self.state / 'espera.lock'):
+                self.reservations(self.now())
             notices = {}
             for vm in candidates:
                 try:
@@ -1416,6 +1783,13 @@ def ttl(value):
     return seconds(value, minimum=300, maximum=3600)
 
 
+def deadline(value):
+    try:
+        return number(float(value))
+    except ValueError:
+        raise argparse.ArgumentTypeError('usa un instante Unix en segundos') from None
+
+
 def wait_seconds(value):
     return seconds(value, minimum=0, maximum=7200)
 
@@ -1438,12 +1812,22 @@ def parser():
         cmd.add_argument('--' + field, required=True)
     cmd.add_argument('--prioridad', choices=PRIORITY)
     cmd.add_argument('--vm')
+    cmd.add_argument('--candidatas')
     cmd.add_argument('--esperar', type=wait_seconds, default=0)
     cmd.add_argument('--ttl', type=ttl, default=900)
     cmd = commands.add_parser('latido')
     cmd.add_argument('arriendo')
     cmd.add_argument('--ttl', type=ttl, default=900)
     commands.add_parser('soltar').add_argument('arriendo')
+    for name in ('reservar', 'liberar-reserva'):
+        cmd = commands.add_parser(name)
+        cmd.add_argument('--repo', required=True)
+        cmd.add_argument('--lote', required=True)
+        if name == 'reservar':
+            cmd.add_argument('--clases', required=True)
+            expiration = cmd.add_mutually_exclusive_group(required=True)
+            expiration.add_argument('--ttl', type=ttl)
+            expiration.add_argument('--vence', type=deadline, metavar='EPOCH')
     commands.add_parser('estado').add_argument('--json', action='store_true')
     for name in ('encender', 'apagar'):
         cmd = commands.add_parser(name)
@@ -1464,7 +1848,18 @@ def main(argv=None, **pool_options):
             preparing = args.clase == 'preparar'
             if preparing != (args.vm is not None) or (args.prioridad == 'preparar' and not preparing):
                 raise InvalidUse('--vm y la prioridad preparar corresponden a la clase preparar')
+            if args.candidatas is not None:
+                if preparing:
+                    raise InvalidUse('--candidatas no se admite con la clase preparar')
+                args.candidatas = [label(name) for name in args.candidatas.split(',')]
             args.prioridad = 'preparar' if preparing else (args.prioridad or 'otra')
+        elif args.command in ('reservar', 'liberar-reserva'):
+            label(args.repo)
+            label(args.lote)
+            if args.command == 'reservar':
+                args.clases = [label(kind) for kind in args.clases.split(',')]
+                if 'preparar' in args.clases or len(set(args.clases)) != len(args.clases):
+                    raise InvalidUse('--clases no admite preparar ni clases repetidas')
         config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'boat-pool' / 'pool.json'
         state = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'boat-pool'
         try:
@@ -1490,6 +1885,10 @@ def main(argv=None, **pool_options):
             return pool.lease_command(args.arriendo, args.ttl)
         elif args.command == 'soltar':
             return pool.lease_command(args.arriendo)
+        elif args.command == 'reservar':
+            pool.reservation_command(args.repo, args.lote, args.clases, args.ttl, until=args.vence)
+        elif args.command == 'liberar-reserva':
+            pool.reservation_command(args.repo, args.lote)
         elif args.command in ('encender', 'apagar'):
             return pool.power_command(args)
         elif args.command == 'estado':
@@ -1504,6 +1903,9 @@ def main(argv=None, **pool_options):
                         print('\t' + '\t'.join(str(lease.get(field, '')) for field in fields))
                 for name, gate in status['puertas'].items():
                     print(f"{name}\t{'abierta' if gate['abierta'] else 'cerrada'}")
+                for item in status['reservas']:
+                    classes = ','.join(item['clases'])
+                    print(f"reserva\t{item['repo']}\t{item['lote']}\t{classes}\t{item['vence']}")
         elif args.command == 'vigilar':
             pool.watch()
         else:

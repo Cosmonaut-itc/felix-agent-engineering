@@ -173,6 +173,17 @@ La historia anterior a `desde` también cuenta para formar los lotes. El
 informe muestra los miembros de la cohorte `[desde, hasta)` y sólo usa
 observaciones anteriores a `hasta`.
 
+### Latencia de espera
+
+`pao-tren latencia --repo owner/project --desde 2026-11-01T00:00:00Z [--hasta ISO] [--prs archivo.json]`
+lee el ledger en modo de sólo lectura. Informa horas-PR y horas de carril
+por causa, horas de la primera entrega al merge por PR (`tren`, `sesion`
+y `otras`), media, p50 y p90 de `tren`, y minutos de las pausas de juicio
+e infraestructura levantadas en la ventana. La ventana incluye `--desde`
+y excluye `--hasta`, que por defecto es el instante de la consulta. Con
+`--prs` toma los merges de la salida de `gh pr list --state merged --json number,mergedAt,state`.
+Sin el archivo, toma los aterrizajes registrados por el tren.
+
 ### Duración por fase
 
 ```sh
@@ -306,8 +317,23 @@ La cadena termina también en dos casos:
 
 ### Instalar una versión nueva
 
-Todos los carriles corren el mismo programa instalado. Instala con el candado
-del programa tomado:
+Todos los carriles corren el mismo programa instalado. Si el tren usa Boat,
+actualiza el checkout y copia el pool nuevo bajo el mismo candado del
+programa. Antes de ejecutar el comando, asigna a `checkout` la ruta
+absoluta del checkout instalado y a `sha` el SHA ya descargado.
+
+```sh
+pao-tren candado -- sh -c '
+  git -C "$1" merge --ff-only "$2" &&
+  "$1/fleet/boat-pool/install.sh"
+' sh "$checkout" "$sha"
+```
+
+El tren está enlazado al checkout. Al completar la instalación, el pool
+nuevo está disponible para el siguiente tick. El instalador recarga
+`vigilar`, que funciona con sus propios candados.
+
+En una instalación del tren sin Boat, usa el comando de avance del checkout.
 
 ```sh
 pao-tren candado -- git -C <checkout instalado> merge --ff-only <sha>
@@ -342,8 +368,9 @@ arranque, porque prueba el candado en cuanto termina de cargar.
 
 Cuándo sale 75:
 
-- Con un tren en `EsperandoCI`, el proceso del tick activo vive hasta 100 s
-  de cada 120. Reintenta cada pocos segundos hasta caer en el hueco:
+- Con un tren en `EsperandoCI`, el tick sondea el CI hasta 100 s desde el
+  arranque. Si cierra el lote, espera sus candados hasta el segundo 110
+  como máximo. Reintenta cada pocos segundos hasta caer en el hueco:
   `until pao-tren candado -- <comando>; [ $? -ne 75 ]; do sleep 2; done`.
 - El tick que espera una suite retiene el candado todo ese tiempo, que en
   Jale ronda los 90 minutos. `candado` no espera ni interrumpe ese tick. Si
@@ -441,7 +468,11 @@ siguiente el lote se congela sobre main. Como en `EsperandoCI`, conservan su
 fecha FIFO aunque un check vuelva a pendiente, hasta entrar al lote siguiente. En `EsperandoCI` sólo se rearma
 mientras el efecto `iniciar-suite` del tren siga `pendiente` en la outbox.
 Desde que deja de estarlo, puede haber coordinadores vivos aunque la fase
-no haya cambiado, y el tren sigue por la suite y la promoción, que pausa
+no haya cambiado. Un efecto `fallido` cuenta como iniciado sólo si el adaptador
+lee de disco que un coordinador pudo arrancar (`iniciado.json`, `codigo.json` o
+el candado tomado, sin red); si falló antes de lanzar, como cuando `disponer`
+no transfiere C, el tren se rearma. Sin esa consulta, como en Hasito, un `fallido`
+sigue contando. Cuando cuenta, el tren sigue por la suite y la promoción, que pausa
 `escritor-externo`. Un tren en `Corriendo` o `Diagnosticando` tampoco se
 rearma por este camino. La misma regla rige al ejecutar la outbox: al
 recuperar tras una muerte, al levantar una pausa o al resolver un juicio,
@@ -459,8 +490,9 @@ REMOTE_RUN_HOST=desk remote-run start --carril rapido --sha <HEAD40> \
 REMOTE_RUN_HOST=desk remote-run wait <id>
 ```
 
-El guion prueba cada intérprete disponible de los tres solicitados. Las
-fixtures se conservan deliberadamente: el código nuevo no borra archivos.
+El guion prueba cada intérprete disponible de los tres solicitados. Cada
+prueba borra sus fixtures al terminar y el guion borra su directorio aislado al
+salir.
 
 ## Suite y atribución (U4)
 
@@ -667,9 +699,13 @@ contiene IDs de lote/entrega, SHAs y números de PR, motivos de un enum y texto
 fijo; no se transportan otros campos del diagnóstico ni del config privado.
 En Hasito se publica la plantilla `bash scripts/mini/run.sh --repetir <resultado.json>
 --sha <SHA-causal> --worktree <worktree-en-SHA> --veces 2 --unidad check=unidad`.
+En caja se publica la misma plantilla sobre `bash scripts/tren/lanzador`, con
+`--evidencia <evidencia> --nombre <nombre>` al final, porque su lanzador los exige.
 En Jale se publica `bash scripts/test-hosts/run-remote.sh <host> <log>
-<modo> <SHA-causal> <unidad>`. El dueño sustituye las rutas de resultado,
-worktree o log por las de su entorno. En ambos casos se usa el SHA de la
+<modo> <SHA-causal> <unidad>`. Con host `boat` el comando empieza con
+`SEN_RUN_OWNER=<agente>`, porque Boat sólo admite corridas con un dueño válido.
+El dueño sustituye las rutas de resultado, worktree o log, y el agente, por los
+de su entorno. En ambos casos se usa el SHA de la
 reproducción observada o el SHA de la evidencia si ésta carece de comando.
 Una devolución por juicio usa el SHA del candidato. El payload durable
 original permanece en el ledger.
@@ -1357,6 +1393,26 @@ reanudación del mismo tren sin saltar la barrera, y aborto tras recuperar una
 lectura incierta del CAS sin perder el éxito. La suite comprueba además el
 aborto que espera acreditación y C contenido en un main posterior.
 
+## Adaptador de caja
+
+La configuración privada por repo admite `"adaptador": "caja"` con
+`"lanzador"`, la ruta absoluta a `scripts/tren/lanzador` del checkout de caja.
+Ese lanzador habla el contrato de Hasito: recibe los mismos argumentos y
+escribe recibos `suite-resultado@1` y `suite-repeticion@1`. Por eso PAO usa la
+clase `Hasito`. Cambian dos cosas. El estado vive en
+`$XDG_STATE_HOME/pao-tren/caja`. El comando de reproducción que publica cada
+devolución nombra `scripts/tren/lanzador`. Caja ignora `lanzador_hasito`, así
+que sin `lanzador` la selección falla. Esta selección no inscribe ni activa el
+repositorio.
+
+```json
+{
+  "remoto": "https://github.com/owner/caja.git",
+  "adaptador": "caja",
+  "lanzador": "/path/to/caja/scripts/tren/lanzador"
+}
+```
+
 ## Adaptador de Jale (U9)
 
 La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
@@ -1369,6 +1425,26 @@ inscribe ni activa repositorios.
 `"host": {"contract": "auto", "e2e": "boat"}`. Los valores aceptados son
 `auto`, `mini`, `desktop` y `boat`. El mapa debe incluir todos los modos
 configurados y sólo puede tener claves `contract` y `e2e`.
+Tras confirmar el estado del tick activo y antes de drenar sus efectos,
+`"boat_pool"` (por omisión `~/.local/bin/boat-pool`) reserva por 30 min los
+modos Boat del lote vivo. Al observar el cierre de un lote, el tren fija su
+vencimiento de relevo a 300 s, intenta guardarlo y pide el recorte con
+`reservar --vence` aunque falle el registro. Cada tick reintenta los recortes
+vigentes. Boat conserva el menor vencimiento aplicado y deja de contar la
+reserva al alcanzarlo. Si el tren muere después de guardar el cierre y antes
+de guardar el vencimiento y llamar a Boat, el primer tick que recupere el
+cierre fija los 300 s desde ese tick. Si se recupera en el tick siguiente,
+el relevo se desplaza una cadencia.
+
+El tren renueva al vivo aunque falle un recorte. Tras confirmar la reserva
+del vivo, o en pausa, el tick intenta liberar los terminales del relevo. En
+pausa también libera la reserva del vivo, incluida una pausa guardada al
+drenar. Cuando pasa el vencimiento de un relevo, el tren pide liberar su
+reserva hasta confirmarlo o hasta 1800 s después de ese vencimiento. Si
+Boat sigue caído, la reserva larga vence por su TTL de 1800 s desde la
+última renovación. Para actualizar ambos programas, sigue
+[Instalar una versión nueva](#instalar-una-versión-nueva).
+
 `"boat_esperar_s": 180` fija cuánto espera Boat un lugar con prioridad
 `tren` antes de enviar al desk en la misma invocación. Acepta enteros entre
 0 y 7200 y vale 180 por omisión. Las repeticiones filtradas usan el host de
@@ -1415,7 +1491,14 @@ que la reconciliación previa acreditó como base del CAS. Si falta el objeto,
 el tren lo trae a su almacén bare y lo transfiere desde ahí al repositorio del
 operador, bajo `refs/pao-tren/operador/<SHA>`. La elección del SHA y la
 transferencia local son independientes de los remotos del checkout del
-operador. Jale conserva la comprobación de `origin/main` de su lanzador. Si
+operador. Antes de cada lanzamiento de Jale, el tren transfiere de la misma
+forma el commit que se prueba, como el C recién armado en su clon. El export
+de Boat lee ese commit del repositorio del snapshot y, sin él, cae al desk con
+`export-ValueError`. Si la transferencia falla, el tren pausa en
+`checkout-operador:sha-no-disponible` sin lanzar. Al prelanzar, sólo registra
+el aviso, como cualquier fallo del snapshot. La pausa sólo llega si la
+transferencia vuelve a fallar y el lote llega a `iniciar-suite`.
+Jale conserva la comprobación de `origin/main` de su lanzador. Si
 entra un cambio del lanzador tras fijar el SHA, el 64 pausa la vía en
 `lanzador-rechazo` y el nuevo intento toma otra lectura de `main`.
 
@@ -1483,16 +1566,37 @@ una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza, salvo
 que main haya dejado atrás la B del lote, que entonces se rearma.
 
 Si falla el prelanzamiento, `prelanzamiento-fallido` registra el tren y
-el error, y la solicitud de CI se completa. Si el CI sale rojo, un juicio
-aborta el tren o main deja atrás su B antes de confirmar la corrida, `suite-prelanzada-sin-leer`
-registra el modo, la clave de la corrida (si llegó a escribirse) y si ya
-terminó. Cada corrida sigue en el host hasta terminar y su resultado queda
-sin consumir.
-SEN-7331 añadirá la cancelación.
+el error, y la solicitud de CI se completa. Cuando el tren pasa a
+`Terminal`, el tick pide cancelar sus suites y repeticiones adelantadas sin
+confirmar. Cada coordinador lee la solicitud durable bajo el candado de su
+corrida, manda TERM al lanzador que creó y conserva el candado hasta que
+éste sale. La corrida pedida para cancelación queda fuera de los reintentos
+y su salida queda sin consumir. El evento `suite-prelanzada-sin-leer`
+registra en el mismo paso el modo, la clave (si llegó a escribirse), si ya
+había terminado, si se pidió cancelar y si el candado se liberó dentro del
+plazo. `cancelacion_confirmada` indica que el lanzador salió y soltó el
+candado. La liberación del recurso en el host depende del lanzador. Los
+errores de cancelación se registran en ese aviso.
 
-Las reproducciones adelantadas también quedan en el host hasta terminar
-si el tren se pausa o termina. El reductor sólo consume su salida si llega
-a pedirlas y el efecto las confirma con los miembros admitidos.
+El tick espera hasta 30 s en total por los candados, con tope en el
+segundo 110 desde el arranque. Si ya alcanzó el tope, pide la cancelación
+y comprueba los candados sin dormir. Si quedan ocupados, el siguiente
+lote puede publicar el CI y conserva en disco el prelanzamiento aplazado.
+El primer tick elegible lo ejecuta cuando los candados se liberan y el
+lote sigue esperando CI con sus miembros admitidos.
+Una pausa por sí sola conserva las repeticiones adelantadas. El reductor
+sólo consume su salida cuando pide la repetición y el efecto la confirma
+con los miembros admitidos.
+
+Boat atrapa TERM, pide la cancelación de la corrida despachada y al salir
+llama a `pool.soltar`. Si el pool no confirma la liberación, el arriendo
+vence por su TTL. En `desktop`, TERM pide cancelar la tarea identificada
+de Pueue. Si Boat ya cayó a `desktop`, la corrida sigue en el desk
+(SEN-7715). `auto` hereda el comportamiento del host que elige. El
+lanzador de `mini` usa transporte SSH directo y carece de cancelación en
+el host. Los coordinadores de la versión anterior no leen `cancelar.json`.
+Antes de instalar, espera a que salgan las prelanzadas vivas o cancélalas
+a mano.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
@@ -1543,4 +1647,6 @@ como error de infraestructura.
 
 La regresión U9 y toda la suite del tren, dividida exhaustivamente entre dos
 procesos aislados para el carril rápido, se verifican en el host de pruebas con
-`bash fleet/tren/tests/remoto-u9.sh --completa`. El guion conserva la evidencia.
+`bash fleet/tren/tests/remoto-u9.sh --completa`. El guion imprime los logs de
+los dos procesos y borra sus fixtures al salir; las rutas `EVIDENCIA` que
+imprime ya no existen cuando termina.
