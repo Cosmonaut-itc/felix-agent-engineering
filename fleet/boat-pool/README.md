@@ -18,6 +18,21 @@ El instalador copia el programa a `~/.local/lib/boat-pool`, lo enlaza en
 fleet/boat-pool/install.sh
 ```
 
+Si el tren usa Boat, actualiza ambos desde el checkout instalado bajo el
+candado del programa. Antes de ejecutar el comando, asigna a `checkout`
+la ruta absoluta del checkout y a `sha` el SHA ya descargado.
+
+```sh
+pao-tren candado -- sh -c '
+  git -C "$1" merge --ff-only "$2" &&
+  "$1/fleet/boat-pool/install.sh"
+' sh "$checkout" "$sha"
+```
+
+El instalador copia el pool y recarga `vigilar` bajo el candado. El tick
+siguiente ya puede usar el pool nuevo. Véase
+[Instalar una versión nueva](../tren/README.md#instalar-una-versión-nueva).
+
 El LaunchAgent ejecuta `vigilar` al cargar y cada cinco minutos. Cada VM
 puede indicar su propio `inactividad_min` o usar el valor global. Con
 `inactividad_min: null`, `vigilar` conserva la VM encendida.
@@ -26,6 +41,55 @@ interactivos también se admiten `XDG_STATE_HOME` y `XDG_CONFIG_HOME`.
 El LaunchAgent usa los valores del entorno de launchd.
 
 Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}`. Cada peso es un entero entre 1 y `lugares` y las clases sin peso declarado ocupan un lugar por arriendo.
+
+## Alineación automática de Jale
+
+`fleet/boat-pool/install-alinear-jale.sh` carga `local.pao.boat-alinear-jale`
+en la sesión gráfica y deja un ejemplo con `activo: false` si falta la
+configuración. Con la alineación activa, el agente consulta `origin/main`
+al cargar y cada cinco minutos, actualiza un worktree dedicado con HEAD
+separado e invoca `boat-pilot.py alinear`. Si el worktree está sucio, avisa
+y conserva los cambios.
+
+Cuando `alinear` ya esté en `main` de Jale, copia el ejemplo a
+`~/.config/boat-pool/alinear-jale.json` y cambia `activo` a `true` para
+permitir el uso de Boat. Puedes indicar `repo` si el clon vive fuera de
+`~/VSCODE/REPOS/SEN-CheckIn` y `worktree` para elegir otra ruta dedicada.
+El worktree predeterminado es `main/` dentro del directorio de estado
+`~/.local/state/boat-pool/alinear-jale/`. El agente usa `XDG_CONFIG_HOME` y
+`XDG_STATE_HOME` si están definidos en el entorno de launchd. Para apagar
+la alineación, pon `activo: false`. Surte efecto desde la siguiente pasada.
+
+Jale espera las corridas vigentes antes de preparar cada VM. Si falla una
+preparación, Jale la intenta hasta tres veces por revisión y después salta
+esa VM. El agente guarda el código de salida de `alinear` en `estado.json`.
+
+- **0** indica que las VMs quedaron alineadas o se saltaron sin un fallo
+  nuevo. El agente vacía el historial de avisos y omite `alinear` en las
+  siguientes pasadas para el mismo SHA.
+- **1** indica que falló alguna VM. El agente avisa con las líneas `fallo:`
+  y vuelve a invocar a Jale en la siguiente pasada, incluso con el mismo SHA.
+- **75** indica que la alineación quedó pendiente porque otro proceso
+  tiene el candado o está preparando una VM. El agente lo registra en el
+  log y vuelve a invocar a Jale en la siguiente pasada sin avisar.
+- Cualquier otro código, como el **143** de una interrupción, se avisa y
+  se reintenta en la siguiente pasada.
+
+La pasada de `alinear` tiene un plazo de cinco horas para las dos VMs en
+serie. Al vencer, el agente envía `SIGTERM` al grupo y le da 120 s de
+gracia. Jale ejecuta su limpieza al recibir `SIGTERM` o `SIGHUP`, suelta
+los arriendos y sale con 143. Si el comando sigue activo tras la gracia,
+el agente envía `SIGKILL`. El agente registra el plazo vencido como fallo
+y avisa aunque Jale alcance a salir durante la gracia.
+
+El directorio de estado guarda la salida de `alinear` en `alinear-*.log`.
+Si se repiten el código y la huella del resultado anterior, el agente
+reescribe `ultimo.log`. La huella incluye el SHA, la etapa, el código y
+la salida con las duraciones (`ms`, `s`, `min`) normalizadas, para ignorar variaciones de tiempo sin confundir causas como dos códigos HTTP.
+El agente avisa ante fallos de Git, plazos vencidos y códigos inesperados,
+y recuerda hasta las últimas 50 huellas avisadas. Los fallos de Git quedan
+en `estado.json`. Las pasadas sin invocación a `alinear` no generan archivos
+de log. El stderr del agente queda en `launchd.err.log`.
 
 ## Operación
 
@@ -85,7 +149,15 @@ Cada VM puede declarar `peso_clase` en `pool.json`, por ejemplo `{"contract": 2}
   Mientras viva la reserva, un turno ajeno al tren entra sólo si deja lugar
   para las clases pendientes. Los arriendos vivos del tren cubren sus clases.
   Si la reserva impide la concesión hasta vencer la espera, `pedir` devuelve `sin_lugar`.
-- `liberar-reserva --repo R --lote ID` quita la reserva al terminar el lote.
+- `reservar --repo R --lote ID --clases C1,C2 --vence EPOCH` usa un instante
+  Unix en segundos, limitado a 3600 s desde la aplicación. Para una reserva
+  del mismo repo y lote ya fijada con `--vence`, Boat conserva el menor
+  vencimiento. Si la reserva caduca o se libera, Boat descarta los reintentos
+  con `--vence` hasta 3600 s después del vencimiento guardado.
+  `--ttl` sigue renovando desde el reloj de Boat.
+  Un instante alcanzado libera la reserva del lote y devuelve 0. Usa sólo
+  una de las opciones `--vence` y `--ttl`.
+- `liberar-reserva --repo R --lote ID` quita la reserva del lote.
   Se puede repetir. Si el tren omite la liberación, la reserva vence sola.
 - `estado [--json]` muestra VMs, arriendos, lugares, puertas de arranque y reservas vivas.
 - `encender NOMBRE|--todas` y `apagar NOMBRE|--todas` actúan sobre VMs

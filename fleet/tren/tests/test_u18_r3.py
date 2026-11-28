@@ -138,12 +138,14 @@ class InvarianteTests(unittest.TestCase):
         # porque el ledger, los worktrees y la configuración guardan rutas
         # absolutas.
         plantilla = ContextoR3()
-        plantilla.setUp()
         self.addCleanup(plantilla.doCleanups)
+        plantilla.setUp()
         plantilla.preparar()
         plantilla.modo('seguir')
         raiz = plantilla.raiz
-        copia = Path(tempfile.mkdtemp(prefix='pao-tren-u18r3-plantilla-')) / 'raiz'
+        respaldo = Path(tempfile.mkdtemp(prefix='pao-tren-u18r3-plantilla-'))
+        self.addCleanup(shutil.rmtree, respaldo)
+        copia = respaldo / 'raiz'
         shutil.copytree(raiz, copia, symlinks=True)
         opciones = list(product((False, True), repeat=3))
         cantidad = 0
@@ -152,8 +154,7 @@ class InvarianteTests(unittest.TestCase):
         for n, (primero, segundo) in enumerate(product(opciones, repeat=2)):
             with self.subTest(primero=primero, segundo=segundo):
                 if n:
-                    # Conserva la raíz de la combinación anterior como evidencia.
-                    raiz.rename(raiz.with_name('{}-combinacion-{:02d}'.format(raiz.name, n - 1)))
+                    shutil.rmtree(raiz)
                     shutil.copytree(copia, raiz, symlinks=True)
                 c = plantilla.combinacion()
                 try:

@@ -1,4 +1,4 @@
-"""U7: instalación aislada, sin red ni launchctl real. Fixtures conservadas."""
+"""U7: instalación aislada, sin red ni launchctl real."""
 from contextlib import redirect_stdout
 import importlib.util
 import io
@@ -24,6 +24,7 @@ REPO = "example/project"
 class InstalacionTests(unittest.TestCase):
     def setUp(self):
         self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-u7-"))
+        self.addCleanup(shutil.rmtree, self.raiz)
         self.home = self.raiz / "home con espacios & acentos á"
         self.bin = self.home / ".local/bin"
         self.bin.mkdir(parents=True)

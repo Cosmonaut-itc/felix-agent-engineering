@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -eu
-# Injerto de regresiones en main previo a U18; sólo host remoto, sin retirar evidencia.
+# Sólo en el host de pruebas.
 tren_pruebas=$(mktemp -d "${TMPDIR:-/tmp}/pao-tren-u18.XXXXXX")
+trap 'rm -rf -- "$tren_pruebas"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export TMPDIR="$tren_pruebas/tmp"
+mkdir -p "$TMPDIR"
 tren_anterior="$tren_pruebas/anterior"
 mkdir -p "$tren_anterior"
 git archive a1d24ec11e1bf1f169910aa417d76432ff40a3c8 | tar -x -C "$tren_anterior"

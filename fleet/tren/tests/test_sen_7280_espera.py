@@ -5,6 +5,7 @@ import io
 import itertools
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -59,6 +60,7 @@ class Reloj:
 class EsperarCITests(unittest.TestCase):
     def setUp(self):
         raiz = tempfile.mkdtemp(prefix="pao-tren-espera-")
+        self.addCleanup(shutil.rmtree, raiz)
         entorno = patch.dict(os.environ, {"XDG_STATE_HOME": raiz})
         entorno.start()
         self.addCleanup(entorno.stop)
@@ -275,6 +277,7 @@ class EsperaSecaTests(unittest.TestCase):
     def test_seco_no_espera(self):
         salida = io.StringIO()
         raiz = tempfile.mkdtemp(prefix="pao-tren-espera-seca-")
+        self.addCleanup(shutil.rmtree, raiz)
         with patch("sys.argv", ["pao-tren", "tick", "--repo", REPO, "--seco"]), \
                 patch.dict(os.environ, {"XDG_STATE_HOME": raiz}), \
                 patch.object(cli, "intento", return_value=(0, {})), \

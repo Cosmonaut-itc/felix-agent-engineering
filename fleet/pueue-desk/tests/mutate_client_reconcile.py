@@ -24,7 +24,7 @@ CASES=[
   '                        and not self.client_blocked(g, opening=True)','',T+'test_dead_reorder_owner_never_opens_over_retained_client_reservation'),
  ('CAS generation','client_actions.py',
   "state['generation'] != item['state']['generation'] or generation != item['generation']",'False',T+'test_generation_revision_digest_and_reservation_cas'),
- ('CAS journal revision','client_actions.py',"or current['revision'] != old['revision']",'',T+'test_generation_revision_digest_and_reservation_cas'),
+ ('CAS journal revision','client_actions.py',"if (current['revision'] != old['revision']","if (False",T+'test_generation_revision_digest_and_reservation_cas'),
  ('CAS request digest','client_actions.py',"or current['digest'] != old['digest']",'',T+'test_generation_revision_digest_and_reservation_cas'),
  ('CAS reservation revision','client_actions.py',"or reservation['revision'] != before['revision']",'',T+'test_generation_revision_digest_and_reservation_cas'),
  ('CAS reservation digest','client_actions.py',"or reservation['digest'] != before['digest']",'',T+'test_generation_revision_digest_and_reservation_cas'),

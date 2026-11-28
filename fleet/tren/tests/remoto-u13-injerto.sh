@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -eu
-# Sólo lo invoca remoto.sh en el host de pruebas. Conserva todas las fixtures.
+# Sólo en el host de pruebas.
 tren_pruebas=$(mktemp -d "${TMPDIR:-/tmp}/pao-tren-u13-antes.XXXXXX")
+trap 'rm -rf -- "$tren_pruebas"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export TMPDIR="$tren_pruebas/tmp"
+mkdir -p "$TMPDIR"
 tren_anterior="$tren_pruebas/anterior"
 mkdir -p "$tren_anterior"
 git archive a8a826027ddcdafb85cc7c238b6047e65996315c | tar -x -C "$tren_anterior"

@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -27,6 +28,7 @@ def instalando():
 class CandadoTests(unittest.TestCase):
     def setUp(self):
         self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-candado-"))
+        self.addCleanup(shutil.rmtree, self.raiz)
         for parche in (patch.dict(os.environ, {"XDG_STATE_HOME": str(self.raiz)}),
                        patch.object(cli, "GRACIA_INSTALACION_S", 0)):
             parche.start()
@@ -83,6 +85,7 @@ class ProcesoTests(unittest.TestCase):
     """`main` con el candado real: lo que hace el proceso de un tick."""
     def setUp(self):
         self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-proceso-"))
+        self.addCleanup(shutil.rmtree, self.raiz)
         (self.raiz / "pao-tren").mkdir()
         entorno = patch.dict(os.environ, {"XDG_STATE_HOME": str(self.raiz)})
         entorno.start()

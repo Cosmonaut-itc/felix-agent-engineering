@@ -10,7 +10,7 @@ import shlex
 import subprocess
 
 from adaptadores.jale import HOSTS, MODOS
-from dominio import LANZADOR_JALE, Rechazado
+from dominio import LANZADOR_JALE, Rechazado, argv_repetir_publico
 from observador import sha
 
 
@@ -53,9 +53,8 @@ def comando_publico(fallo):
     commit = args[indice] if indice < len(args) else None
     if not sha(commit):
         raise ValueError("SHA de reproducción inválido")
-    return shlex.join(["bash", "scripts/mini/run.sh", "--repetir", "<resultado.json>",
-        "--sha", commit, "--worktree", "<worktree-en-" + commit + ">",
-        "--veces", "2", "--unidad", fallo["check"] + "=" + fallo["unidad"]])
+    return shlex.join(argv_repetir_publico(fallo.get("parte"), fallo["check"], fallo["unidad"],
+                                           commit, "<resultado.json>", "<worktree-en-" + commit + ">"))
 
 
 class EscritorGitHub:

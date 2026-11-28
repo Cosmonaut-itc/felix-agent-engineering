@@ -6,6 +6,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -99,6 +100,7 @@ class CuotaTests(unittest.TestCase):
 class ProgramaTests(unittest.TestCase):
     def setUp(self):
         self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-cadena-")).resolve()
+        self.addCleanup(shutil.rmtree, self.raiz)
         (self.raiz / "adaptadores").mkdir()
         (self.raiz / "tests").mkdir()
         for nombre in ("pao-tren", "dominio.py", "adaptadores/jale.py", "tests/test_x.py"):

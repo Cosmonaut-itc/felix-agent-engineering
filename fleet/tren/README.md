@@ -338,8 +338,23 @@ en `events`.
 
 ### Instalar una versión nueva
 
-Todos los carriles corren el mismo programa instalado. Instala con el candado
-del programa tomado:
+Todos los carriles corren el mismo programa instalado. Si el tren usa Boat,
+actualiza el checkout y copia el pool nuevo bajo el mismo candado del
+programa. Antes de ejecutar el comando, asigna a `checkout` la ruta
+absoluta del checkout instalado y a `sha` el SHA ya descargado.
+
+```sh
+pao-tren candado -- sh -c '
+  git -C "$1" merge --ff-only "$2" &&
+  "$1/fleet/boat-pool/install.sh"
+' sh "$checkout" "$sha"
+```
+
+El tren está enlazado al checkout. Al completar la instalación, el pool
+nuevo está disponible para el siguiente tick. El instalador recarga
+`vigilar`, que funciona con sus propios candados.
+
+En una instalación del tren sin Boat, usa el comando de avance del checkout.
 
 ```sh
 pao-tren candado -- git -C <checkout instalado> merge --ff-only <sha>
@@ -495,8 +510,9 @@ REMOTE_RUN_HOST=desk remote-run start --carril rapido --sha <HEAD40> \
 REMOTE_RUN_HOST=desk remote-run wait <id>
 ```
 
-El guion prueba cada intérprete disponible de los tres solicitados. Las
-fixtures se conservan deliberadamente: el código nuevo no borra archivos.
+El guion prueba cada intérprete disponible de los tres solicitados. Cada
+prueba borra sus fixtures al terminar y el guion borra su directorio aislado al
+salir.
 
 ## Suite y atribución (U4)
 
@@ -703,6 +719,8 @@ contiene IDs de lote/entrega, SHAs y números de PR, motivos de un enum y texto
 fijo; no se transportan otros campos del diagnóstico ni del config privado.
 En Hasito se publica la plantilla `bash scripts/mini/run.sh --repetir <resultado.json>
 --sha <SHA-causal> --worktree <worktree-en-SHA> --veces 2 --unidad check=unidad`.
+En caja se publica la misma plantilla sobre `bash scripts/tren/lanzador`, con
+`--evidencia <evidencia> --nombre <nombre>` al final, porque su lanzador los exige.
 En Jale se publica `bash scripts/test-hosts/run-remote.sh <host> <log>
 <modo> <SHA-causal> <unidad>`. Con host `boat` el comando empieza con
 `SEN_RUN_OWNER=<agente>`, porque Boat sólo admite corridas con un dueño válido.
@@ -1432,6 +1450,26 @@ reanudación del mismo tren sin saltar la barrera, y aborto tras recuperar una
 lectura incierta del CAS sin perder el éxito. La suite comprueba además el
 aborto que espera acreditación y C contenido en un main posterior.
 
+## Adaptador de caja
+
+La configuración privada por repo admite `"adaptador": "caja"` con
+`"lanzador"`, la ruta absoluta a `scripts/tren/lanzador` del checkout de caja.
+Ese lanzador habla el contrato de Hasito: recibe los mismos argumentos y
+escribe recibos `suite-resultado@1` y `suite-repeticion@1`. Por eso PAO usa la
+clase `Hasito`. Cambian dos cosas. El estado vive en
+`$XDG_STATE_HOME/pao-tren/caja`. El comando de reproducción que publica cada
+devolución nombra `scripts/tren/lanzador`. Caja ignora `lanzador_hasito`, así
+que sin `lanzador` la selección falla. Esta selección no inscribe ni activa el
+repositorio.
+
+```json
+{
+  "remoto": "https://github.com/owner/caja.git",
+  "adaptador": "caja",
+  "lanzador": "/path/to/caja/scripts/tren/lanzador"
+}
+```
+
 ## Adaptador de Jale (U9)
 
 La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
@@ -1446,8 +1484,24 @@ inscribe ni activa repositorios.
 configurados y sólo puede tener claves `contract` y `e2e`.
 Tras confirmar el estado del tick activo y antes de drenar sus efectos,
 `"boat_pool"` (por omisión `~/.local/bin/boat-pool`) reserva por 30 min los
-modos Boat del lote vivo y libera la reserva al cerrar el lote o pausar el
-carril. Si el drenado produce otra pausa, libera la reserva al guardarla.
+modos Boat del lote vivo. Al observar el cierre de un lote, el tren fija su
+vencimiento de relevo a 300 s, intenta guardarlo y pide el recorte con
+`reservar --vence` aunque falle el registro. Cada tick reintenta los recortes
+vigentes. Boat conserva el menor vencimiento aplicado y deja de contar la
+reserva al alcanzarlo. Si el tren muere después de guardar el cierre y antes
+de guardar el vencimiento y llamar a Boat, el primer tick que recupere el
+cierre fija los 300 s desde ese tick. Si se recupera en el tick siguiente,
+el relevo se desplaza una cadencia.
+
+El tren renueva al vivo aunque falle un recorte. Tras confirmar la reserva
+del vivo, o en pausa, el tick intenta liberar los terminales del relevo. En
+pausa también libera la reserva del vivo, incluida una pausa guardada al
+drenar. Cuando pasa el vencimiento de un relevo, el tren pide liberar su
+reserva hasta confirmarlo o hasta 1800 s después de ese vencimiento. Si
+Boat sigue caído, la reserva larga vence por su TTL de 1800 s desde la
+última renovación. Para actualizar ambos programas, sigue
+[Instalar una versión nueva](#instalar-una-versión-nueva).
+
 `"boat_esperar_s": 180` fija cuánto espera Boat un lugar con prioridad
 `tren` antes de enviar al desk en la misma invocación. Acepta enteros entre
 0 y 7200 y vale 180 por omisión. Las repeticiones filtradas usan el host de
@@ -1680,4 +1734,6 @@ como error de infraestructura.
 
 La regresión U9 y toda la suite del tren, dividida exhaustivamente entre dos
 procesos aislados para el carril rápido, se verifican en el host de pruebas con
-`bash fleet/tren/tests/remoto-u9.sh --completa`. El guion conserva la evidencia.
+`bash fleet/tren/tests/remoto-u9.sh --completa`. El guion imprime los logs de
+los dos procesos y borra sus fixtures al salir; las rutas `EVIDENCIA` que
+imprime ya no existen cuando termina.

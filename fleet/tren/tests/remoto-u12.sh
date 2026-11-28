@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -eu
-# Fixtures retenidas; nunca usar el HOME/config/estado del operador.
-tren_pruebas=$(mktemp -d)
+# Fixtures aisladas; nunca usar el HOME/config/estado del operador.
+tren_pruebas=$(mktemp -d "${TMPDIR:-/tmp}/pao-tren-u12.XXXXXX")
+trap 'rm -rf -- "$tren_pruebas"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export TMPDIR="$tren_pruebas/tmp"
+mkdir -p "$TMPDIR"
 export HOME="$tren_pruebas/home"
 export XDG_CONFIG_HOME="$tren_pruebas/config"
 export XDG_STATE_HOME="$tren_pruebas/state"

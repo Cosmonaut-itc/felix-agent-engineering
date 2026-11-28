@@ -793,6 +793,24 @@ class HasitoTests(Aislado):
         self.assertFalse(llegada.completo)
         self.assertEqual(self.runner.llamadas, [])
 
+    def test_caja_usa_el_contrato_de_hasito_con_estado_propio(self):
+        from adaptadores import seleccionar
+        lanzador = str(self.raiz / "run.sh")
+        caja = seleccionar({"adaptador": "caja", "lanzador": lanzador}, self.git)
+        hasito = seleccionar({"lanzador_hasito": lanzador}, self.git)
+        self.assertIsInstance(caja, Hasito)
+        self.assertEqual(caja.estado, (self.raiz / "state" / "pao-tren" / "caja").resolve())
+        caja.runner = self.runner
+        self.adaptador = caja
+        estado, _, _ = self.iniciar(0)
+        self.assertIsInstance(estado.trenes[0].fase, Certificado)
+        self.assertTrue(any(caja.estado.iterdir()))
+        self.assertFalse(hasito.estado.exists())
+        for config in ({"adaptador": "caja"}, {"adaptador": "caja", "lanzador_hasito": lanzador},
+                       {"adaptador": "caja", "lanzador": "relativo"}):
+            with self.subTest(config=config), self.assertRaises(ValueError):
+                seleccionar(config, self.git)
+
 
 class IntegracionGitTests(git_fixtures.AterrizajeTests):
     def test_verde_adaptador_hasta_cas_aterrizado_y_worktrees_durables(self):

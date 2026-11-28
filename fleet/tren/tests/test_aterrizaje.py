@@ -1,10 +1,11 @@
-"""U2: sólo en el host de pruebas, sin red; fixtures conservadas."""
+"""U2: sólo en el host de pruebas, sin red."""
 from dataclasses import replace
 from functools import cache
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,7 @@ class AterrizajeTests(unittest.TestCase):
     def setUp(self):
         # Canónica como las referencias que congela `entregar` (macOS: /var -> /private/var).
         self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-u2-")).resolve()
+        self.addCleanup(shutil.rmtree, self.raiz)
         self.home = self.raiz / "home"
         self.home.mkdir()
         self.env = patch.dict(os.environ, {"HOME": str(self.home),

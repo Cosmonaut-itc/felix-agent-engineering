@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Uso: instalar.sh [--seco|--retirar] guard|datos|hasito-noche|hasito-ci. Token por stdin.
+# Uso: instalar.sh [--seco|--retirar] guard|guard-2|datos|hasito-noche|hasito-ci. Token por stdin.
 set +x
 set -euo pipefail
 modo=instalar
 case "${1:-}" in --seco|--retirar) modo=$1; shift ;; esac
 papel=${1:-}
 fallo() { echo "gha-runner: $1" >&2; exit "${2:-1}"; }
-uso() { fallo 'Uso: instalar.sh [--seco|--retirar] guard|datos|hasito-noche|hasito-ci' 2; }
+uso() { fallo 'Uso: instalar.sh [--seco|--retirar] guard|guard-2|datos|hasito-noche|hasito-ci' 2; }
 [ "$#" -eq 1 ] || uso
 
 encontrado=0
@@ -16,6 +16,7 @@ while IFS='|' read -r clave sistemas repo nombre etiqueta carpeta label hook; do
   break
 done <<'PAPELES'
 guard|Darwin arm64|https://github.com/SEN-HASO/Jale|mini-jale-guard|jale-guard|actions-runner-jale-guard|local.pao.gha-runner-jale-guard|-
+guard-2|Darwin arm64|https://github.com/SEN-HASO/Jale|mini-jale-guard-2|jale-guard|actions-runner-jale-guard-2|local.pao.gha-runner-jale-guard-2|-
 datos|Darwin arm64|https://github.com/SEN-HASO/Jale|mini-jale-datos|jale-datos|actions-runner-jale-datos|local.pao.gha-runner-jale-datos|-
 hasito-noche|Darwin arm64|https://github.com/SEN-HASO/Hasito|mini-hasito-noche|hasito-noche|actions-runner-hasito-noche|local.pao.gha-runner-hasito-noche|.local/lib/pao-gha-runner/solo-main.sh
 hasito-ci|Darwin arm64,Linux x86_64|https://github.com/SEN-HASO/Hasito|@host@-hasito-ci|hasito-ci|actions-runner-hasito-ci|local.pao.gha-runner-hasito-ci|-

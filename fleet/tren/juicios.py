@@ -7,7 +7,7 @@ from dominio import (Armado, Congelado, Corriendo, Diagnosticando,
                      Efecto, EsperandoCI, Pausa, Promoviendo, Rechazado, Terminal, Tren,
                      argv_reproduccion, cambiar_fase, cambiar_plazo_ci_promocion, certificado_de,
                      clave, datos, efecto_diagnostico, efecto_promover, efecto_reanudar_suite,
-                     efectos_status, lectura_ci, separar_devueltos)
+                     efectos_status, lectura_ci, parte_publica, separar_devueltos)
 
 
 # Motivo/detalle -> decisión -> operación. Los prefijos terminan en ':' y
@@ -200,7 +200,7 @@ def resolver(estado, observacion):
         for f in getattr(tren.fase, "fallos", ()):
             fallos.append({"unidad": f.unidad, "check": f.check, "firma": f.firma,
                 "conjunto_causal": (decision.pr,),
-                "comando": shlex.join(argv_reproduccion(f, commit))})
+                "comando": shlex.join(argv_reproduccion(f, commit)), **parte_publica(f)})
         payload = json.dumps({"lote": tren.id, "B": base, "C": commit,
             "pr": decision.pr, "head": entrada.entrega.head, "fallos": fallos,
             "juicio": {"motivo": decision.motivo, "pausa": datos(decision.pausa)}}, sort_keys=True)

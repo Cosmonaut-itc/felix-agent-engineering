@@ -1,6 +1,6 @@
 """U13: procesos reales, origen local, gh/lanzador falsos; sólo en host de pruebas.
 
-No se retiran fixtures. Los fallos de muerte usan os._exit, no excepciones
+Los fallos de muerte usan os._exit, no excepciones
 que pudieran limpiar o confirmar accidentalmente una transacción.
 """
 from dataclasses import replace
