@@ -17,7 +17,7 @@ from test_hasito import GitFalso
 from test_tren import Aislado, BASE, HEAD, REPO, cli, entrega, observacion
 from adaptadores import seleccionar
 from adaptadores.jale import Jale
-from dominio import (Admitido, Aterrizado, Candidato, Certificado, Corriendo, Entrada,
+from dominio import (Admitido, Aterrizado, Candidato, Certificado, Corriendo, EnBase, Entrada,
                      EscritorExterno, EsperandoCI, Estado, Incierto, Pausa, Promoviendo,
                      Terminal, Tren, datos, recibo_ci, separar_devueltos)
 from observador import Falso
@@ -47,6 +47,7 @@ class ReservaBoatTests(Aislado):
         self.observador.config = dict(adaptador='jale', host='boat',
             lanzador=str(self.raiz / 'lanzador-no-disponible'), boat_pool=str(self.binario))
         self.git = GitFalso(self.raiz)
+        self.git.reconciliar = Mock(return_value=EnBase(CANDIDATO.B, CANDIDATO.C))
         self.escritor = Mock()
         self.escritor.ejecutar_feedback.return_value = {}
         reloj = patch('operativo.time', wraps=time)
@@ -365,14 +366,26 @@ with open({str(self.log)!r}, 'a') as log:
             with patch.dict(os.environ, entorno_tren):
                 self.ver_ci(tren, 'rojo', n=2)
                 self.tick(220)
-            self.assertEqual([t.fase for t in self.estado().trenes], [Terminal('PARTIDO')])
+            self.assertEqual([t.fase for t in self.estado().trenes],
+                             [Terminal('REARMAR'), Terminal('PARTIDO')])
             # En main la prueba suelta los arriendos que SEN-7709 liberará al cancelar.
             for arriendo in arriendos:
                 self.assertEqual(self.comando_pool(pool, 'soltar', arriendo)[0], 0)
 
-        tren = self.guardar_lote_doble()
+        original = self.guardar_lote_doble()
         with patch('operativo.subprocess', self.proceso_pool(pool)):
             self.tick()
+            self.ver_ci(original, 'rojo', n=2)
+            self.tick(101)
+            self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
+            self.observador.observacion = observacion(2)
+            for ahora in (102, 103, 104):
+                self.tick(ahora)
+            tren = self.estado().trenes[-1]
+            self.assertIsInstance(tren.fase, EsperandoCI)
+            self.assertEqual(tren.fase.solicitud, 1)
+            self.assertEqual(tren.recibos, original.recibos)
+            self.assertEqual(self.reservas_pool(pool), {tren.id})
             with patch.dict(os.environ, pool.env):
                 arriendos = [pool.get_lease('anterior-' + modo, modo, '--prioridad', 'tren')
                              for modo in ('contract', 'e2e')]
@@ -385,16 +398,17 @@ with open({str(self.log)!r}, 'a') as log:
             self.observador.observacion = replace(observacion(2), base='')
             pool.api.now = inicio + 240
             self.tick(340)
-            self.assertEqual(len(self.estado().trenes), 1)
+            self.assertEqual(len(self.estado().trenes), 2)
             en_tick_vacio, _, razon_tick_vacio = self.comando_pool(
                 pool, *pool.args('ajena-tick-vacio', 'e2e', '--prioridad', 'suite'))
 
             self.observador.observacion = observacion(2)
             pool.api.now = inicio + 360
             self.tick(460)
-            anterior, sucesor = self.estado().trenes
+            anterior, sucesor = self.estado().trenes[-2:]
             self.assertEqual(anterior.id, tren.id)
             self.assertNotIsInstance(sucesor.fase, Terminal)
+            self.assertEqual(sucesor.recibos, tren.recibos[:1])
 
         with patch.dict(os.environ, pool.env), pool.resume_clock({}):
             pool.get_lease('sucesor-contract', 'contract', '--prioridad', 'tren')
@@ -428,7 +442,7 @@ with open({str(self.log)!r}, 'a') as log:
             return self.intento_tick(220)
 
     def assert_vencimiento_cierre_lento(self, pool, inicio, lote):
-        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
         self.assertIsNone(self.estado().pausa)
         self.assertEqual(self.reservas_pool(pool), {lote})
         self.observador.observacion = replace(observacion(2), prs=())
@@ -500,7 +514,7 @@ with open({str(self.log)!r}, 'a') as log:
             with patch.object(clase_ledger, 'evento', autospec=True, side_effect=ocupar_al_guardar):
                 codigo, resultado = self.cerrar_lento(pool, proceso)
         self.assertEqual(codigo, 0, resultado)
-        self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
         self.assertEqual(self.registro.relevos_boat(REPO), {})
         proceso.run.assert_called_once()
         self.assertEqual(proceso.run.call_args.args[0][1:], self.recorte(lote, 220, inicio + 510)[0])
@@ -667,7 +681,7 @@ with open({str(self.log)!r}, 'a') as log:
             pool.api.now = inicio + 120
             self.ver_ci(anterior, 'rojo', n=2)
             self.tick(220)
-            self.assertEqual(self.estado().trenes[0].fase, Terminal('PARTIDO'))
+            self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
             self.observador.observacion = replace(observacion(2), base='')
             for ahora in (340, 460):
                 pool.api.now = inicio + ahora - 100
@@ -681,6 +695,7 @@ with open({str(self.log)!r}, 'a') as log:
             sucesor = self.estado().trenes[-1]
             self.assertNotEqual(sucesor.id, anterior.id)
             self.assertNotIsInstance(sucesor.fase, Terminal)
+            self.assertEqual(sucesor.recibos, anterior.recibos)
             self.assertEqual(self.reservas_pool(pool), {sucesor.id})
             self.cli('pausa', '--motivo', 'prueba', ahora=581)
             pool.api.now = inicio + 600
