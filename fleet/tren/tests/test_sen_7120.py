@@ -17,7 +17,6 @@ from adaptadores import seleccionar
 from adaptadores.hasito import Hasito, ResultadoInvalido
 from adaptadores.jale import EN_CURSO, Jale
 from atribucion import planificar
-from coordinadores import esperar_coordinadores
 from dominio import (Candidato, ConflictoCadena, Diagnosticando, Evidencia, Incompleto,
                      Intento, RechazoLanzador, Repeticion, Reproduccion, Terminal, Tren,
                      UnidadRepetida, avanzar_suite, clave, desde_datos, efecto_diagnostico)
@@ -571,10 +570,8 @@ class TickTests(ProductorParalelo, unittest.TestCase):
                 vistos.append({sha for sha in subconjuntos
                               if (self.raiz / ('inicio-' + sha + '-1')).exists()})
 
-        raiz_jale = Jale(self.lanzador).estado
         for _ in range(40):
             self.tick(frontera=frontera)
-            esperar_coordinadores(raiz_jale)
             final = self.estado()
             self.assertIsNone(final.pausa, final.pausa)
             if final.trenes and final.trenes[0].fase == Terminal('DEVUELTO'):

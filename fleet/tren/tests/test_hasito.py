@@ -103,6 +103,7 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
                       detalle=None):
     """Contrato operativo compartido: cada adaptador conserva su productor falso."""
     from dominio import Decision, intento_suite
+    from coordinadores import ejecutar_tick
     from ledger import Ledger
     from observador import Falso
     from operativo import tick
@@ -161,7 +162,8 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
     caso.assertTrue(rechazados)
     invocaciones_antes = list(invocaciones())
     observador = Falso(obs)
-    tick(ledger, actual.repo, observador, obs.ahora + 1, caso.git, caso.adaptador)
+    ejecutar_tick(tick, ledger, actual.repo, observador, obs.ahora + 1, caso.git,
+                  adaptador=caso.adaptador)
     pausado = ledger.estado(actual.repo, operativo=True)
     caso.assertIsNotNone(pausado.pausa)
     caso.assertEqual((pausado.pausa.motivo, pausado.pausa.detalle),

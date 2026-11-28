@@ -15,8 +15,8 @@ import test_activo as activo
 from test_jale import FALLO, PRODUCTOR, esperar_resultado
 import test_juicio as juicio_fixtures
 from adaptadores import seleccionar
-from adaptadores.jale import EN_CURSO, Jale
-from coordinadores import esperar_coordinadores
+from adaptadores.jale import EN_CURSO
+from coordinadores import coordinadores_pendientes
 from dominio import (PLAZO_CI, Certificado, Congelado, Corriendo, Diagnosticando, Efecto, EsperandoCI,
                      Motivo, Pausa, Promoviendo, Reproduccion, ResultadoCI, Retenido, Terminal,
                      clave, desde_datos, recibo_ci)
@@ -30,6 +30,7 @@ class SnapshotTests(unittest.TestCase):
     remoto = activo.ActivoTests.remoto
     ledger = activo.ActivoTests.ledger
     estado = activo.ActivoTests.estado
+    hasta_fase = activo.ActivoTests.hasta_fase
     lineas = activo.ActivoTests.lineas
     cli = juicio_fixtures.JuicioTests.cli
     juicio = juicio_fixtures.JuicioTests.juicio
@@ -51,13 +52,6 @@ class SnapshotTests(unittest.TestCase):
         self.config.update(checkout_operador=str(self.operador), adaptador='jale',
                            lanzador=str(self.operador / 'jale.sh'), modos=['contract'])
         self.contexto.hasito = seleccionar(self.config, self.contexto.git)
-
-    def hasta_fase(self, clase, *, candados='**/candado'):
-        adaptador = self.contexto.hasito
-        if isinstance(adaptador, Jale) and clase is not EsperandoCI:
-            return activo.ActivoTests.hasta_fase(self, clase,
-                tras_tick=lambda: esperar_coordinadores(adaptador.estado, candados))
-        return activo.ActivoTests.hasta_fase(self, clase)
 
     def plan(self, filas):
         (self.raiz / 'plan.json').write_text(json.dumps(filas))
@@ -229,7 +223,6 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.juicio('reanudar')
         for n in range(15):
             self.contexto.tick(9000 + n * 120)
-            esperar_coordinadores(self.contexto.hasito.estado)
             fase = self.estado().trenes[0].fase
             self.assertNotEqual(fase, Terminal('REARMAR'))
             if isinstance(fase, Certificado):
@@ -259,6 +252,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertFalse((registro / 'codigo.json').exists())
         return registro
 
+    @coordinadores_pendientes()
     def test_suite_libre_candado_y_outbox(self):
         self.suite_lenta()
         self.contexto.tick(2000)
@@ -273,6 +267,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertIsNotNone(self.estado().pausa)
         self.coordinador_vivo(registro=registro)
 
+    @coordinadores_pendientes()
     def test_suite_libre_un_coordinador(self):
         self.suite_lenta()
         with patch('adaptadores.jale.subprocess.Popen', wraps=subprocess.Popen) as popen:
@@ -287,6 +282,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual(len([e for e in self.eventos_suite('efecto-iniciado')
                               if e['clave'] == self.filas_suite()[0][0]['clave']]), 1)
 
+    @coordinadores_pendientes()
     def test_suite_iniciada_no_vence_el_plazo_de_ci(self):
         self.suite_lenta()
         self.contexto.tick(2000)
@@ -299,6 +295,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.coordinador_vivo(registro=registro)
 
     @patch('preaterrizaje.Previo.llamar', return_value='seguir')
+    @coordinadores_pendientes()
     def test_reanudar_ci_con_suite_iniciada_exige_el_verde_vigente(self, _gancho):
         self.gancho()
         self.suite_lenta()
@@ -357,6 +354,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual(cert.ci, vigente)
         self.assertFalse(self.filas_suite())
 
+    @coordinadores_pendientes()
     def test_ci_nuevo_vence_con_resultado_de_suite_anterior_retenido(self):
         self.suite_lenta()
         self.contexto.tick(2000)
@@ -410,6 +408,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
     def pushes_a_main(self):
         return sum(p.endswith(':refs/heads/main') for p in self.lineas('pushes.log'))
 
+    @coordinadores_pendientes()
     def test_suite_emitida_antes_de_reanudar_arranca_con_el_ci_vigente(self):
         self.suite_lenta()
 
@@ -451,6 +450,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual(len(self.lineas('invocaciones.jsonl')), 1)
         self.assertEqual(self.pushes_a_main(), 0)
 
+    @coordinadores_pendientes()
     def test_fila_fallida_reiniciada_tras_el_verde_vigente_conserva_su_solicitud(self):
         self.suite_lenta()
         self.contexto.tick(2000)
@@ -492,6 +492,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual(len(self.lineas('invocaciones.jsonl')), 1)
         self.assertEqual(self.pushes_a_main(), 0)
 
+    @coordinadores_pendientes()
     def test_resultado_de_suite_sin_tren_deja_consumir_el_siguiente(self):
         self.suite_lenta()
         huerfana = Efecto(clave('suite', 'ausente'), 'iniciar-suite', ('ausente',))
@@ -506,6 +507,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertIsInstance(self.estado().trenes[0].fase, Certificado)
         self.assertEqual([efecto for _, efecto in self.filas_suite()], [huerfana])
 
+    @coordinadores_pendientes()
     def test_fallo_de_arranque_espera_al_otro_modo(self):
         self.config['modos'] = ['contract', 'e2e']
         self.contexto.hasito = seleccionar(self.config, self.contexto.git)
@@ -534,6 +536,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual(json.loads(fila['resultado'])['error']['codigo'], 'lanzador-no-disponible')
         self.assertEqual(len(self.eventos_suite('efecto-fallido')), 1)
 
+    @coordinadores_pendientes()
     def test_suite_libre_recoge_verde_y_rojo(self):
         for estado, fase in (('pasa', Certificado), ('falla', Diagnosticando)):
             with self.subTest(estado=estado):
@@ -548,6 +551,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
                 self.assertIsInstance(self.estado().trenes[0].fase, fase)
                 self.assertFalse(self.filas_suite())
 
+    @coordinadores_pendientes()
     def test_suite_libre_aborta_y_descarta(self):
         self.suite_lenta()
         self.contexto.tick(2000)
@@ -583,8 +587,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.plan([{'estados': ['falla']}, lentas])
         for n in ('1', '2'):
             self.addCleanup((self.raiz / ('seguir-' + n)).touch)
-        # La suite inicial debe acabar. Las repeticiones se liberan explícitamente.
-        self.hasta_fase(Diagnosticando, candados='*/contract/*/candado')
+        self.hasta_fase(Diagnosticando)
         [fila, efecto] = self.filas_suite('repetir')[0]
         self.assertEqual(fila['estado'], 'ejecutando')
         raiz = self.contexto.hasito.estado / clave('repetir', *efecto.datos[:2])
@@ -616,9 +619,11 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertTrue((segundo.parent / 'completo.json').exists())
         self.assertEqual(len(self.estado().trenes[0].fase.evidencias), 1)
 
+    @coordinadores_pendientes(esperar='*/contract/*/candado')
     def test_suite_libre_repeticion_en_serie(self):
         self.verificar_repeticion_lenta(1)
 
+    @coordinadores_pendientes(esperar='*/contract/*/candado')
     def test_suite_libre_repeticion_en_paralelo(self):
         self.verificar_repeticion_lenta(2)
 
@@ -630,6 +635,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.coordinador_vivo(segundo / 'listo', segundo)
         return primero, segundo
 
+    @coordinadores_pendientes(esperar='*/contract/*/candado')
     def test_repeticion_serie_con_cache_invalida_y_segundo_vivo(self):
         primero, segundo = self.repeticion_serie_con_segundo_vivo()
         (primero.parent / 'completo.json').write_text('"inválido"')
@@ -639,6 +645,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual((fila['estado'], fila['resultado']), ('ejecutando', None))
         self.assertFalse(self.eventos_suite('efecto-fallido'))
 
+    @coordinadores_pendientes(esperar='*/contract/*/candado')
     def test_repeticion_serie_con_recibo_incompleto_y_segundo_vivo(self):
         primero, segundo = self.repeticion_serie_con_segundo_vivo()
         (primero / 'codigo.json').write_text('75')
@@ -649,6 +656,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual((fila['estado'], fila['resultado']), ('ejecutando', None))
         self.assertFalse(self.eventos_suite('efecto-fallido'))
 
+    @coordinadores_pendientes(esperar='*/contract/*/candado')
     def test_repeticion_paralela_retenida_con_segundo_vivo(self):
         self.config.update(costo_suite_sana_s=100, repeticiones_paralelas=2)
         self.contexto.hasito = seleccionar(self.config, self.contexto.git)
@@ -664,7 +672,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
             return popen(argv, *args, **kwargs)
 
         with patch('adaptadores.jale.subprocess.Popen', side_effect=falla_primero):
-            self.hasta_fase(Diagnosticando, candados='*/contract/*/candado')
+            self.hasta_fase(Diagnosticando)
         fila, efecto = self.filas_suite('repetir')[0]
         self.assertEqual((fila['estado'], fila['resultado']), ('ejecutando', None))
         raiz = self.contexto.hasito.estado / clave('repetir', *efecto.datos[:2])
@@ -682,6 +690,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual((fila['estado'], fila['resultado']), ('ejecutando', None))
         self.assertFalse(self.eventos_suite('efecto-fallido'))
 
+    @coordinadores_pendientes(esperar='*/contract/*/candado')
     def test_aborto_en_diagnostico_avisa_por_repeticiones_adelantadas(self):
         self.config.update(costo_suite_sana_s=100, repeticiones_paralelas=2)
         self.contexto.hasito = seleccionar(self.config, self.contexto.git)
@@ -689,7 +698,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.plan([{'estados': ['falla']}, lentas])
         for n in ('1', '2'):
             self.addCleanup((self.raiz / ('seguir-' + n)).touch)
-        estado = self.hasta_fase(Diagnosticando, candados='*/contract/*/candado')
+        estado = self.hasta_fase(Diagnosticando)
         tren = estado.trenes[0]
         _, efecto = self.filas_suite('repetir')[0]
         raiz_confirmada = self.contexto.hasito.estado / clave('repetir', *efecto.datos[:2])
@@ -716,6 +725,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertCountEqual(self.eventos_suite('suite-sin-leer'), confirmadas)
         self.assertCountEqual(self.eventos_suite('suite-prelanzada-sin-leer'), adelantos)
 
+    @coordinadores_pendientes()
     def test_suite_libre_muerte_despues_de_lanzar(self):
         self.suite_lenta()
         self.ruta_contexto.write_text(json.dumps(self.config))
@@ -749,6 +759,7 @@ c.tick(2000, morir)
         self.assertIsInstance(self.estado().trenes[0].fase, Certificado)
         self.assertEqual(len(self.lineas('invocaciones.jsonl')), 1)
 
+    @coordinadores_pendientes()
     def test_suite_libre_recupera_fila_fallida(self):
         self.suite_lenta()
         self.contexto.tick(2000)

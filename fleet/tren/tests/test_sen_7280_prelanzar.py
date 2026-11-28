@@ -1,5 +1,6 @@
 """U3: prelanzamiento especulativo con un productor de recibos sintético."""
 from dataclasses import replace
+from functools import partial
 from itertools import count
 import json
 import shlex
@@ -20,7 +21,7 @@ from adaptadores.ejecucion_jale import guardar
 from adaptadores.hasito import Hasito, ResultadoInvalido
 from adaptadores.jale import EN_CURSO, Jale, PLAZO_PRELANZAMIENTO_S, corrida_en_curso
 from atribucion import planificar
-from coordinadores import esperar_coordinadores
+from coordinadores import coordinadores_pendientes, ejecutar_tick
 from dominio import (Armado, Certificado, Corriendo, Diagnosticando, Efecto, EscritorExterno,
                      EsperandoCI, Pausa, Promoviendo, ResultadoCI, Terminal, Tren, clave,
                      efecto_promover, efecto_reanudar_suite)
@@ -91,7 +92,7 @@ class Productor:
         self.addCleanup((self.raiz / 'seguir').touch)
 
     def esperar_archivo(self, ruta):
-        limite = time.monotonic() + 5
+        limite = time.monotonic() + 10
         while not ruta.exists() and time.monotonic() < limite:
             time.sleep(.01)
         self.assertTrue(ruta.exists(), str(ruta))
@@ -275,8 +276,11 @@ class TickActivoTests(Productor, unittest.TestCase):
         args = activo.cli.parser().parse_args([*argv, '--repo', REPO])
         with patch('git_ops.GitTren', return_value=self.contexto.git), \
              patch.object(activo.cli, 'GitHubGit', return_value=self.contexto.observador):
-            codigo, salida = activo.cli.ejecutar(args, ahora=next(self.reloj), frontera=frontera,
-                                                 escritor=self.contexto.escritor)
+            ejecutar = activo.cli.ejecutar
+            if args.comando == 'tick':
+                ejecutar = partial(ejecutar_tick, ejecutar)
+            codigo, salida = ejecutar(args, ahora=next(self.reloj), frontera=frontera,
+                                      escritor=self.contexto.escritor)
         self.assertEqual(codigo, 0, salida)
         return salida
 
@@ -284,12 +288,8 @@ class TickActivoTests(Productor, unittest.TestCase):
         return self.cli('tick', '--config', str(self.privada), frontera=frontera)
 
     def hasta(self, fase):
-        # En EsperandoCI puede haber prelanzamientos que el caso liberará después.
-        raiz_jale = Jale(self.lanzador).estado if fase in (Corriendo, Certificado) else None
         for _ in range(8):
             resultado = self.tick()
-            if raiz_jale is not None:
-                esperar_coordinadores(raiz_jale)
             trenes = self.estado().trenes
             if trenes and isinstance(trenes[0].fase, fase):
                 return trenes[0], resultado
@@ -301,6 +301,7 @@ class TickActivoTests(Productor, unittest.TestCase):
                                       ' ORDER BY seq DESC', (REPO, tipo))
             return [json.loads(fila[0]) for fila in filas]
 
+    @coordinadores_pendientes()
     def test_tick_publica_y_prelanza_con_ci_pendiente_y_recoge_en_verde(self):
         self.plan([{'barrera': True, 'esperar': True}])
         _, resultado = self.hasta(EsperandoCI)
@@ -502,6 +503,7 @@ class TickActivoTests(Productor, unittest.TestCase):
             self.esperar_archivo(registro / 'listo')
             self.assertEqual(json.loads((registro / 'predecesoras-activas.json').read_text()), [])
 
+    @coordinadores_pendientes()
     def test_partido_cancela_y_suelta_antes_de_prelanzar_sucesor(self):
         tren, registros = self.lote_con_prelanzadas()
         self.ci = 'rojo'
@@ -516,6 +518,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         (self.raiz / 'predecesor.json').write_text(json.dumps(list(map(str, registros))))
         self.assert_sucesor_sin_candados(self.esperar_sucesor_ci(tren))
 
+    @coordinadores_pendientes()
     def test_partido_aplaza_con_candado_y_prelanza_en_el_tick_siguiente_a_la_salida(self):
         tren, registros = self.lote_con_prelanzadas()
         (self.raiz / 'retener-cancelacion').touch()
@@ -563,16 +566,19 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertEqual(self.eventos('suite-prelanzada-sin-leer'), [])
         self.assert_outbox_cancelado(efecto)
 
+    @coordinadores_pendientes()
     def test_aborto_cancela_confirmadas_antes_de_prelanzar_sucesor(self):
         tren, registros, efecto = self.lote_con_confirmadas()
         self.abortar_con_head_cambiado(tren)
         self.comprobar_cierre_con_confirmadas(tren, registros, efecto, 'ABORTADO')
 
+    @coordinadores_pendientes()
     def test_partido_cancela_confirmadas_antes_de_prelanzar_sucesor(self):
         tren, registros, efecto = self.lote_con_confirmadas()
         self.ci = 'rojo'
         self.comprobar_cierre_con_confirmadas(tren, registros, efecto, 'PARTIDO')
 
+    @coordinadores_pendientes()
     def test_aborto_aplaza_por_candados_de_suite_reanudada(self):
         tren, registros, efecto = self.lote_con_confirmadas(intento=1)
         (self.raiz / 'retener-cancelacion').touch()
@@ -597,6 +603,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assert_sucesor_sin_candados(sucesor)
         self.assertFalse(aplazado.exists())
 
+    @coordinadores_pendientes()
     def test_reintento_del_aborto_tras_fallo_sqlite_conserva_los_avisos(self):
         tren, registros, efecto = self.lote_con_confirmadas()
         self.abortar_con_head_cambiado(tren)
@@ -629,6 +636,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assert_sucesor_sin_candados(self.esperar_sucesor_ci(tren))
         self.assertEqual(self.eventos('suite-sin-leer'), avisos)
 
+    @coordinadores_pendientes()
     def test_reintento_del_aborto_tras_las_marcas_reconstruye_la_barrera(self):
         tren, registros, _ = self.lote_con_confirmadas()
         (self.raiz / 'retener-cancelacion').touch()
@@ -667,6 +675,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assert_sucesor_sin_candados(sucesor)
         self.assertFalse(aplazado.exists())
 
+    @coordinadores_pendientes()
     def test_confirmadas_de_tren_activo_siguen_en_curso(self):
         tren, registros, _ = self.lote_con_confirmadas()
         self.tick()
@@ -677,6 +686,7 @@ class TickActivoTests(Productor, unittest.TestCase):
             self.assertTrue(corrida_en_curso(registro))
         self.assertEqual(self.eventos('suite-sin-leer'), [])
 
+    @coordinadores_pendientes()
     def test_sondeo_rojo_tardio_recorta_la_espera_de_cancelacion(self):
         tren, registros = self.lote_con_prelanzadas()
         (self.raiz / 'retener-cancelacion').touch()
@@ -731,6 +741,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assert_sucesor_sin_candados(sucesor)
         self.assertFalse(aplazado.exists())
 
+    @coordinadores_pendientes()
     def test_rearmar_cancela_prelanzadas_vivas(self):
         tren, registros = self.lote_con_prelanzadas()
         c = tren.fase.candidato
@@ -746,6 +757,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assert_canceladas(registros)
         self.assert_avisos_cancelacion(tren, 2, True)
 
+    @coordinadores_pendientes()
     def test_juicio_aborta_prelanzadas_y_una_salida_de_transporte_no_reintenta(self):
         tren, registros = self.lote_con_prelanzadas()
         (self.raiz / 'codigo-cancelacion').write_text('255')
@@ -757,6 +769,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assert_canceladas(registros, codigo=255)
         self.assert_avisos_cancelacion(tren, 2, True)
 
+    @coordinadores_pendientes()
     def test_aborto_cancela_tanto_la_suite_confirmada_como_la_especulativa(self):
         tren, (contract, e2e) = self.lote_con_prelanzadas()
         # La configuración cambia entre el prelanzamiento y el verde de CI.
@@ -789,6 +802,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertFalse(any((r.parent / 'completo.json').exists() for r in (contract, e2e)))
         self.assert_outbox_cancelado(clave('suite', tren.id))
 
+    @coordinadores_pendientes()
     def test_juicio_aborta_repeticiones_adelantadas(self):
         self.instalar_lanzador_cancelable()
         self.configurar(False)
@@ -821,6 +835,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertTrue(all(not (r / 'cancelar.json').exists() for r in
                             self.registros_de_suite(tren)))
 
+    @coordinadores_pendientes()
     def test_codigo_aparece_entre_la_captura_del_aviso_y_la_marca(self):
         tren, registros, efecto = self.lote_con_confirmadas()
         self.abortar_con_head_cambiado(tren)
@@ -859,6 +874,7 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertEqual([a['error_cancelacion'] for a in avisos], ['coordinador-ausente'] * 2)
         self.assertTrue(all((r / 'cancelar.json').exists() for r in registros))
 
+    @coordinadores_pendientes()
     def test_error_de_permiso_al_cancelar_no_frena_el_cierre_ni_el_otro_modo(self):
         tren, registros = self.lote_con_prelanzadas()
         bloqueado, otro = registros

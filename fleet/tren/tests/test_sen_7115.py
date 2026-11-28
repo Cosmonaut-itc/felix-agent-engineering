@@ -13,7 +13,6 @@ import test_juicio as juicios
 from adaptadores.hasito import Hasito
 from adaptadores.jale import Jale
 from atribucion import Absolucion, Plan, planificar
-from coordinadores import esperar_coordinadores
 from dominio import (Candidato, Certificado, Diagnosticando, Evidencia, Intento, Pausa,
                      Promoviendo, Repeticion, Reproduccion, Terminal, UnidadRepetida, datos)
 from test_hasito import F, repeticion_fixture, suite_fixture
@@ -114,8 +113,6 @@ class TrenIntermitentes:
     def avanzar(self, detener, inicio=AHORA):
         for ciclo in range(20):
             self.contexto.tick(inicio + ciclo * 120)
-            if isinstance(self.contexto.hasito, Jale):
-                esperar_coordinadores(self.contexto.hasito.estado)
             estado = self.estado()
             if estado.pausa or (estado.trenes and detener(estado.trenes[-1].fase)):
                 return estado

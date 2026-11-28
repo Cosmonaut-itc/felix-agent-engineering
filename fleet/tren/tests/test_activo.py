@@ -23,6 +23,7 @@ from dominio import (Armado, Candidato, Certificado, Congelado,
                      Corriendo, Efecto, Entrada, EsperandoCI, Promoviendo, Retenido,
                      Terminal, clave, datos, desde_datos)
 from adaptadores.hasito import Hasito
+from coordinadores import ejecutar_tick
 from git_ops import GitTren
 from feedback import EscritorGitHub
 from ledger import Ledger
@@ -187,8 +188,8 @@ class Contexto:
 
     def tick(self, ahora=100, frontera=None):
         args = cli.parser().parse_args(["tick", "--repo", REPO])
-        return cli.ejecutar(args, self.observador, ahora, self.git, self.hasito, frontera,
-                            self.escritor)
+        return ejecutar_tick(cli.ejecutar, args, self.observador, ahora, self.git,
+                             adaptador=self.hasito, frontera=frontera, escritor=self.escritor)
 
 
 class ActivoTests(unittest.TestCase):
@@ -244,11 +245,9 @@ class ActivoTests(unittest.TestCase):
                 return estado
         self.fail("el tren no converge: " + str(datos(estado)))
 
-    def hasta_fase(self, clase, *, tras_tick=None):
+    def hasta_fase(self, clase):
         for n in range(15):
             self.contexto.tick(100 + n * 120)
-            if tras_tick is not None:
-                tras_tick()
             estado = self.estado()
             if estado.trenes and isinstance(estado.trenes[0].fase, clase):
                 return estado

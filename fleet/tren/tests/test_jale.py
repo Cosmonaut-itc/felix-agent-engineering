@@ -467,7 +467,7 @@ class JaleTests(Aislado):
             self.assertIs(resultado, EN_CURSO)
         finally:
             (self.raiz / 'seguir').touch()
-            proceso.wait(timeout=5)
+            proceso.wait(timeout=10)
 
     def repeticion_valida(self, candidato, origen, solicitud, commit, tren, **kwargs):
         try:
