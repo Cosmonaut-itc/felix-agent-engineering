@@ -85,7 +85,7 @@ class Instalador(unittest.TestCase):
         self.assertIn('escuchando', resultado.stdout)
         registro = self.leer('config.log')
         self.assertIn('--url https://github.com/SEN-HASO/Jale', registro)
-        self.assertIn('--name mini-jale-guard --labels jale-guard', registro)
+        self.assertIn('--name mini-jale-guard --labels jale-guard,jale-tren --work', registro)
         self.assertIn(f'token={TOKEN}\n', registro)
         self.assertIn(f'path={RUTA}\n', registro)
         self.assertNotIn(TOKEN, registro.splitlines()[0])
@@ -110,6 +110,16 @@ class Instalador(unittest.TestCase):
         self.assertEqual(self.leer('config.log').count('args='), 1)
         self.assertEqual(self.leer('launchctl.log').count('bootout'), 3)
         self.assertEqual(self.leer('launchctl.log').count('bootstrap'), 4)
+
+    def test_reinstalar_no_anuncia_etiquetas_que_no_registro(self):
+        nuevo = self.correr(token=TOKEN)
+        self.assertEqual(nuevo.returncode, 0, nuevo.stderr)
+        self.assertIn('Runner mini-jale-guard escuchando; etiqueta jale-guard,jale-tren\n', nuevo.stdout)
+        otra = self.correr()
+        self.assertEqual(otra.returncode, 0, otra.stderr)
+        self.assertIn('Runner mini-jale-guard escuchando; ya estaba registrado', otra.stdout)
+        self.assertNotIn('jale-tren', otra.stdout)
+        self.assertNotIn('etiqueta jale-guard', otra.stdout)
 
     def test_un_paquete_alterado_no_se_extrae(self):
         (self.fake / 'sha-mal').touch()
@@ -184,7 +194,7 @@ class Instalador(unittest.TestCase):
     def test_cada_papel_tiene_su_registro_y_su_directorio(self):
         (self.fake / 'mudo').touch()
         self.assertEqual(self.correr(token=TOKEN, papel='datos').returncode, 1)
-        self.assertIn('--name mini-jale-datos --labels jale-datos', self.leer('config.log'))
+        self.assertIn('--name mini-jale-datos --labels jale-datos --work', self.leer('config.log'))
         self.assertTrue((self.home / 'actions-runner-jale-datos/.runner').exists())
         self.assertFalse(self.dir.exists())
 
@@ -193,14 +203,36 @@ class Instalador(unittest.TestCase):
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         self.assertEqual(resultado.stdout,
             f'Descargar actions-runner-osx-arm64-2.338.2.tar.gz, comprobar su sha256 y extraerlo en {self.home}/actions-runner-jale-guard-2\n'
-            'Registrar mini-jale-guard-2 en https://github.com/SEN-HASO/Jale con la etiqueta jale-guard\n'
+            'Registrar mini-jale-guard-2 en https://github.com/SEN-HASO/Jale con la etiqueta jale-guard,jale-tren\n'
             f'Escribir {self.home}/Library/LaunchAgents/local.pao.gha-runner-jale-guard-2.plist y cargarlo en gui/{os.getuid()}\n')
         self.assertEqual(self.correr(token=TOKEN, papel='guard-2').returncode, 0)
-        self.assertIn('--name mini-jale-guard-2 --labels jale-guard --work', self.leer('config.log'))
+        self.assertIn('--name mini-jale-guard-2 --labels jale-guard,jale-tren --work', self.leer('config.log'))
         self.assertTrue((self.home / 'actions-runner-jale-guard-2/.runner').exists())
         self.assertTrue((self.home / 'Library/LaunchAgents/local.pao.gha-runner-jale-guard-2.plist').exists())
         self.assertFalse(self.dir.exists())
         self.assertFalse(self.plist.exists())
+
+    def test_el_runner_del_tren_solo_lleva_su_etiqueta_y_tiene_registro_propio(self):
+        # Sin jale-guard: los trabajos de los PR no pueden tomarlo.
+        resultado = self.correr('--seco', papel='tren')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertEqual(resultado.stdout,
+            f'Descargar actions-runner-osx-arm64-2.338.2.tar.gz, comprobar su sha256 y extraerlo en {self.home}/actions-runner-jale-tren\n'
+            'Registrar mini-jale-tren en https://github.com/SEN-HASO/Jale con la etiqueta jale-tren\n'
+            f'Escribir {self.home}/Library/LaunchAgents/local.pao.gha-runner-jale-tren.plist y cargarlo en gui/{os.getuid()}\n')
+        self.assertEqual(self.correr(token=TOKEN, papel='tren').returncode, 0)
+        self.assertIn('--name mini-jale-tren --labels jale-tren --work', self.leer('config.log'))
+        self.assertTrue((self.home / 'actions-runner-jale-tren/.runner').exists())
+        self.assertTrue(self.cargado('jale-tren'))
+        self.assertFalse(self.dir.exists())
+        self.assertFalse(self.plist.exists())
+
+    def test_los_dos_guard_tambien_atienden_al_tren(self):
+        # Si el runner del tren está ocupado o caído, un candidato cae en un guard.
+        for papel in ('guard', 'guard-2'):
+            with self.subTest(papel=papel):
+                self.assertEqual(self.correr(token=TOKEN, papel=papel).returncode, 0)
+                self.assertIn(f'--name mini-jale-{papel} --labels jale-guard,jale-tren --work', self.leer('config.log'))
 
     def test_los_dos_guard_conviven_y_cada_uno_se_reinstala_y_se_retira_solo(self):
         dir2 = self.home / 'actions-runner-jale-guard-2'
@@ -246,13 +278,13 @@ class Instalador(unittest.TestCase):
         self.assertEqual(len(list(self.home.glob('actions-runner-jale-guard-2.retirado-*'))), 1)
 
     def test_jale_conserva_su_salida_seca_y_no_recibe_hook(self):
-        for papel in ('guard', 'datos'):
+        for papel, etiqueta in (('guard', 'jale-guard,jale-tren'), ('datos', 'jale-datos')):
             with self.subTest(papel=papel):
                 resultado = self.correr('--seco', papel=papel)
                 self.assertEqual(resultado.returncode, 0, resultado.stderr)
                 self.assertEqual(resultado.stdout,
                     f'Descargar actions-runner-osx-arm64-2.338.2.tar.gz, comprobar su sha256 y extraerlo en {self.home}/actions-runner-jale-{papel}\n'
-                    f'Registrar mini-jale-{papel} en https://github.com/SEN-HASO/Jale con la etiqueta jale-{papel}\n'
+                    f'Registrar mini-jale-{papel} en https://github.com/SEN-HASO/Jale con la etiqueta {etiqueta}\n'
                     f'Escribir {self.home}/Library/LaunchAgents/local.pao.gha-runner-jale-{papel}.plist y cargarlo en gui/{os.getuid()}\n')
                 self.assertEqual(self.correr(token=TOKEN, papel=papel).returncode, 0)
                 env = self.home / f'actions-runner-jale-{papel}/.env'

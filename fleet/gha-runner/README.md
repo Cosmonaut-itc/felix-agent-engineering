@@ -5,7 +5,7 @@ mes de runners de GitHub para repositorios privados. Los gates rápidos de Jale
 corren en Boat, pero dos trabajos no pueden ir ahí: el guard que decide qué
 recibe Boat y las unitarias que leen datos excluidos de Boat. Con unos 190
 pushes al día, esos dos trabajos agotarían los minutos en menos de una semana.
-Tres runners en la Mini los corren sin costo.
+Los runners de la Mini los corren sin costo.
 
 ## Qué instala
 
@@ -13,8 +13,9 @@ Tres runners en la Mini los corren sin costo.
 
 | Papel | Trabajo | Etiqueta | Nombre |
 |---|---|---|---|
-| `guard` | «Política de exportación a Boat» y «Selección de web en sombra» | `jale-guard` | `mini-jale-guard` |
-| `guard-2` | Los mismos que `guard` | `jale-guard` | `mini-jale-guard-2` |
+| `guard` | «Política de exportación a Boat» y «Selección de web en sombra» | `jale-guard`, `jale-tren` | `mini-jale-guard` |
+| `guard-2` | Los mismos que `guard` | `jale-guard`, `jale-tren` | `mini-jale-guard-2` |
+| `tren` | Los trabajos de la Mini de un candidato del tren de merges | `jale-tren` | `mini-jale-tren` |
 | `datos` | «Unitarias con datos o recursos excluidos de Boat» | `jale-datos` | `mini-jale-datos` |
 | `hasito-noche` | Gate completo nocturno de Hasito sobre `main` | `hasito-noche` | `mini-hasito-noche` |
 | `hasito-ci` | CI de los PR de Hasito; hoy ningún workflow lo pide | `hasito-ci` | `mini-hasito-ci` o `desk-hasito-ci` |
@@ -29,13 +30,27 @@ del guard se reparte entre los dos sin cambiar ningún workflow. Existe porque
 los trabajos del guard de un lote del tren de merges esperaban detrás de los
 de los PR: el 2026-11-28 la política de un lote esperó 10.4 min.
 
+`tren` es un runner reservado al tren de merges. Sólo lleva la etiqueta
+`jale-tren`, que piden los trabajos de un candidato del tren (ramas `tren/*`).
+Los trabajos de los PR piden `jale-guard` o `jale-datos` y nunca lo toman, así
+que un candidato no espera detrás de ellos. Con dos runners `jale-guard`, la
+política de un lote todavía esperó 69 y 105 s en dos de ocho lotes, y sus
+pruebas del guard esperaron hasta 492 s a `jale-datos`.
+
+`guard` y `guard-2` llevan también `jale-tren`: si el runner del tren está
+ocupado o caído, GitHub entrega el trabajo del candidato a uno de ellos, como
+antes de reservarlo. La etiqueta `jale-tren` debe existir en algún runner
+conectado antes de que un workflow la pida; sin ninguno, el trabajo espera en
+GitHub y el tren no avanza.
+
 Para los papeles de Jale instala:
 
 - El runner oficial `actions/runner` 2.338.2 para macOS arm64, en
   `~/actions-runner-jale-<papel>`. `instalar.sh` fija su sha256 y no extrae un
   paquete que no coincida.
 - Un registro de repositorio en `SEN-HASO/Jale`. Los trabajos lo piden con
-  `runs-on: [self-hosted, jale-<papel>]`; `guard-2` atiende los de `jale-guard`.
+  `runs-on: [self-hosted, jale-<papel>]`; `guard-2` atiende los de `jale-guard`,
+  y los tres de `guard`, `guard-2` y `tren` atienden los de `jale-tren`.
 - El LaunchAgent `local.pao.gha-runner-jale-<papel>`, con log en
   `~/Library/Logs/pao-gha-runner-jale-<papel>.log`.
 
@@ -48,8 +63,8 @@ gh api -X POST repos/SEN-HASO/Jale/actions/runners/registration-token -q .token 
   | ssh mini 'bash ~/.local/share/personal-agent-orchestration/fleet/gha-runner/instalar.sh guard'
 ```
 
-Repite el comando con `guard-2` y con `datos`. Cada instalación pide su propio
-token.
+Repite el comando con `guard-2`, con `tren` y con `datos`. Cada instalación
+pide su propio token.
 
 El token de registro dura una hora y viaja por stdin. `instalar.sh` se lo pasa
 a `config.sh` por entorno, nunca por argumentos. Termina cuando el runner
@@ -61,10 +76,19 @@ Comprueba el registro desde la MacBook:
 
 ```sh
 gh api repos/SEN-HASO/Jale/actions/runners \
-  -q '.runners[] | [.name, .status, (.labels | map(.name) | join(","))] | @tsv'
+  -q '.runners[] | [.id, .name, .status, (.labels | map(.name) | join(","))] | @tsv'
 ```
 
-Debe imprimir cada runner con `online` y su etiqueta.
+Debe imprimir cada runner con su id, `online` y sus etiquetas.
+
+Las etiquetas se fijan al registrar. Un runner ya registrado no las cambia al
+reinstalar, y `instalar.sh` lo dice al terminar: «ya estaba registrado y
+conserva las etiquetas de su registro». Para añadir `jale-tren` a un `guard`
+que se instaló sin ella, usa el id de la primera columna de la lista anterior:
+
+```sh
+gh api -X POST repos/SEN-HASO/Jale/actions/runners/<id>/labels -f 'labels[]=jale-tren'
+```
 
 Volver a correr `instalar.sh <papel>` no descarga ni registra de nuevo y no pide token.
 Reescribe el LaunchAgent y reinicia el servicio: un trabajo en curso se pierde y
@@ -131,7 +155,7 @@ Conserva las demás líneas de `.env` y deja una sola línea
 `ACTIONS_RUNNER_HOOK_JOB_STARTED` con la ruta absoluta de esa copia antes de
 arrancar el servicio. Si falla la copia o la configuración, no carga launchd.
 Una reinstalación actualiza el hook y reinicia el servicio: `.env` se lee al
-arrancar. Los papeles `guard`, `guard-2` y `datos` no reciben hook.
+arrancar. Los papeles `guard`, `guard-2`, `tren` y `datos` no reciben hook.
 
 Comprueba en la Mini que la copia es ejecutable y que `.env` apunta a ella:
 
@@ -278,7 +302,7 @@ la versión en `github.com/actions/runner/releases`.
   `rapidas` y la guardia de la Mini no los pausa. La carga queda acotada por
   los propios runners: un trabajo a la vez cada uno. Los de Jale se reservan
   para los trabajos de la tabla; los pesados van a Boat o a `remote-run`. Con
-  `guard-2` pueden correr dos trabajos del guard a la vez. El runner
+  `guard-2` y `tren` pueden correr tres trabajos del guard a la vez. El runner
   `hasito-noche` se reserva para el gate nocturno completo de Hasito.
 - **Servicios de la Mini a la vista.** Un trabajo alcanza los puertos locales,
   como el Postgres de pruebas en `127.0.0.1:5435`. Un workflow que corre aquí

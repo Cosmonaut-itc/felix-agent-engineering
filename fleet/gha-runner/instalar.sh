@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Uso: instalar.sh [--seco|--retirar] guard|guard-2|datos|hasito-noche|hasito-ci. Token por stdin.
+# Uso: instalar.sh [--seco|--retirar] guard|guard-2|tren|datos|hasito-noche|hasito-ci. Token por stdin.
 set +x
 set -euo pipefail
 modo=instalar
 case "${1:-}" in --seco|--retirar) modo=$1; shift ;; esac
 papel=${1:-}
 fallo() { echo "gha-runner: $1" >&2; exit "${2:-1}"; }
-uso() { fallo 'Uso: instalar.sh [--seco|--retirar] guard|guard-2|datos|hasito-noche|hasito-ci' 2; }
+uso() { fallo 'Uso: instalar.sh [--seco|--retirar] guard|guard-2|tren|datos|hasito-noche|hasito-ci' 2; }
 [ "$#" -eq 1 ] || uso
 
 encontrado=0
@@ -15,8 +15,9 @@ while IFS='|' read -r clave sistemas repo nombre etiqueta carpeta label hook; do
   encontrado=1
   break
 done <<'PAPELES'
-guard|Darwin arm64|https://github.com/SEN-HASO/Jale|mini-jale-guard|jale-guard|actions-runner-jale-guard|local.pao.gha-runner-jale-guard|-
-guard-2|Darwin arm64|https://github.com/SEN-HASO/Jale|mini-jale-guard-2|jale-guard|actions-runner-jale-guard-2|local.pao.gha-runner-jale-guard-2|-
+guard|Darwin arm64|https://github.com/SEN-HASO/Jale|mini-jale-guard|jale-guard,jale-tren|actions-runner-jale-guard|local.pao.gha-runner-jale-guard|-
+guard-2|Darwin arm64|https://github.com/SEN-HASO/Jale|mini-jale-guard-2|jale-guard,jale-tren|actions-runner-jale-guard-2|local.pao.gha-runner-jale-guard-2|-
+tren|Darwin arm64|https://github.com/SEN-HASO/Jale|mini-jale-tren|jale-tren|actions-runner-jale-tren|local.pao.gha-runner-jale-tren|-
 datos|Darwin arm64|https://github.com/SEN-HASO/Jale|mini-jale-datos|jale-datos|actions-runner-jale-datos|local.pao.gha-runner-jale-datos|-
 hasito-noche|Darwin arm64|https://github.com/SEN-HASO/Hasito|mini-hasito-noche|hasito-noche|actions-runner-hasito-noche|local.pao.gha-runner-hasito-noche|.local/lib/pao-gha-runner/solo-main.sh
 hasito-ci|Darwin arm64,Linux x86_64|https://github.com/SEN-HASO/Hasito|@host@-hasito-ci|hasito-ci|actions-runner-hasito-ci|local.pao.gha-runner-hasito-ci|-
@@ -254,6 +255,7 @@ al_salir() {
 trap al_salir EXIT
 
 [ "$sistema" != 'Linux x86_64' ] || comprobar_dependencias
+registrado=0
 if [ ! -f "$dir/.runner" ]; then
   leer_token registro
   mkdir -p "$dir"
@@ -264,6 +266,7 @@ if [ ! -f "$dir/.runner" ]; then
   rm -f "$dir/$paquete"
   configurar --unattended --url "$repo" --name "$nombre" --labels "$etiqueta" --work _work --replace
   unset token
+  registrado=1
 fi
 
 [ -z "$hook" ] || instalar_hook
@@ -281,7 +284,12 @@ visto=$(wc -c < "$log")
 cargar_servicio
 for _ in $(seq 1 "${PAO_GHA_RUNNER_ESPERA:-60}"); do
   if tail -c "+$((visto + 1))" "$log" | grep -q 'Listening for Jobs'; then
-    printf 'Runner %s escuchando; etiqueta %s\n' "$nombre" "$etiqueta"
+    if [ "$registrado" -eq 1 ]; then
+      printf 'Runner %s escuchando; etiqueta %s\n' "$nombre" "$etiqueta"
+    else
+      # Las etiquetas viven en GitHub desde el registro: este arranque no las cambió.
+      printf 'Runner %s escuchando; ya estaba registrado y conserva las etiquetas de su registro\n' "$nombre"
+    fi
     exit
   fi
   sleep 1
