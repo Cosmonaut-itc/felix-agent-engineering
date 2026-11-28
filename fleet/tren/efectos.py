@@ -39,6 +39,19 @@ def aviso_prelanzamiento(tren, exc):
     return {"tren": tren, "motivo": motivo, "clase": clase}
 
 
+def prelanzar_ci(adaptador, tren, observacion):
+    prelanzar = getattr(adaptador, "prelanzar", None)
+    fase = tren.fase
+    # El rojo de una solicitud anterior no cuenta al publicar otra.
+    rojo = (isinstance(fase, EsperandoCI) and observacion.ci_candidato == "rojo" and
+            observacion.tren_id == tren.id and observacion.ci_recibo == recibo_ci(tren))
+    if prelanzar is not None and not rojo:
+        try:
+            prelanzar(fase.candidato, tren.id)
+        except (ResultadoInvalido, FalloSnapshot, OSError, subprocess.SubprocessError) as exc:
+            return aviso_prelanzamiento(tren.id, exc)
+
+
 def pedidos_adelantados(fase, git, adaptador, tren):
     c = fase.candidato
     prs = tuple(pr for pr, _, _ in c.eslabones)
@@ -175,17 +188,7 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                                     ci_candidato="pendiente", suite=None), True)
         if not isinstance(resultado, Publicado):
             raise EfectoFallido(resultado)
-        aviso = None
-        prelanzar = getattr(adaptador, "prelanzar", None)
-        # Un reintento que ya lee rojo para esta solicitud no adelanta trabajo
-        # que nadie consumirá. El rojo de una solicitud anterior no cuenta.
-        rojo = (isinstance(fase, EsperandoCI) and observacion.ci_candidato == "rojo" and
-                observacion.tren_id == tren.id and observacion.ci_recibo == recibo_ci(tren))
-        if prelanzar is not None and not rojo:
-            try:
-                prelanzar(fase.candidato, tren.id)
-            except (ResultadoInvalido, FalloSnapshot, OSError, subprocess.SubprocessError) as exc:
-                aviso = aviso_prelanzamiento(tren.id, exc)
+        aviso = prelanzar_ci(adaptador, tren, observacion)
         return Ejecucion(replace(limpia, ci_candidato="pendiente", suite=None), True, aviso)
     if efecto.tipo == "promover" and isinstance(fase, Promoviendo):
         if efecto != efecto_promover(tren.id, fase.intentos):
