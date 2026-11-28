@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -eu
-# Sólo remoto. Conservar árboles y reproducciones de los tres hallazgos R1.
+# Sólo en el host de pruebas.
 tren_pruebas=$(mktemp -d "${TMPDIR:-/tmp}/pao-tren-u18-r1.XXXXXX")
+trap 'rm -rf -- "$tren_pruebas"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export TMPDIR="$tren_pruebas/tmp"
+mkdir -p "$TMPDIR"
 tren_anterior="$tren_pruebas/anterior"
 mkdir -p "$tren_anterior"
 git archive 4498b3dd6f0faf9901fe5b152c81c18ed4d0a5c5 | tar -x -C "$tren_anterior"

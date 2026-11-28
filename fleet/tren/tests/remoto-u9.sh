@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
 set -eu
 tren_u9=$(mktemp -d "${TMPDIR:-/tmp}/pao-tren-u9.XXXXXX")
-mkdir -p "$tren_u9/base"
+limpiar() {
+  wait || :
+  for log in "$tren_u9/suite-0.log" "$tren_u9/suite-1.log"; do
+    if [ -f "$log" ]; then
+      cat "$log" || :
+    fi
+  done
+  rm -rf -- "$tren_u9"
+}
+trap limpiar EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export TMPDIR="$tren_u9/tmp"
+mkdir -p "$tren_u9/base" "$TMPDIR"
 git archive 0806170d11805e228da5ca1c94c64473336c32a9 | tar -x -C "$tren_u9/base"
 cp fleet/tren/tests/test_jale.py "$tren_u9/base/fleet/tren/tests/"
 for arbol in base actual; do
@@ -63,5 +76,6 @@ PY
     wait "$pid" || resultado=1
   done
   cat "$tren_u9/suite-0.log" "$tren_u9/suite-1.log"
+  rm -f -- "$tren_u9/suite-0.log" "$tren_u9/suite-1.log"
   exit "$resultado"
 fi

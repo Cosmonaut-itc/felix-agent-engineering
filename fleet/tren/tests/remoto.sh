@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
 set -eu
 aislado=$(mktemp -d "${TMPDIR:-/tmp}/pao-tren-remoto.XXXXXX")
+limpiar() {
+  wait || :
+  for log in "$aislado/antes.log" "$aislado/u18-r3.log"; do
+    if [ -f "$log" ]; then
+      cat "$log" || :
+    fi
+  done
+  rm -rf -- "$aislado"
+}
+trap limpiar EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export TMPDIR="$aislado/tmp"
 export HOME="$aislado/home"
 export XDG_STATE_HOME="$aislado/state"
 export XDG_CONFIG_HOME="$aislado/config"
 export XDG_DATA_HOME="$aislado/data"
 export XDG_CACHE_HOME="$aislado/cache"
-mkdir -p "$HOME"
+mkdir -p "$HOME" "$TMPDIR"
 bin/pao check
 git version
 # Los injertos usan archivos/procesos temporales propios; no comparten
@@ -65,8 +78,8 @@ fi
 if ! wait "$tren_r3_pid"; then
   resultado=1
 fi
-cat "$aislado/antes.log"
-cat "$aislado/u18-r3.log"
+cat "$aislado/antes.log" "$aislado/u18-r3.log"
+rm -f -- "$aislado/antes.log" "$aislado/u18-r3.log"
 if [ "$encontrado" -eq 0 ]; then
   echo 'No hay intérprete Python disponible' >&2
   exit 2

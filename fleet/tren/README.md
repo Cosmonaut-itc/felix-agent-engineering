@@ -455,8 +455,9 @@ REMOTE_RUN_HOST=desk remote-run start --carril rapido --sha <HEAD40> \
 REMOTE_RUN_HOST=desk remote-run wait <id>
 ```
 
-El guion prueba cada intérprete disponible de los tres solicitados. Las
-fixtures se conservan deliberadamente: el código nuevo no borra archivos.
+El guion prueba cada intérprete disponible de los tres solicitados. Cada
+prueba borra sus fixtures al terminar y el guion borra su directorio aislado al
+salir.
 
 ## Suite y atribución (U4)
 
@@ -1574,4 +1575,6 @@ como error de infraestructura.
 
 La regresión U9 y toda la suite del tren, dividida exhaustivamente entre dos
 procesos aislados para el carril rápido, se verifican en el host de pruebas con
-`bash fleet/tren/tests/remoto-u9.sh --completa`. El guion conserva la evidencia.
+`bash fleet/tren/tests/remoto-u9.sh --completa`. El guion imprime los logs de
+los dos procesos y borra sus fixtures al salir; las rutas `EVIDENCIA` que
+imprime ya no existen cuando termina.
