@@ -75,5 +75,7 @@ PY
   for pid in "${tren_u9_pids[@]}"; do
     wait "$pid" || resultado=1
   done
+  cat "$tren_u9/suite-0.log" "$tren_u9/suite-1.log"
+  rm -f -- "$tren_u9/suite-0.log" "$tren_u9/suite-1.log"
   exit "$resultado"
 fi

@@ -78,6 +78,8 @@ fi
 if ! wait "$tren_r3_pid"; then
   resultado=1
 fi
+cat "$aislado/antes.log" "$aislado/u18-r3.log"
+rm -f -- "$aislado/antes.log" "$aislado/u18-r3.log"
 if [ "$encontrado" -eq 0 ]; then
   echo 'No hay intérprete Python disponible' >&2
   exit 2
