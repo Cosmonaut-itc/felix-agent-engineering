@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -eu
-# Sólo remoto. Conservar los árboles, fixtures y fallos antes/después.
+# Sólo en el host de pruebas.
 tren_pruebas=$(mktemp -d "${TMPDIR:-/tmp}/pao-tren-u18-injerto.XXXXXX")
+trap 'rm -rf -- "$tren_pruebas"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export TMPDIR="$tren_pruebas/tmp"
+mkdir -p "$TMPDIR"
 tren_anterior="$tren_pruebas/anterior"
 mkdir -p "$tren_anterior"
 git archive c06a9c70d2e265be47d2c16855976562a80ba678 | tar -x -C "$tren_anterior"

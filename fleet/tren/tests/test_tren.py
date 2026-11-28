@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -53,6 +54,7 @@ def observacion(n=1, ahora=100, **kwargs):
 class Aislado(unittest.TestCase):
     def setUp(self):
         self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-u1-"))
+        self.addCleanup(shutil.rmtree, self.raiz)
         self.home = self.raiz / "home"
         self.home.mkdir()
         self.env = patch.dict(os.environ, {"HOME": str(self.home),

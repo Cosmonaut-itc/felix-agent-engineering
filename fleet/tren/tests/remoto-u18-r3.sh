@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -eu
 tren_pruebas=$(mktemp -d "${TMPDIR:-/tmp}/pao-tren-u18-r3.XXXXXX")
+trap 'rm -rf -- "$tren_pruebas"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export TMPDIR="$tren_pruebas/tmp"
+mkdir -p "$TMPDIR"
 tren_anterior="$tren_pruebas/anterior"
 mkdir -p "$tren_anterior"
 git archive c28fa524890d4e741809c935b6d3c606f7ffd918 | tar -x -C "$tren_anterior"
