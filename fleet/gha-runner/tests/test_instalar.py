@@ -111,6 +111,16 @@ class Instalador(unittest.TestCase):
         self.assertEqual(self.leer('launchctl.log').count('bootout'), 3)
         self.assertEqual(self.leer('launchctl.log').count('bootstrap'), 4)
 
+    def test_reinstalar_no_anuncia_etiquetas_que_no_registro(self):
+        nuevo = self.correr(token=TOKEN)
+        self.assertEqual(nuevo.returncode, 0, nuevo.stderr)
+        self.assertIn('Runner mini-jale-guard escuchando; etiqueta jale-guard,jale-tren\n', nuevo.stdout)
+        otra = self.correr()
+        self.assertEqual(otra.returncode, 0, otra.stderr)
+        self.assertIn('Runner mini-jale-guard escuchando; ya estaba registrado', otra.stdout)
+        self.assertNotIn('jale-tren', otra.stdout)
+        self.assertNotIn('etiqueta jale-guard', otra.stdout)
+
     def test_un_paquete_alterado_no_se_extrae(self):
         (self.fake / 'sha-mal').touch()
         resultado = self.correr(token=TOKEN)

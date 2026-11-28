@@ -76,14 +76,15 @@ Comprueba el registro desde la MacBook:
 
 ```sh
 gh api repos/SEN-HASO/Jale/actions/runners \
-  -q '.runners[] | [.name, .status, (.labels | map(.name) | join(","))] | @tsv'
+  -q '.runners[] | [.id, .name, .status, (.labels | map(.name) | join(","))] | @tsv'
 ```
 
-Debe imprimir cada runner con `online` y sus etiquetas.
+Debe imprimir cada runner con su id, `online` y sus etiquetas.
 
 Las etiquetas se fijan al registrar. Un runner ya registrado no las cambia al
-reinstalar. Para añadir `jale-tren` a un `guard` que se instaló sin ella, usa
-el id que da la lista anterior con `.id`:
+reinstalar, y `instalar.sh` lo dice al terminar: «ya estaba registrado y
+conserva las etiquetas de su registro». Para añadir `jale-tren` a un `guard`
+que se instaló sin ella, usa el id de la primera columna de la lista anterior:
 
 ```sh
 gh api -X POST repos/SEN-HASO/Jale/actions/runners/<id>/labels -f 'labels[]=jale-tren'

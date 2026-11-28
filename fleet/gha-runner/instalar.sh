@@ -255,6 +255,7 @@ al_salir() {
 trap al_salir EXIT
 
 [ "$sistema" != 'Linux x86_64' ] || comprobar_dependencias
+registrado=0
 if [ ! -f "$dir/.runner" ]; then
   leer_token registro
   mkdir -p "$dir"
@@ -265,6 +266,7 @@ if [ ! -f "$dir/.runner" ]; then
   rm -f "$dir/$paquete"
   configurar --unattended --url "$repo" --name "$nombre" --labels "$etiqueta" --work _work --replace
   unset token
+  registrado=1
 fi
 
 [ -z "$hook" ] || instalar_hook
@@ -282,7 +284,12 @@ visto=$(wc -c < "$log")
 cargar_servicio
 for _ in $(seq 1 "${PAO_GHA_RUNNER_ESPERA:-60}"); do
   if tail -c "+$((visto + 1))" "$log" | grep -q 'Listening for Jobs'; then
-    printf 'Runner %s escuchando; etiqueta %s\n' "$nombre" "$etiqueta"
+    if [ "$registrado" -eq 1 ]; then
+      printf 'Runner %s escuchando; etiqueta %s\n' "$nombre" "$etiqueta"
+    else
+      # Las etiquetas viven en GitHub desde el registro: este arranque no las cambió.
+      printf 'Runner %s escuchando; ya estaba registrado y conserva las etiquetas de su registro\n' "$nombre"
+    fi
     exit
   fi
   sleep 1
