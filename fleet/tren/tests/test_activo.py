@@ -244,9 +244,11 @@ class ActivoTests(unittest.TestCase):
                 return estado
         self.fail("el tren no converge: " + str(datos(estado)))
 
-    def hasta_fase(self, clase):
+    def hasta_fase(self, clase, *, tras_tick=None):
         for n in range(15):
             self.contexto.tick(100 + n * 120)
+            if tras_tick is not None:
+                tras_tick()
             estado = self.estado()
             if estado.trenes and isinstance(estado.trenes[0].fase, clase):
                 return estado

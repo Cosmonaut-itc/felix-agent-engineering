@@ -6,7 +6,6 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
-import time
 import unittest
 
 import test_activo as activo
@@ -14,7 +13,7 @@ import test_juicio as juicios
 from adaptadores.hasito import Hasito
 from adaptadores.jale import Jale
 from atribucion import Absolucion, Plan, planificar
-from operador import lanzamiento_activo
+from coordinadores import esperar_coordinadores
 from dominio import (Candidato, Certificado, Diagnosticando, Evidencia, Intento, Pausa,
                      Promoviendo, Repeticion, Reproduccion, Terminal, UnidadRepetida, datos)
 from test_hasito import F, repeticion_fixture, suite_fixture
@@ -112,20 +111,11 @@ class TrenIntermitentes:
         self.contexto.observador.ejecutar = github
         return trabajos
 
-    def esperar_coordinadores(self):
-        """El tick ya no espera a Jale: el siguiente tick debe ver el resultado."""
-        raiz = getattr(self.contexto.hasito, "estado", None)
-        if not isinstance(self.contexto.hasito, Jale) or raiz is None:
-            return
-        limite = time.monotonic() + 60
-        while (any(lanzamiento_activo(c) for c in Path(raiz).rglob("candado")) and
-               time.monotonic() < limite):
-            time.sleep(.025)
-
     def avanzar(self, detener, inicio=AHORA):
         for ciclo in range(20):
             self.contexto.tick(inicio + ciclo * 120)
-            self.esperar_coordinadores()
+            if isinstance(self.contexto.hasito, Jale):
+                esperar_coordinadores(self.contexto.hasito.estado)
             estado = self.estado()
             if estado.pausa or (estado.trenes and detener(estado.trenes[-1].fase)):
                 return estado

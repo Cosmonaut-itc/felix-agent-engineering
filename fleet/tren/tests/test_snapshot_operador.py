@@ -15,7 +15,8 @@ import test_activo as activo
 from test_jale import FALLO, PRODUCTOR, esperar_resultado
 import test_juicio as juicio_fixtures
 from adaptadores import seleccionar
-from adaptadores.jale import EN_CURSO
+from adaptadores.jale import EN_CURSO, Jale
+from coordinadores import esperar_coordinadores
 from dominio import (PLAZO_CI, Certificado, Congelado, Corriendo, Diagnosticando, Efecto, EsperandoCI,
                      Motivo, Pausa, Promoviendo, Reproduccion, ResultadoCI, Retenido, Terminal,
                      clave, desde_datos, recibo_ci)
@@ -29,7 +30,6 @@ class SnapshotTests(unittest.TestCase):
     remoto = activo.ActivoTests.remoto
     ledger = activo.ActivoTests.ledger
     estado = activo.ActivoTests.estado
-    hasta_fase = activo.ActivoTests.hasta_fase
     lineas = activo.ActivoTests.lineas
     cli = juicio_fixtures.JuicioTests.cli
     juicio = juicio_fixtures.JuicioTests.juicio
@@ -51,6 +51,13 @@ class SnapshotTests(unittest.TestCase):
         self.config.update(checkout_operador=str(self.operador), adaptador='jale',
                            lanzador=str(self.operador / 'jale.sh'), modos=['contract'])
         self.contexto.hasito = seleccionar(self.config, self.contexto.git)
+
+    def hasta_fase(self, clase, *, candados='**/candado'):
+        adaptador = self.contexto.hasito
+        if isinstance(adaptador, Jale) and clase is not EsperandoCI:
+            return activo.ActivoTests.hasta_fase(self, clase,
+                tras_tick=lambda: esperar_coordinadores(adaptador.estado, candados))
+        return activo.ActivoTests.hasta_fase(self, clase)
 
     def plan(self, filas):
         (self.raiz / 'plan.json').write_text(json.dumps(filas))
@@ -222,6 +229,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.juicio('reanudar')
         for n in range(15):
             self.contexto.tick(9000 + n * 120)
+            esperar_coordinadores(self.contexto.hasito.estado)
             fase = self.estado().trenes[0].fase
             self.assertNotEqual(fase, Terminal('REARMAR'))
             if isinstance(fase, Certificado):
@@ -575,7 +583,8 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.plan([{'estados': ['falla']}, lentas])
         for n in ('1', '2'):
             self.addCleanup((self.raiz / ('seguir-' + n)).touch)
-        self.hasta_fase(Diagnosticando)
+        # La suite inicial debe acabar. Las repeticiones se liberan explícitamente.
+        self.hasta_fase(Diagnosticando, candados='*/contract/*/candado')
         [fila, efecto] = self.filas_suite('repetir')[0]
         self.assertEqual(fila['estado'], 'ejecutando')
         raiz = self.contexto.hasito.estado / clave('repetir', *efecto.datos[:2])
@@ -655,7 +664,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
             return popen(argv, *args, **kwargs)
 
         with patch('adaptadores.jale.subprocess.Popen', side_effect=falla_primero):
-            self.hasta_fase(Diagnosticando)
+            self.hasta_fase(Diagnosticando, candados='*/contract/*/candado')
         fila, efecto = self.filas_suite('repetir')[0]
         self.assertEqual((fila['estado'], fila['resultado']), ('ejecutando', None))
         raiz = self.contexto.hasito.estado / clave('repetir', *efecto.datos[:2])
@@ -680,7 +689,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.plan([{'estados': ['falla']}, lentas])
         for n in ('1', '2'):
             self.addCleanup((self.raiz / ('seguir-' + n)).touch)
-        estado = self.hasta_fase(Diagnosticando)
+        estado = self.hasta_fase(Diagnosticando, candados='*/contract/*/candado')
         tren = estado.trenes[0]
         _, efecto = self.filas_suite('repetir')[0]
         raiz_confirmada = self.contexto.hasito.estado / clave('repetir', *efecto.datos[:2])

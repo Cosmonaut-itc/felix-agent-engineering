@@ -20,6 +20,7 @@ from adaptadores.ejecucion_jale import guardar
 from adaptadores.hasito import Hasito, ResultadoInvalido
 from adaptadores.jale import EN_CURSO, Jale, PLAZO_PRELANZAMIENTO_S, corrida_en_curso
 from atribucion import planificar
+from coordinadores import esperar_coordinadores
 from dominio import (Armado, Certificado, Corriendo, Diagnosticando, Efecto, EscritorExterno,
                      EsperandoCI, Pausa, Promoviendo, ResultadoCI, Terminal, Tren, clave,
                      efecto_promover, efecto_reanudar_suite)
@@ -283,8 +284,12 @@ class TickActivoTests(Productor, unittest.TestCase):
         return self.cli('tick', '--config', str(self.privada), frontera=frontera)
 
     def hasta(self, fase):
+        # En EsperandoCI puede haber prelanzamientos que el caso liberará después.
+        raiz_jale = Jale(self.lanzador).estado if fase in (Corriendo, Certificado) else None
         for _ in range(8):
             resultado = self.tick()
+            if raiz_jale is not None:
+                esperar_coordinadores(raiz_jale)
             trenes = self.estado().trenes
             if trenes and isinstance(trenes[0].fase, fase):
                 return trenes[0], resultado
