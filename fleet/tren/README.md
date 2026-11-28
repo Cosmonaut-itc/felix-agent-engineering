@@ -1562,7 +1562,9 @@ no deja un resultado utilizable (un rechazo del lanzador, un 75 o un recibo
 inválido), el efecto recoge antes el otro intento. Si ese intento deja un
 recibo válido con código distinto de 75, queda en la caché y el intento
 siguiente no lo vuelve a lanzar. El efecto devuelve el resultado del primer
-intento que impide la repetición, en orden de intento. Mientras algún
+intento que impide la repetición, en orden de intento, salvo un rechazo del
+lanzador como `recibo-malformado`, que gana sobre un 75 pendiente en
+cualquier orden: el rechazo es definitivo y el 75 sólo pide esperar. Mientras algún
 coordinador sigue vivo, el efecto queda en ejecución y el siguiente tick
 vuelve a consultar sus registros. Un lanzador que sale por un envío sin
 confirmar puede dejar su tarea en la cola del host.

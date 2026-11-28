@@ -853,6 +853,11 @@ class Jale:
                     break
                 continue
             if impedimento is not SIN_IMPEDIMENTO:
+                # Un recibo malformado decide aunque el otro intento siga en un 75.
+                # Un 75 llega como None (pendiente de Boat) o como recibo con código 75.
+                if isinstance(r, RechazoLanzador) and (impedimento is None
+                                                       or isinstance(impedimento, dict)):
+                    impedimento = r
                 continue
             if isinstance(r, dict) and r['codigo'] != 75:
                 u = r['unidades'][0]

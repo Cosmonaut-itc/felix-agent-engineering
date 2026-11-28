@@ -494,7 +494,39 @@ class JaleTests(Aislado):
         self.invalido({'duplicar_recibo': True}, 'salida-sin-recibo')
 
     def test_campo_duplicado_fuera_de_casos_invalida_recibo(self):
-        self.invalido({'campo_duplicado': 'codigo'}, 'recibo-malformado')
+        self.plan({'contract': [{'campo_duplicado': 'codigo'}]})
+        _, resultado = self.suite()
+        contract = next(i for i in self.invocaciones() if i['modo'] == 'contract')
+        self.assertEqual(resultado, RechazoLanzador(contract['log'], 'recibo-malformado'))
+
+    def repeticion_paralela_malformada(self, malformado):
+        self.adaptador = self.Jale(self.lanzador, host='boat', modos=('contract',),
+                                   repeticiones_paralelas=2)
+        origen = self.origen()
+        solicitud = Reproduccion('solicitud-C', FALLO, 'C')
+        raiz, _, _ = self.adaptador.preparar_repeticion(CANDIDATO, origen, solicitud, C, 'lote')
+        logs = {}
+        for n in (1, 2):
+            registro = raiz / str(n) / '0'
+            registro.mkdir(parents=True)
+            log = logs[n] = registro / 'corrida.log'
+            (registro / 'solicitud.json').write_text(json.dumps([
+                'bash', str(self.lanzador), 'boat', str(log), 'contract', C, FALLO.unidad]))
+            (registro / 'codigo.json').write_text('1' if n == malformado else '75')
+            if n == malformado:
+                log.write_text('RECIBO jale-recibo@1 xxx\nRESULT mode=contract exit=1\nEXIT=1\n')
+            else:
+                (registro / 'corrida.log.boat-pendiente').write_text(json.dumps(
+                    {'status': 'pending', 'cause': 'resultado o transporte no acreditado'}))
+        resultado = self.repetir(origen)
+        self.assertIsInstance(resultado, RechazoLanzador)
+        self.assertEqual(resultado.detalle, 'recibo-malformado')
+
+    def test_repeticion_paralela_malformado_en_el_primer_intento_decide(self):
+        self.repeticion_paralela_malformada(1)
+
+    def test_repeticion_paralela_malformado_tras_un_75_decide(self):
+        self.repeticion_paralela_malformada(2)
 
     def test_firma_sin_hash_es_infraestructura(self):
         self.invalido({'codigo': 1, 'cambiar': {'unidades': [dict(unidad=UNIDAD,
