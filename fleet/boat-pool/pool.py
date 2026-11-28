@@ -901,7 +901,8 @@ class Pool:
                 self.write_reservations(reservations, [('reservado', stamp(now), reservation)])
             elif previous is not None:
                 if 'vence_solicitado' in previous:
-                    reservations.append({**previous, 'vencida': True})
+                    # Un pool anterior que siga en espera decide sólo por `vence`: la marca ya venció para él.
+                    reservations.append({**previous, 'vence': stamp(now), 'vencida': True})
                 self.write_reservations(reservations, [('reserva-liberada', stamp(now), previous)])
 
     def reservation_loads(self, repo, now):

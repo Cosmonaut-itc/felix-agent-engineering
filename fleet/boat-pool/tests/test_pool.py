@@ -683,6 +683,8 @@ class Harness(unittest.TestCase):
         self.api.now = NOW + 120
         for _ in range(2):
             self.assertEqual(self.run_cli('liberar-reserva', '--repo', REPO, '--lote', 'lote')[0], 0)
+        stored = pool.read_json(self.state / 'reservas.json')['reservas']
+        self.assertEqual([r for r in stored if pool.epoch(r['vence']) > self.api.now], [])
         self.assertEqual(self.run_cli(*args, str(NOW + 420))[0], 0)
         code, output, stderr = self.run_cli('estado', '--json')
         self.assertEqual(code, 0, stderr)
@@ -711,16 +713,17 @@ class Harness(unittest.TestCase):
         args = ('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e', '--vence')
         until = NOW + 300
         self.assertEqual(self.run_cli(*args, str(until))[0], 0)
-        self.api.now = NOW + 120
+        released = NOW + 120
+        self.api.now = released
         self.assertEqual(self.run_cli('liberar-reserva', '--repo', REPO, '--lote', 'lote')[0], 0)
         path = self.state / 'reservas.json'
-        self.api.now = until + 3599.75
+        self.api.now = released + 3599.75
         self.assertEqual(self.run_cli(*args, str(until + 4000))[0], 0)
         mark, = pool.read_json(path)['reservas']
         self.assertTrue(mark['vencida'])
-        self.assertEqual(mark['vence'], pool.stamp(until))
+        self.assertEqual(mark['vence'], pool.stamp(released))
 
-        self.api.now = until + 3600
+        self.api.now = released + 3600
         self.assertEqual(self.run_cli('estado', '--json')[0], 0)
         self.assertEqual(pool.read_json(path)['reservas'], [])
         self.assertEqual(self.run_cli(*args, str(until + 4000))[0], 0)
