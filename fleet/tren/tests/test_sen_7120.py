@@ -17,6 +17,7 @@ from adaptadores import seleccionar
 from adaptadores.hasito import Hasito, ResultadoInvalido
 from adaptadores.jale import EN_CURSO, Jale
 from atribucion import planificar
+from coordinadores import esperar_coordinadores
 from dominio import (Candidato, ConflictoCadena, Diagnosticando, Evidencia, Incompleto,
                      Intento, RechazoLanzador, Repeticion, Reproduccion, Terminal, Tren,
                      UnidadRepetida, avanzar_suite, clave, desde_datos, efecto_diagnostico)
@@ -312,12 +313,16 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
     def test_sin_permiso_no_espera_ni_lee_registros_especulativos(self):
         self.plan([{'esperar': True}])
         self.adelantar(self.pedidos[:1])
+        pedido, commit = self.pedidos[0]
+        args = (CANDIDATO, self.origen, pedido, commit, TREN)
         with patch('adaptadores.jale.leer_salida') as leer, \
              patch('adaptadores.jale.subprocess.Popen') as popen:
-            self.assertIsNone(self.repetir(permitir_lanzar=False))
+            self.assertIs(self.adaptador.repetir(*args, permitir_lanzar=False), EN_CURSO)
+            (self.raiz / 'seguir').touch()
+            esperar_coordinadores(self.adaptador.estado)
+            self.assertIsNone(self.adaptador.repetir(*args, permitir_lanzar=False))
             leer.assert_not_called()
             popen.assert_not_called()
-        (self.raiz / 'seguir').touch()
         confirmada = self.repetir()
         self.assertIsInstance(confirmada, Repeticion)
         self.assertEqual(self.repetir(permitir_lanzar=False), confirmada)
