@@ -290,13 +290,14 @@ class VigiaTests(unittest.TestCase):
         self.ejecutar("sin-señal")
         self.assertEqual(self.llamadas_launchctl, [])
 
-    def test_jale_ignora_cancelacion_y_errores_de_lectura(self):
+    def test_jale_salida_ilegible_es_lectura_fallida_y_cancelacion_no_da_senal(self):
         jale, raiz = self.preparar_suite_jale()
         self.registrar_jale(raiz / "contract/1", jale, "contract", 75)
         registro = raiz / "e2e/1"
         self.registrar_jale(registro, jale, "e2e")
-        (registro / "codigo.json").write_text("{")
         self.ejecutar("sin-señal")
+        (registro / "codigo.json").write_text("{")
+        self.ejecutar("lectura-fallida")
         (registro / "codigo.json").write_text("75")
         abrir = Path.open
 
@@ -306,10 +307,11 @@ class VigiaTests(unittest.TestCase):
             return abrir(ruta, *args, **opciones)
 
         with patch.object(Path, "open", abrir_vigilado):
-            self.ejecutar("sin-señal")
+            self.ejecutar("lectura-fallida")
         (registro / CANCELAR).write_text("{}")
         self.ejecutar("sin-señal")
         self.assertEqual(self.llamadas_launchctl, [])
+        self.assertFalse(self.memoria.exists())
 
     def test_jale_lee_el_intento_fijado_por_completo(self):
         jale, raiz = self.preparar_suite_jale()
@@ -399,17 +401,28 @@ class VigiaTests(unittest.TestCase):
         self.assertEqual(self.llamadas_launchctl, [])
         self.assertFalse(self.memoria.exists())
 
-    def test_launchctl_fallido_o_lento_no_consume_la_cuenta(self):
+    def test_consulta_fallida_no_consume_la_cuenta_y_arranque_fallido_si(self):
         self.guardar(self.tren)
         self.color = "verde"
         for error in ((5, "", "error privado"), subprocess.TimeoutExpired(["launchctl"], 15)):
             self.error_launchctl["print"] = error
             self.ejecutar("lectura-fallida", "ci")
         self.assertEqual(self.pateos(), [])
+        self.assertFalse(self.memoria.exists())
         self.error_launchctl.clear()
         self.error_launchctl["kickstart"] = (5, "", "error privado")
         self.ejecutar("lectura-fallida", "ci")
-        self.assertFalse(self.memoria.exists())
+        self.assertEqual(self.cuenta(), 1)
+
+    def test_sin_poder_guardar_la_cuenta_no_arranca(self):
+        self.guardar(self.tren)
+        self.color = "verde"
+        # Un archivo donde iría el directorio de la memoria impide escribirla.
+        self.memoria.parent.write_text("")
+        for _ in range(4):
+            self.ejecutar("lectura-fallida", "ci")
+            self.ahora += 20
+        self.assertEqual(self.pateos(), [])
 
     def test_memoria_malformada_se_trata_como_vacia(self):
         self.guardar(self.tren)

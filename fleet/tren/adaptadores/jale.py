@@ -209,23 +209,26 @@ def leer_intento_completo(cache):
 
 
 def registro_listo(raiz, intento):
+    """Dice si la salida ya se puede recoger; una salida presente e ilegible lanza ValueError."""
+    def existe(ruta):
+        try:
+            ruta.stat()
+        except FileNotFoundError:
+            return False
+        return True
+
     try:
         cache = raiz / 'completo.json'
-        try:
-            cache.stat()
-        except FileNotFoundError:
-            pass
-        else:
+        if existe(cache):
             intento = str(leer_intento_completo(cache))
         registro = raiz / intento
-        try:
-            (registro / CANCELAR).stat()
-        except FileNotFoundError:
-            estado = leer_json(registro / 'codigo.json')
-            return type(estado) is int and not salida_boat_pendiente(estado, registro / 'corrida.log')
-    except (OSError, ResultadoInvalido, RecursionError):
-        pass
-    return False
+        codigo = registro / 'codigo.json'
+        if existe(registro / CANCELAR) or not existe(codigo):
+            return False
+        estado = leer_json(codigo)
+        return type(estado) is int and not salida_boat_pendiente(estado, registro / 'corrida.log')
+    except ResultadoInvalido:
+        raise ValueError('salida-ilegible') from None
 
 
 class Jale:
@@ -440,7 +443,10 @@ class Jale:
         return [aviso for _, aviso in prelanzadas]
 
     def salidas_listas(self, efecto):
-        """Consulta las salidas durables del efecto sin abrir sus candados."""
+        """Consulta las salidas durables del efecto sin abrir sus candados.
+
+        Una salida presente que no se puede leer lanza OSError o ValueError.
+        """
         tren_id = efecto.datos[0]
         if efecto.tipo == 'repetir':
             raiz = self.estado / clave('repetir', tren_id, efecto.datos[1])

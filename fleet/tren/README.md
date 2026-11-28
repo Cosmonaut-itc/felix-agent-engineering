@@ -325,15 +325,24 @@ del candidato con el mismo lector que el tick. En `Corriendo` y
 `ejecutando` sin abrir los candados de las corridas. Hay señal cuando todos
 los registros del efecto tienen un `codigo.json` legible, sin cancelación
 ni salida 75 con pendiente de Boat. Si existe `completo.json`, se lee el
-intento que indica. Si un coordinador muere sin dejar `codigo.json`, el
-tick ordinario recupera la corrida. Un repositorio sin inscripción activa,
+intento que indica. Una salida presente que no se puede leer termina la
+vuelta con `lectura-fallida`. Si un coordinador muere sin dejar
+`codigo.json`, el tick ordinario recupera la corrida. Tampoco hay señal
+cuando una repetición de diagnóstico reutiliza la salida que otro lote dejó
+en la caché de la base: el vigía sólo mira los registros del lote y esa
+repetición la recoge el tick ordinario. Un repositorio sin inscripción activa,
 en pausa, con una decisión pendiente o sin lote en esas fases se omite en
 silencio.
 
 El vigía deja trabajar al tick si launchd lo muestra en ejecución. Por la
 misma señal puede pedir hasta tres arranques, separados por al menos 20 s.
 La memoria queda en `pao-tren/vigia/<sha256-del-repo>.json` en el directorio
-de estado.
+de estado. La cuenta se guarda antes de pedir el arranque: si no se puede
+guardar, el vigía no arranca nada, y un arranque que falla consume su lugar.
+
+Cada vuelta da 15 s en total a `gh` y `launchctl`; pasado ese plazo no pide
+ningún arranque. La caché ETag puede añadir su espera fija de 1 s por
+operación, y un fallo al escribirla no descarta la respuesta de CI ya leída.
 
 ```sh
 python3 -I fleet/tren/instalar.py --repo owner/project --activo --vigia --cargar
