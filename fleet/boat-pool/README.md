@@ -148,6 +148,9 @@ de log. El stderr del agente queda en `launchd.err.log`.
   las clases y renueva el vencimiento. El TTL admite de 300 a 3600 s.
   La reserva despierta y mantiene despiertas las VMs aptas del repo con un
   límite positivo para alguna de sus clases, con gasto de Boat desde la reserva.
+  Las clases sin límite declarado usan `lugares`. Si el piso de horas o
+  monedero está cerrado o el vigía no puede comprobarlo, la reserva no
+  protege del apagado por inactividad ni renueva el auto-stop.
   Mientras viva la reserva, un turno ajeno al tren entra sólo si deja lugar
   para las clases pendientes. Los arriendos vivos del tren cubren sus clases.
   Si la reserva impide la concesión hasta vencer la espera, `pedir` devuelve `sin_lugar`.
@@ -163,10 +166,13 @@ de log. El stderr del agente queda en `launchd.err.log`.
 - `liberar-reserva --repo R --lote ID` quita la reserva del lote.
   Se puede repetir. Si el tren omite la liberación, la reserva vence sola.
 - `despertar --repo R` reanuda las VMs apagadas o en apagado que cubra un
-  lote vivo, sujeto a las puertas de gasto de `encender`. Salta las VMs con
-  el candado tomado, arriendos, un turno que acepten o una operación de
-  energía pendiente. `reservar` y `vigilar` lo lanzan en una sesión aparte
-  y dejan su stderr en `launchd.err.log`.
+  lote vivo, sujeto a las puertas de gasto de `encender`. Cada VM espera su
+  arranque en paralelo. Salta las VMs con el candado tomado, arriendos, un
+  turno que acepten, una reanudación pendiente o un aviso de credenciales.
+  Ante un apagado normal pendiente, espera a observar la VM detenida antes
+  de reanudarla. `reservar` y `vigilar` lo lanzan en una sesión aparte y
+  dejan su stderr en `launchd.err.log`. La causa `lanzamiento` indica que
+  falló el inicio del proceso y la reserva sigue vigente.
 - `estado [--json]` muestra VMs, arriendos, lugares, puertas de arranque y reservas vivas.
 - `encender NOMBRE|--todas` y `apagar NOMBRE|--todas` actúan sobre VMs
   declaradas y registradas. `encender` espera hasta 420 s a que Boat confirme

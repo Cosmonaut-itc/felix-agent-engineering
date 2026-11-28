@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 import csv
 from dataclasses import dataclass, field
@@ -81,9 +82,9 @@ def launch_wake(repo, state):
         with os.fdopen(fd, 'ab') as log:
             subprocess.Popen([sys.executable, '-IB', str(command), 'despertar', '--repo', repo],
                              start_new_session=True, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=log)
+                             stdout=subprocess.DEVNULL, stderr=log, cwd='/')
     except OSError:
-        print_unavailable(Unavailable('apagado', 'no se pudo lanzar despertar'))
+        print_unavailable(Unavailable('lanzamiento', 'no se pudo lanzar despertar'))
 
 
 class InvalidUse(ValueError):
@@ -478,8 +479,14 @@ class VM:
 
     def covered_by_batch(self, reservations):
         return self.apt and any(item['repo'] == self.repo and 'vence_solicitado' not in item
-                                and any(self.classes.get(kind, 0) > 0 for kind in item['clases'])
+                                and any(self.classes.get(kind, self.places) > 0 for kind in item['clases'])
                                 for item in reservations)
+
+    def blocks_wake(self, operation):
+        return ((self.path / 'aviso-credenciales.json').exists()
+                or (operation is not None and (operation['sandbox_id'] != self.id
+                                               or operation['accion'] != 'stop'
+                                               or operation.get('credenciales'))))
 
 
 def fits_reservations(vm, kind, pending, capacity):
@@ -928,7 +935,7 @@ class Pool:
                     # Un pool anterior que siga en espera decide sólo por `vence`: la marca ya venció para él.
                     reservations.append({**previous, 'vence': stamp(now), 'vencida': True})
                 self.write_reservations(reservations, [('reserva-liberada', stamp(now), previous)])
-        if reserve and until is None and previous is None:
+        if reserve and until is None and (previous is None or previous.get('vencida')):
             self.wake_launcher(repo, self.state)
 
     def reservation_loads(self, repo, now):
@@ -1336,29 +1343,39 @@ class Pool:
         with lock(self.state / 'espera.lock'):
             now = self.now()
             return (vm.covered_by_batch(self.reservations(now))
-                    and not (vm.path / 'operacion.json').exists()
                     and not vm.lease_snapshot(now)
-                    and not any(vm.accepts(turn) for turn in self.turns()))
+                    and not any(vm.accepts(turn) for turn in self.turns())
+                    and not vm.blocks_wake(vm.read_power_operation()))
 
-    def wake(self, repo):
+    def wake_vm(self, vm):
         def confirm(_):
             if not self.can_wake(vm):
                 raise WakeSkipped
 
+        with lock(vm.path / 'lock', wait=False) as acquired:
+            try:
+                if not acquired or not self.can_wake(vm):
+                    return True
+                return self.power_vm(vm, 'despertar', before_resume=confirm)
+            except WakeSkipped:
+                return True
+            except (KeyError, ValueError, TypeError, OverflowError):
+                error = BoatError('datos de Boat inválidos')
+                self.reject(str(error), vm)
+                print_unavailable(error)
+                return False
+
+    def wake(self, repo):
         key = sha256(repo.encode()).hexdigest()
         with lock(self.state / f'despertar-{key}.lock', wait=False) as acquired:
             if not acquired:
                 return 0
-            failed = False
-            for vm in self.candidates(repo=repo):
-                with lock(vm.path / 'lock', wait=False) as available:
-                    if not available or not self.can_wake(vm):
-                        continue
-                    try:
-                        failed |= not self.power_vm(vm, 'despertar', before_resume=confirm)
-                    except WakeSkipped:
-                        continue
-        return 75 if failed else 0
+            candidates = self.candidates(repo=repo)
+            if not candidates:
+                return 0
+            with ThreadPoolExecutor(max_workers=len(candidates)) as workers:
+                results = list(workers.map(self.wake_vm, candidates))
+        return 0 if all(results) else 75
 
     def status(self):
         candidates = {vm.name: vm for vm in self.candidates()}
@@ -1447,7 +1464,7 @@ class Pool:
             return False
         return True
 
-    def watch_vm(self, vm, notices):
+    def watch_vm(self, vm, notices, *, floor_open):
         with ExitStack() as locks:
             with lock(self.state / 'espera.lock'):
                 queue = self.turns()
@@ -1467,12 +1484,12 @@ class Pool:
                 if self.now() - epoch(info['stoppedAt']) >= STOPPED_NOTICE:
                     notices['disco:' + vm.name] = 'Retención de disco cerca del límite para ' + vm.name
             with lock(self.state / 'espera.lock'):
-                covered = vm.covered_by_batch(self.reservations(self.now()))
+                covered = floor_open and vm.covered_by_batch(self.reservations(self.now()))
             if vm.idle is None or busy or covered:
                 renewable = READY | STOPPED if vm.idle is None else READY
                 if state in renewable and not self.try_renew_vm(vm, info):
                     notices['ttl:' + vm.name] = 'No se pudo renovar el plazo de Boat de ' + vm.name
-                return covered and not busy and pending is None and state in STOPPED | STOPPING
+                return covered and not busy and state in STOPPED | STOPPING and not vm.blocks_wake(pending)
             if info['state'] not in READY:
                 return
             try:
@@ -1501,10 +1518,20 @@ class Pool:
             with lock(self.state / 'espera.lock'):
                 self.reservations(self.now())
             notices = {}
+            floor_open = False
+            try:
+                gates = self.gates()
+                floor_open = True
+                for gate in ('horas_plan', 'monedero_usd'):
+                    if not gates[gate]['abierta']:
+                        floor_open = False
+                        notices[gate] = 'Piso del pool sin acreditar: ' + gate
+            except BoatError:
+                notices['limites'] = 'No se pudo comprobar el piso del pool'
             wake_repos = set()
             for vm in candidates:
                 try:
-                    if self.watch_vm(vm, notices):
+                    if self.watch_vm(vm, notices, floor_open=floor_open):
                         wake_repos.add(vm.repo)
                 except (Unavailable, BoatError, ValueError, TypeError, OverflowError) as error:
                     detail = str(error) if isinstance(error, (Unavailable, BoatError)) else 'datos de Boat inválidos'
@@ -1513,13 +1540,6 @@ class Pool:
                                      vm.event('rechazo', self.now(), motivo=detail))
             for repo in sorted(wake_repos):
                 self.wake_launcher(repo, self.state)
-            try:
-                gates = self.gates()
-                for gate in ('horas_plan', 'monedero_usd'):
-                    if not gates[gate]['abierta']:
-                        notices[gate] = 'Piso del pool sin acreditar: ' + gate
-            except BoatError:
-                notices['limites'] = 'No se pudo comprobar el piso del pool'
             try:
                 raw = self.boat.key_expiration()
                 if raw is not None and epoch(raw) - self.now() <= 3 * 86400:

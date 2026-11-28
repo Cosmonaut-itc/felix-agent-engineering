@@ -13,7 +13,7 @@ import socket
 import subprocess
 import sys
 import tempfile
-from threading import Event
+from threading import Barrier, Event
 import time
 import unittest
 from unittest.mock import patch
@@ -541,10 +541,11 @@ class Harness(unittest.TestCase):
     def test_reserva_nueva_lanza_despertar_sin_esperar_el_arranque(self):
         self.api.sandbox(FAKE_ID, state='archived')
 
-        def spawn(command, *, start_new_session, stdin, stdout, stderr):
+        def spawn(command, *, start_new_session, stdin, stdout, stderr, cwd):
             self.assertEqual(command[:-3], [sys.executable, '-IB', str(ROOT / 'boat-pool')])
             self.assertEqual(command[-3:], ['despertar', '--repo', REPO])
             self.assertTrue(start_new_session)
+            self.assertEqual(cwd, '/')
             self.assertEqual((stdin, stdout), (subprocess.DEVNULL, subprocess.DEVNULL))
             stderr.write(b'error del proceso de prueba\n')
             with pool.lock(self.state / 'espera.lock', wait=False) as acquired:
@@ -567,6 +568,14 @@ class Harness(unittest.TestCase):
                                                {'noEnv': True, 'type': 'large', 'ttlSeconds': 9000})])
         self.assertEqual(self.api.sleeps, 1)
         self.assertIn('arranque', [item['evento'] for item in self.journal()])
+
+    def test_reservar_distingue_fallo_de_lanzamiento_y_conserva_la_reserva(self):
+        with patch.object(pool.subprocess, 'Popen', side_effect=OSError):
+            code, _, stderr = self.run_cli('reservar', '--repo', REPO, '--lote', 'lote', '--clases', 'e2e',
+                                           '--ttl', '900', wake_launcher=pool.launch_wake)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(stderr, 'boat-pool: lanzamiento: no se pudo lanzar despertar\n')
+        self.assertEqual([event['evento'] for event in pool.events(self.state / 'eventos.jsonl')], ['reservado'])
 
     def test_despertar_termina_tras_term_al_grupo_del_padre(self):
         self.api.sandbox(FAKE_ID, state='archived')
@@ -626,8 +635,6 @@ class Harness(unittest.TestCase):
         self.api.sandbox(FAKE_ID, state='archived')
         self.add_vm('vm-otro-repo', fake_id('efgh2345'), remote_state='archived',
                     overrides={'repo': other_repo})
-        self.add_vm('vm-otra-clase', fake_id('kmnp2345'), remote_state='archived',
-                    overrides={'limite_clase': {'contract': 1}})
         self.add_vm('vm-clase-cerrada', fake_id('nprt2345'), remote_state='archived',
                     overrides={'limite_clase': {'e2e': 0}})
         self.add_vm('vm-no-apta', fake_id('zyxw2345'), remote_state='archived', apt=False)
@@ -637,6 +644,67 @@ class Harness(unittest.TestCase):
         self.assertFalse(self.api.calls)
         self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
         self.assertEqual([route for route, _ in self.resume_posts()], ['/sandboxes/' + FAKE_ID + '/resume'])
+
+    def test_despertar_cubre_contract_sin_limite_de_clase_declarado(self):
+        del self.config['vms'][0]['limite_clase']
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.reserve(classes='contract')
+
+        self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertEqual([route for route, _ in self.resume_posts()], ['/sandboxes/' + FAKE_ID + '/resume'])
+
+    def test_despertar_envia_ambos_resume_antes_del_primer_ready(self):
+        other = fake_id('efgh2345')
+        self.add_vm('vm-otra', other, remote_state='archived')
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.reserve(classes='e2e')
+        finish_resume = self.api.sleep
+
+        def check_before_ready():
+            self.assertCountEqual([route for route, _ in self.resume_posts()],
+                                  ['/sandboxes/' + identifier + '/resume' for identifier in (FAKE_ID, other)])
+            vms = pool.read_json(self.api.path)
+            self.assertEqual([vms[identifier]['state'] for identifier in (FAKE_ID, other)],
+                             ['provisioning', 'provisioning'])
+
+        starting = Barrier(2, action=check_before_ready, timeout=5)
+
+        def wait_for_both_resumes(seconds):
+            starting.wait()
+            finish_resume(seconds)
+
+        with patch.object(self.api, 'sleep', side_effect=wait_for_both_resumes):
+            self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertTrue(all('arranque' in [event['evento'] for event in self.journal(name)]
+                            for name in (NAME, 'vm-otra')))
+
+    def test_despertar_rechaza_datos_invalidos_por_vm_y_reanuda_la_sana(self):
+        bad = {FAKE_ID: ValueError, fake_id('efgh2345'): TypeError, fake_id('kmnp2345'): OverflowError}
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.add_vm('vm-tipo-invalido', fake_id('efgh2345'), remote_state='archived')
+        self.add_vm('vm-desbordada', fake_id('kmnp2345'), remote_state='archived')
+        healthy = fake_id('nprt2345')
+        self.add_vm('vm-sana', healthy, remote_state='archived')
+        self.reserve(classes='e2e')
+
+        def factory(org, service):
+            boat = self.api.factory(org, service)
+            sandbox = boat.sandbox
+
+            def sandbox_info(identifier):
+                if identifier in bad:
+                    raise bad[identifier]('payload inválido de prueba')
+                return sandbox(identifier)
+
+            boat.sandbox = sandbox_info
+            return boat
+
+        code, _, stderr = self.run_cli('despertar', '--repo', REPO, factory=factory)
+        self.assertEqual(code, 75, stderr)
+        self.assertEqual(stderr.count('boat-pool: api: datos de Boat inválidos'), 3)
+        self.assertEqual([route for route, _ in self.resume_posts()], ['/sandboxes/' + healthy + '/resume'])
+        for name in (NAME, 'vm-tipo-invalido', 'vm-desbordada'):
+            self.assertEqual([item['motivo'] for item in self.journal(name)], ['datos de Boat inválidos'])
 
     def test_despertar_respeta_las_puertas_de_gasto(self):
         self.api.sandbox(FAKE_ID, state='archived')
@@ -662,6 +730,9 @@ class Harness(unittest.TestCase):
     def test_despertar_espera_el_apagado_en_curso_antes_de_reanudar(self):
         self.api.sandbox(FAKE_ID, state='archiving')
         self.reserve(classes='e2e')
+        pool.atomic_json(self.state / 'vms' / NAME / 'operacion.json', {
+            'id': 'apagado-previo', 'sandbox_id': FAKE_ID, 'accion': 'stop', 'desde': pool.stamp(NOW),
+        })
 
         def finish_stop():
             self.assertFalse(self.resume_posts())
@@ -671,6 +742,17 @@ class Harness(unittest.TestCase):
             self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
         self.assertEqual(len(self.resume_posts()), 1)
         self.assertEqual(self.api.now, NOW + 2)
+
+    def test_despertar_observa_stop_cumplido_y_reanuda_en_la_misma_pasada(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.reserve(classes='e2e')
+        pool.atomic_json(self.state / 'vms' / NAME / 'operacion.json', {
+            'id': 'apagado-previo', 'sandbox_id': FAKE_ID, 'accion': 'stop', 'desde': pool.stamp(NOW),
+        })
+
+        self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
+        self.assertEqual([route for route, _ in self.resume_posts()], ['/sandboxes/' + FAKE_ID + '/resume'])
+        self.assertEqual([item['evento'] for item in self.journal()], ['registro', 'apagada', 'arranque'])
 
     def test_despertar_omite_resume_si_la_pausa_libera_el_lote_en_plena_espera(self):
         self.api.sandbox(FAKE_ID, state='archiving')
@@ -688,11 +770,12 @@ class Harness(unittest.TestCase):
 
     def test_despertar_con_otro_despertar_del_repo_sale_sin_consultar_boat(self):
         self.api.sandbox(FAKE_ID, state='archived')
-        self.add_vm('vm-otra', fake_id('efgh2345'))
         self.reserve(classes='e2e')
         finish_resume = self.api.sleep
 
         def check_competing_wake(seconds):
+            # La primera ejecución ya tomó su lista y sigue esperando la VM original.
+            self.add_vm('vm-otra', fake_id('efgh2345'))
             calls = self.api.calls.copy()
             self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
             self.assertEqual(self.api.calls, calls)
@@ -745,10 +828,10 @@ class Harness(unittest.TestCase):
         self.reserve(classes='e2e')
         marker = self.state / 'vms' / NAME / 'operacion.json'
 
-        for action in ('stop', 'resume'):
+        for action, credentials in (('stop', True), ('resume', False)):
             with self.subTest(action=action):
                 operation = {'id': 'energia-previa', 'sandbox_id': FAKE_ID, 'accion': action,
-                             'desde': pool.stamp(NOW)}
+                             'desde': pool.stamp(NOW), 'credenciales': credentials}
                 pool.atomic_json(marker, operation)
                 self.assertEqual(self.run_cli('despertar', '--repo', REPO)[0], 0)
                 self.assertFalse(self.api.calls)
@@ -954,6 +1037,7 @@ class Harness(unittest.TestCase):
         self.api.now = NOW + 120
         self.assertEqual(self.run_cli('liberar-reserva', '--repo', REPO, '--lote', 'lote')[0], 0)
         self.reserve(ttl='1800')
+        self.assertEqual(self.wake_jobs, [REPO])
         expected = {'repo': REPO, 'lote': 'lote', 'clases': ['contract', 'e2e'],
                     'vence': pool.stamp(NOW + 1920)}
         code, output, stderr = self.run_cli('estado', '--json')
@@ -2056,6 +2140,32 @@ class Harness(unittest.TestCase):
         self.assertEqual(pool.read_json(self.api.path)[FAKE_ID]['state'], 'archived')
         self.assertNotIn('concedido', {event['evento'] for event in self.journal()})
 
+    def test_lote_no_repite_arranque_inseguro_y_encender_puede_recuperar_vm(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields = {'holdsCreatorLogins': True}
+        self.reserve(classes='e2e')
+        wake = ('despertar', '--repo', REPO)
+        self.assert_unavailable('api', *wake)
+        path = '/sandboxes/' + FAKE_ID
+        self.assertEqual([(method, route) for method, route, _ in self.writes()],
+                         [('POST', path + '/resume'), ('POST', path + '/stop')])
+
+        self.api.calls.clear()
+        self.wake_jobs.clear()
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.assertFalse(self.writes())
+        self.assertFalse(self.wake_jobs)
+        self.api.calls.clear()
+        self.assertEqual(self.run_cli(*wake)[0], 0)
+        self.assertFalse(self.api.calls)
+
+        self.api.resume_fields = {'holdsCreatorLogins': False}
+        self.assertEqual(self.run_cli('encender', NAME)[0], 0)
+        self.assertEqual(pool.read_json(self.api.path)[FAKE_ID]['state'], 'ready')
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.assertEqual(self.wake_jobs, [REPO])
+
     def test_vigilar_reintenta_apagado_inseguro_sin_renovar(self):
         self.config['vms'][0]['inactividad_min'] = None
         deadline = pool.stamp(NOW + 3600)
@@ -2341,6 +2451,20 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.run_cli('vigilar')[0], 0)
         self.assertEqual(self.writes(), [('POST', path + '/stop', None)])
         self.assertIn('apagada', [item['evento'] for item in self.journal()])
+
+    def test_vigilar_apaga_vm_ociosa_con_lote_si_no_puede_acreditar_el_piso(self):
+        self.api.now += 30 * 60 + 1
+        self.reserve(classes='e2e')
+        path = '/sandboxes/' + FAKE_ID
+        for limits in ({**LIMITS, 'wallet': {'balanceDollars': 0}},
+                       {**LIMITS, 'planIncluded': {'vmHoursRemaining': 0}}, {'ok': False}):
+            with self.subTest(limits=limits), patch.object(self.api, 'limits', limits):
+                self.api.sandbox(FAKE_ID, state='ready', archiveAfter=pool.stamp(NOW + 9000))
+                self.api.calls.clear()
+                self.assertEqual(self.run_cli('vigilar')[0], 0)
+                self.assertEqual(self.writes(), [('POST', path + '/stop', None)])
+                self.assertEqual(self.api.calls[0][:2], ('GET', '/limits'))
+                self.assertEqual(sum(route == '/limits' for _, route, _ in self.api.calls), 1)
 
     def test_vigilar_lanza_despertar_para_vm_cubierta_sin_esperar_el_arranque(self):
         self.reserve(classes='e2e')
