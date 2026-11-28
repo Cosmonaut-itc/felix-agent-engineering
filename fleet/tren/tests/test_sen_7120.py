@@ -256,12 +256,13 @@ class JaleParaleloTests(ProductorParalelo, Aislado):
     def test_fallo_al_lanzar_el_segundo_intento_conserva_el_75_del_primero(self):
         (self.raiz / 'primero-75').touch()
         popen = subprocess.Popen
-        llamadas = count(1)
+        _, segundo = self.registros(self.pedidos[0])
 
-        def sin_segundo(*args, **kwargs):
-            if next(llamadas) == 2:
+        # El primer coordinador puede seguir vivo entre sondeos: el fallo va por registro.
+        def sin_segundo(argv, *args, **kwargs):
+            if argv[-1] == str(segundo):
                 raise OSError('sin procesos')
-            return popen(*args, **kwargs)
+            return popen(argv, *args, **kwargs)
 
         with patch('adaptadores.jale.subprocess.Popen', side_effect=sin_segundo):
             self.assertIsInstance(self.repetir(), Incompleto)
