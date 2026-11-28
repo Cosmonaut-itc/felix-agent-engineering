@@ -17,8 +17,9 @@ from test_hasito import GitFalso
 from test_tren import Aislado, BASE, HEAD, REPO, cli, entrega, observacion
 from adaptadores import seleccionar
 from adaptadores.jale import Jale
-from dominio import (Admitido, Aterrizado, Candidato, Certificado, Corriendo, EnBase, Entrada,
-                     EscritorExterno, EsperandoCI, Estado, Incierto, Pausa, Promoviendo,
+from dominio import (MAX_MINUTOS_PAUSA, Admitido, Aterrizado, Candidato, Certificado, Corriendo,
+                     EnBase, Entrada, EscritorExterno, EsperandoCI, Estado, Incierto, Pausa,
+                     Promoviendo,
                      Terminal, Tren, datos, recibo_ci, separar_devueltos)
 from observador import Falso
 from operador import FalloSnapshot
@@ -241,7 +242,7 @@ with open({str(self.log)!r}, 'a') as log:
         self.tick()
         self.cli('pausa', '--motivo', 'prueba')
         self.tick(220)
-        self.assertEqual(self.estado().pausa, Pausa('manual', detalle='prueba'))
+        self.assertEqual(self.estado().pausa, Pausa('manual', detalle='prueba', hasta=220 + 60 * MAX_MINUTOS_PAUSA))
         self.tick(340)
         self.assert_llamadas(self.recorte(tren.id, 100, 400), self.recorte(tren.id, 220, 400),
                              self.liberacion(tren.id, 220))
@@ -762,7 +763,7 @@ with open({str(self.log)!r}, 'a') as log:
                     self.assertEqual(self.reservas_pool(pool), set())
 
         if pausar:
-            self.assertEqual(self.estado().pausa, Pausa('manual', detalle='prueba'))
+            self.assertEqual(self.estado().pausa, Pausa('manual', detalle='prueba', hasta=340 + 60 * MAX_MINUTOS_PAUSA))
         self.assert_pool(pool, set(), 0)
 
     def test_sin_sucesor_pool_viejo(self):
@@ -814,7 +815,7 @@ with open({str(self.log)!r}, 'a') as log:
         pool.api.now = inicio + 240
         with patch('operativo.subprocess', self.proceso_pool(pool)):
             self.tick(340)
-        self.assertEqual(self.estado().pausa, Pausa('manual', detalle='prueba'))
+        self.assertEqual(self.estado().pausa, Pausa('manual', detalle='prueba', hasta=340 + 60 * MAX_MINUTOS_PAUSA))
         codigo, _, error = self.comando_pool(pool, *pool.args('ajena-pausa', 'e2e',
                                                              '--prioridad', 'suite'))
         self.assertEqual((self.reservas_pool(pool), codigo), (set(), 0), error)
