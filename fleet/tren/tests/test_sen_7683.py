@@ -521,6 +521,52 @@ with open({str(self.log)!r}, 'a') as log:
             self.tick(610)
         self.assert_pool(pool, set(), 0)
 
+    def test_reanudar_no_recrea_un_relevo_ya_liberado(self):
+        pool, inicio = self.preparar_pool()
+        C, arbol, B = CANDIDATO.C, CANDIDATO.arbol, CANDIDATO.B
+        tren = self.guardar(Promoviendo(Certificado(C, arbol, 'suite.json', 'verde', B)))
+        main_ajeno = 'f' * 40
+        self.reloj.monotonic.return_value = 0
+        with patch('operativo.subprocess', self.proceso_pool(pool)):
+            self.tick(100)
+            self.assertEqual(self.reservas_pool(pool), {tren.id})
+            pool.api.now = inicio + 120
+            self.observador.observacion = observacion(
+                main=EscritorExterno(B, C, main_ajeno), tren_id=tren.id, intento_promocion=1)
+
+            clase_ledger = type(self.registro)
+            evento = clase_ledger.evento
+            with self.escritor_sqlite() as lector:
+                def evento_con_lector(ledger, repo, tipo, instante, payload):
+                    if tipo == 'relevo-boat':
+                        lector.execute('BEGIN')
+                        lector.execute('SELECT COUNT(*) FROM events').fetchone()
+                    return evento(ledger, repo, tipo, instante, payload)
+
+                with patch.object(clase_ledger, 'evento', autospec=True, side_effect=evento_con_lector):
+                    codigo, salida = self.intento_tick(220)
+
+            self.assertEqual(codigo, 0, salida)
+            self.assertEqual(self.estado().trenes[0].fase, Terminal('REARMAR'))
+            self.assertEqual(self.estado().pausa, Pausa('escritor-externo', main=main_ajeno))
+            self.assertEqual(self.registro.relevos_boat(REPO), {})
+            self.assertEqual(self.reservas_pool(pool), set())
+
+            self.observador.observacion = replace(observacion(), base='', prs=())
+            self.cli('juicio', '--tren', tren.id, '--decision', 'reanudar', '--motivo', 'prueba',
+                     ahora=330)
+            pool.api.now = inicio + 240
+            self.tick(340)
+            estado = self.estado()
+            self.assertIsNone(estado.pausa)
+            self.assertEqual([t.fase for t in estado.trenes], [Terminal('REARMAR')])
+            self.assertEqual(self.registro.relevos_boat(REPO), {tren.id: inicio + 540})
+            pool.api.now = inicio + 360
+            self.tick(460)
+
+        pool.api.now = inicio + 420
+        self.assert_pool(pool, set(), 0)
+
     def test_sqlite_ocupado_al_registrar_el_fallo_conserva_la_salida_del_tick(self):
         pool, inicio, lote = self.iniciar_cierre_lento()
         proceso = self.proceso_pool(pool)
