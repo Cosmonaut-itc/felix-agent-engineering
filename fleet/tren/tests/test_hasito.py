@@ -103,9 +103,12 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
                       detalle=None):
     """Contrato operativo compartido: cada adaptador conserva su productor falso."""
     from dominio import Decision, intento_suite
+    from coordinadores import ejecutar_tick
     from ledger import Ledger
     from observador import Falso
     from operativo import tick
+    ejecutar_resultado = getattr(caso, "ejecutar_hasta_resultado",
+                                 lambda llamar, *args: llamar(*args))
     entradas = tuple(Entrada(Entrega("example/project", pr, head, "apto", "dirigida"), pr,
                              Admitido(), pr, tren="lote")
                      for pr, head, _ in CANDIDATO.eslabones)
@@ -118,7 +121,7 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
     efecto = efectos[0]
     if tipo != "iniciar-suite":
         configurar("75" if tipo == "reanudar-suite" else "rojo")
-        llegada = ejecutar(efecto, actual, obs, caso.git, caso.adaptador)
+        llegada = ejecutar_resultado(ejecutar, efecto, actual, obs, caso.git, caso.adaptador)
         actual, efectos = paso(actual, llegada.observacion)
         if tipo == "reanudar-suite":
             obs = replace(obs, ahora=actual.trenes[0].fase.esperar_hasta)
@@ -138,13 +141,13 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
     if recuperacion:
         # Simula el estado instalado anterior: outbox fallido y salida durable.
         try:
-            ejecutar(efecto, actual, obs, caso.git, caso.adaptador)
+            ejecutar_resultado(ejecutar, efecto, actual, obs, caso.git, caso.adaptador)
         except EfectoFallido:
             pass
         ledger.registrar_efecto(actual.repo, efecto, obs.ahora,
             {"error": {"codigo": "jale-paro-64" if codigo == 64 else detalle}}, False)
     else:
-        llegada = ejecutar(efecto, actual, obs, caso.git, caso.adaptador)
+        llegada = ejecutar_resultado(ejecutar, efecto, actual, obs, caso.git, caso.adaptador)
         caso.assertTrue(llegada.completo)
         from operativo import resultado_observacion
         ledger.registrar_efecto(actual.repo, efecto, obs.ahora,
@@ -159,7 +162,8 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
     caso.assertTrue(rechazados)
     invocaciones_antes = list(invocaciones())
     observador = Falso(obs)
-    tick(ledger, actual.repo, observador, obs.ahora + 1, caso.git, caso.adaptador)
+    ejecutar_tick(tick, ledger, actual.repo, observador, obs.ahora + 1, caso.git,
+                  adaptador=caso.adaptador)
     pausado = ledger.estado(actual.repo, operativo=True)
     caso.assertIsNotNone(pausado.pausa)
     caso.assertEqual((pausado.pausa.motivo, pausado.pausa.detalle),
@@ -225,6 +229,26 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
     caso.assertEqual(len(filas), 1)
     nuevo = desde_datos(json.loads(filas[0]["payload"]))
     caso.assertNotEqual(nuevo.clave, efecto.clave)
+    if filas[0]["estado"] == "ejecutando":
+        from adaptadores.jale import EN_CURSO
+
+        class ResultadoGuardado(Exception):
+            pass
+
+        def detener(nombre, efecto):
+            if nombre == "resultado-guardado" and efecto == nuevo:
+                raise ResultadoGuardado()
+
+        def sondear():
+            try:
+                tick(ledger, actual.repo, observador, obs.ahora + 3, caso.git,
+                     caso.adaptador, frontera=detener)
+            except ResultadoGuardado:
+                return
+            return EN_CURSO
+
+        ejecutar_resultado(sondear)
+        filas = ledger.outbox(actual.repo)
     caso.assertEqual(filas[0]["estado"], "resultado")
     caso.assertGreater(len(invocaciones()), len(invocaciones_antes))
     if hasattr(caso, "invocaciones"):

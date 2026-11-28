@@ -22,6 +22,12 @@ def clave_registro(registro):
     return 'pao-jale-' + hashlib.sha256(os.fsencode(registro.resolve())).hexdigest()
 
 
+def clave_iniciada(anterior, campo='clave'):
+    clave = anterior.get(campo) if isinstance(anterior, dict) else None
+    if isinstance(clave, str) and re.fullmatch(r'[A-Za-z0-9._-]{8,128}', clave):
+        return clave
+
+
 def guardar(ruta, valor):
     temporal = ruta.with_suffix('.tmp')
     with temporal.open('w', encoding='utf-8') as archivo:
@@ -40,9 +46,6 @@ def ejecutar(registro, argv, entorno, salida):
     pedido = registro / CANCELAR
     if pedido.exists():
         return 75
-    if not (registro / 'prelanzada.json').exists():
-        return subprocess.run(argv, env=entorno, stdout=salida, stderr=salida,
-                              check=False).returncode
     # Sólo el coordinador que tiene el candado puede señalar a su propio hijo.
     # El tick no necesita conocer ni recuperar un PID.
     with subprocess.Popen(argv, env=entorno, stdout=salida, stderr=salida) as lanzador:
@@ -59,9 +62,11 @@ def ejecutar(registro, argv, entorno, salida):
         return lanzador.returncode
 
 
-def coordinar(registro):
-    with (registro / 'candado').open('a') as candado:
-        fcntl.flock(candado, fcntl.LOCK_EX)
+def coordinar(registro, descriptor=None):
+    with (os.fdopen(descriptor, 'a') if descriptor is not None else
+          (registro / 'candado').open('a')) as candado:
+        if descriptor is None:
+            fcntl.flock(candado, fcntl.LOCK_EX)
         if (registro / 'codigo.json').exists():
             return
         if (registro / CANCELAR).exists():
@@ -71,10 +76,9 @@ def coordinar(registro):
         variables = json.loads(entorno_guardado.read_text()) if entorno_guardado.exists() else {}
         iniciado = registro / 'iniciado.json'
         if iniciado.exists():
-            anterior = json.loads(iniciado.read_text())
-            clave = anterior.get('clave') if isinstance(anterior, dict) else None
+            clave = clave_iniciada(json.loads(iniciado.read_text()))
             # Los registros anteriores no acreditan deduplicación del lanzador.
-            if not isinstance(clave, str) or not re.fullmatch(r'[A-Za-z0-9._-]{8,128}', clave):
+            if clave is None:
                 return
         else:
             clave = variables.get('SEN_RUN_ID') or clave_registro(registro)
@@ -98,4 +102,4 @@ def coordinar(registro):
 
 
 if __name__ == '__main__':
-    coordinar(Path(sys.argv[1]))
+    coordinar(Path(sys.argv[-1]), int(sys.argv[1]) if len(sys.argv) == 3 else None)

@@ -17,6 +17,7 @@ from test_hasito import GitFalso
 from test_tren import Aislado, BASE, HEAD, REPO, cli, entrega, observacion
 from adaptadores import seleccionar
 from adaptadores.jale import Jale
+from coordinadores import ejecutar_tick
 from dominio import (Admitido, Aterrizado, Candidato, Certificado, Corriendo, Entrada,
                      EscritorExterno, EsperandoCI, Estado, Incierto, Pausa, Promoviendo,
                      Terminal, Tren, datos, recibo_ci, separar_devueltos)
@@ -94,7 +95,8 @@ with open({str(self.log)!r}, 'a') as log:
 
     def cli(self, comando, *argv, **kwargs):
         args = cli.parser().parse_args([comando, '--repo', REPO, *argv])
-        salida = cli.ejecutar(args, **kwargs)
+        salida = (ejecutar_tick(cli.ejecutar, args, **kwargs) if comando == 'tick'
+                  else cli.ejecutar(args, **kwargs))
         self.assertEqual(salida[0], 0, salida)
         return salida
 
@@ -106,7 +108,8 @@ with open({str(self.log)!r}, 'a') as log:
 
     def intento_tick(self, ahora):
         args = cli.parser().parse_args(['tick', '--repo', REPO])
-        ejecutar = partial(cli.ejecutar, ahora=ahora, observador=self.observador, git=self.git,
+        ejecutar = partial(ejecutar_tick, cli.ejecutar, ahora=ahora,
+                           observador=self.observador, git=self.git,
                            adaptador=seleccionar(self.observador.config, self.git),
                            escritor=self.escritor)
         self.reloj.time.return_value = ahora

@@ -105,9 +105,10 @@ if f.get('barrera'):
         sys.exit(2)
     (raiz / ('cruzado-' + modo)).touch()
 if f.get('esperar'):
-    (raiz / 'listo').write_text('listo')
-    limite = time.monotonic() + 20
-    while not (raiz / 'seguir').exists() and time.monotonic() < limite:
+    sufijo = '-' + log.parent.parent.name if filtros and f.get('esperar_intento') else ''
+    ((log.parent if sufijo else raiz) / 'listo').touch()
+    limite = time.monotonic() + f.get('plazo', 20)
+    while not (raiz / ('seguir' + sufijo)).exists() and time.monotonic() < limite:
         time.sleep(.02)
 rutas = filtros or (["apps/api/src/a.contract.test.ts"] if modo == 'contract'
                      else ['apps/web/e2e/a.spec.ts'])
@@ -157,6 +158,19 @@ sys.exit(codigo)
 '''
 
 
+def esperar_resultado(llamar, *args, **kwargs):
+    from adaptadores.jale import EN_CURSO
+
+    limite = time.monotonic() + 25
+    while True:
+        resultado = llamar(*args, **kwargs)
+        if resultado is not EN_CURSO and not getattr(resultado, 'en_curso', False):
+            return resultado
+        if time.monotonic() >= limite:
+            raise AssertionError('el coordinador no dejó resultado')
+        time.sleep(.025)
+
+
 class JaleTests(Aislado):
     def setUp(self):
         super().setUp()
@@ -174,6 +188,8 @@ class JaleTests(Aislado):
         self.plan([{}])
         self.adaptador = self.Jale(self.lanzador)
 
+    ejecutar_hasta_resultado = staticmethod(esperar_resultado)
+
     def plan(self, filas):
         (self.raiz / 'plan.json').write_text(json.dumps(filas))
 
@@ -186,14 +202,14 @@ class JaleTests(Aislado):
         return [json.loads(l) for l in ruta.read_text().splitlines()] if ruta.exists() else []
 
     def suite(self, tren='lote', **kwargs):
-        return self.adaptador.suite(CANDIDATO, tren, **kwargs)
+        return esperar_resultado(self.adaptador.suite, CANDIDATO, tren, **kwargs)
 
     def origen(self):
         self.plan({'contract': [{'estados': ['falla']}]})
         return self.suite()[0]
 
     def repetir(self, origen, objetivo='C', **kwargs):
-        return self.adaptador.repetir(CANDIDATO, origen,
+        return esperar_resultado(self.adaptador.repetir, CANDIDATO, origen,
             Reproduccion('solicitud-' + objetivo, FALLO, objetivo),
             B if objetivo == 'B' else C, 'lote', **kwargs)
 
@@ -425,18 +441,37 @@ class JaleTests(Aislado):
         r = self.repetir(origen, 'B')
         # Misma B, otro candidato y otro origen; reencuadra sólo el sobre.
         nuevo = replace(CANDIDATO, C='e' * 40)
-        ruta, _ = self.adaptador.suite(nuevo, 'otro')
+        ruta, _ = esperar_resultado(self.adaptador.suite, nuevo, 'otro')
         antes = len(self.lanzamientos())
-        r2 = self.Jale(self.lanzador).repetir(nuevo, ruta,
+        r2 = esperar_resultado(self.Jale(self.lanzador).repetir, nuevo, ruta,
             Reproduccion('otra', FALLO, 'B'), B, 'otro', permitir_lanzar=False)
         self.assertEqual(len(self.lanzamientos()), antes)
         self.assertEqual(r2.unidades, r.unidades)
         self.assertEqual(r2.origen_sha, nuevo.C)
         self.assertNotEqual(r2.origen_sha256, r.origen_sha256)
 
+    def test_repeticion_con_registro_de_base_en_curso(self):
+        from adaptadores.jale import EN_CURSO
+        origen = self.origen()
+        self.plan([{'esperar': True}])
+        estado = self.adaptador.estado
+        registro = estado / clave('repetir', 'otro', 'solicitud-B') / '1' / '0'
+        proceso = self.adaptador.lanzar(registro, B, 'contract', (UNIDAD,), True)
+        try:
+            cache = estado / clave('base', B, FALLO.check, FALLO.unidad) / '1' / 'registro.json'
+            cache.parent.mkdir(parents=True)
+            cache.write_text(json.dumps(str(registro.relative_to(estado))))
+            solicitud = Reproduccion('solicitud-B', FALLO, 'B')
+            resultado = self.adaptador.repetir(CANDIDATO, origen, solicitud, B, 'lote',
+                                              permitir_lanzar=False)
+            self.assertIs(resultado, EN_CURSO)
+        finally:
+            (self.raiz / 'seguir').touch()
+            proceso.wait(timeout=10)
+
     def repeticion_valida(self, candidato, origen, solicitud, commit, tren, **kwargs):
         try:
-            r = self.adaptador.repetir(candidato, origen, solicitud, commit, tren, **kwargs)
+            r = esperar_resultado(self.adaptador.repetir, candidato, origen, solicitud, commit, tren, **kwargs)
         except ResultadoInvalido as exc:
             self.fail('se esperaba Repeticion, recibido ' + exc.resultado.codigo)
         self.assertIsInstance(r, Repeticion)
@@ -474,7 +509,7 @@ class JaleTests(Aislado):
             'fetch', '--no-write-fetch-head', 'origin']) + ' "$4" || exit 1\nexec ' + shlex.join(
             [sys.executable, str(self.productor), str(self.raiz)]) + ' "$@"\n')
         self.adaptador = self.Jale(self.lanzador, f.git)
-        origen, _ = self.adaptador.suite(c, 'lote-r1')
+        origen, _ = esperar_resultado(self.adaptador.suite, c, 'lote-r1')
         solicitud = Reproduccion('sub-5', FALLO, 'subconjunto', (5,))
         with patch.object(f.git, 'publicar', wraps=f.git.publicar) as publicar:
             r = self.repeticion_valida(c, origen, solicitud, sub.C, 'lote-r1')
@@ -489,7 +524,7 @@ class JaleTests(Aislado):
             self.assertEqual(len(self.lanzamientos()), 4)
             self.repeticion_valida(c, origen, solicitud, sub.C, 'lote-r1', permitir_lanzar=False)
             antes = publicar.call_count
-            self.assertIsNone(self.adaptador.repetir(c, origen, replace(solicitud, id='otra'),
+            self.assertIsNone(esperar_resultado(self.adaptador.repetir, c, origen, replace(solicitud, id='otra'),
                                                     sub.C, 'lote-r1', permitir_lanzar=False))
             self.assertEqual(publicar.call_count, antes)
 
@@ -503,7 +538,7 @@ class JaleTests(Aislado):
             with self.subTest(resultado=resultado), \
                  patch.object(git, 'publicar', create=True, return_value=resultado) as publicar:
                 with self.assertRaises(ResultadoInvalido) as contexto:
-                    self.adaptador.repetir(CANDIDATO, origen, solicitud, 'd' * 40, 'lote')
+                    esperar_resultado(self.adaptador.repetir, CANDIDATO, origen, solicitud, 'd' * 40, 'lote')
                 self.assertEqual(contexto.exception.resultado.codigo, 'subconjunto-no-publicado')
                 publicar.assert_called_once()
                 self.assertEqual(len(self.lanzamientos()), antes)
@@ -513,10 +548,10 @@ class JaleTests(Aislado):
         self.plan([{}])
         antes = len(self.lanzamientos())
         solicitud = Reproduccion('sub', FALLO, 'subconjunto', (2,))
-        self.assertIsNone(self.adaptador.repetir(CANDIDATO, origen, solicitud, 'd' * 40,
+        self.assertIsNone(esperar_resultado(self.adaptador.repetir, CANDIDATO, origen, solicitud, 'd' * 40,
                                                'lote', permitir_lanzar=False))
         with self.assertRaises(ResultadoInvalido) as contexto:
-            self.adaptador.repetir(CANDIDATO, origen, solicitud, 'd' * 40, 'lote')
+            esperar_resultado(self.adaptador.repetir, CANDIDATO, origen, solicitud, 'd' * 40, 'lote')
         self.assertEqual(contexto.exception.resultado.codigo, 'subconjunto-sin-git')
         self.assertEqual(len(self.lanzamientos()), antes)
 
@@ -524,7 +559,7 @@ class JaleTests(Aislado):
         origen = self.origen()
         nuevo = replace(CANDIDATO, C='e' * 40)
         self.plan([{}])
-        ruta, _ = self.adaptador.suite(nuevo, 'otro')
+        ruta, _ = esperar_resultado(self.adaptador.suite, nuevo, 'otro')
         for codigo in (255, None):
             with self.subTest(codigo=codigo):
                 estado = self.raiz / ('estado-' + str(codigo))
@@ -560,12 +595,12 @@ class JaleTests(Aislado):
     def test_r1_base_75_no_consume_reanudacion_otro_tren(self):
         origen = self.origen()
         nuevo = replace(CANDIDATO, C='e' * 40)
-        ruta, _ = self.adaptador.suite(nuevo, 'otro')
+        ruta, _ = esperar_resultado(self.adaptador.suite, nuevo, 'otro')
         antes = len(self.lanzamientos())
         self.plan([{}] * (antes + 1) + [{'codigo': 75, 'estados': ['falla']}, {}])
         r = self.repetir(origen, 'B')
         self.assertIsInstance(r, Incompleto)
-        self.assertIsNone(self.adaptador.repetir(nuevo, ruta, Reproduccion('otra', FALLO, 'B'),
+        self.assertIsNone(esperar_resultado(self.adaptador.repetir, nuevo, ruta, Reproduccion('otra', FALLO, 'B'),
                                                B, 'otro', permitir_lanzar=False))
         r2 = self.repeticion_valida(nuevo, ruta, Reproduccion('otra', FALLO, 'B'), B, 'otro')
         self.assertEqual(len(self.lanzamientos()), antes + 3)
@@ -603,20 +638,26 @@ class JaleTests(Aislado):
     def test_crash_real_tick_durante_lanzamiento_se_reengancha(self):
         self.plan([{'esperar': True}, {}])
         helper = self.raiz / 'tick.py'
-        helper.write_text('import sys\nsys.path.insert(0, ' + repr(str(Path(__file__).resolve().parents[1])) +
+        helper.write_text('import signal, sys\nsys.path.insert(0, ' + repr(str(Path(__file__).resolve().parents[1])) +
             ')\nfrom adaptadores.jale import Jale\nfrom dominio import Candidato\nJale(' +
             repr(str(self.lanzador)) + ').suite(Candidato(' + repr(B) + ', (), ' + repr(C) +
-            ', "d" * 40), "lote")\n')
+            ', "d" * 40), "lote")\nsignal.pause()\n')
         proceso = subprocess.Popen([sys.executable, str(helper)])
         try:
             limite = time.monotonic() + 10
-            while not (self.raiz / 'listo').exists() and proceso.poll() is None and time.monotonic() < limite:
+            while not (self.raiz / 'listo').exists() and time.monotonic() < limite:
                 time.sleep(.02)
             self.assertTrue((self.raiz / 'listo').exists())
+            from operador import lanzamiento_activo
+            registro = Path(self.lanzamientos()[0][1]).parent
+            self.assertTrue(lanzamiento_activo(registro / 'candado'))
+            self.assertIsNone(proceso.poll())
         finally:
-            proceso.kill()
+            if proceso.poll() is None:
+                proceso.kill()
             proceso.wait(timeout=5)
             (self.raiz / 'seguir').write_text('seguir')
+        self.assertEqual(proceso.returncode, -signal.SIGKILL)
         _, r = self.suite()
         self.assertEqual(r.veredicto, 'verde')
         self.assertEqual(len(self.lanzamientos()), 2)
@@ -643,7 +684,7 @@ class JaleTests(Aislado):
             proceso = subprocess.Popen([sys.executable, str(helper)], stdout=salida, stderr=salida)
             try:
                 limite = time.monotonic() + 10
-                while not (self.raiz / 'listo').exists() and proceso.poll() is None and time.monotonic() < limite:
+                while not (self.raiz / 'listo').exists() and time.monotonic() < limite:
                     time.sleep(.02)
                 self.assertTrue((self.raiz / 'listo').exists())
             finally:
@@ -862,7 +903,7 @@ class JaleTests(Aislado):
         self.assertEqual({(i['log'], i['clave']) for i in invocaciones[-4:]},
                          {(str(registro / 'corrida.log'), invocaciones[-4]['clave'])})
         self.assertEqual(len(self.lanzamientos()), 4)
-        otro = self.adaptador.repetir(CANDIDATO, origen, Reproduccion('otra', FALLO, 'B'),
+        otro = esperar_resultado(self.adaptador.repetir, CANDIDATO, origen, Reproduccion('otra', FALLO, 'B'),
                                       B, 'otro', permitir_lanzar=False)
         self.assertEqual(otro.unidades, resultado.unidades)
         self.assertEqual(self.invocaciones(), invocaciones)
@@ -1076,7 +1117,7 @@ class JaleTests(Aislado):
         obs = observacion(ci_candidato='verde')
         git = object()
         efecto = Efecto(clave('suite', tren.id), 'iniciar-suite', (tren.id,))
-        llegada = ejecutar(efecto, inicial, obs, git, self.adaptador)
+        llegada = esperar_resultado(ejecutar, efecto, inicial, obs, git, self.adaptador)
         self.assertTrue(llegada.completo)
         pausado, _ = paso(inicial, llegada.observacion)
         primera = next(i for i in self.invocaciones() if i['modo'] == 'e2e')
@@ -1089,7 +1130,7 @@ class JaleTests(Aislado):
                             'consultar la corrida', obs.ahora, 'pausa-1', pausa)
         reanudado, (_, reanudar) = paso(pausado, replace(obs, decision=decision, pausa_id='pausa-1'))
         self.assertEqual(intento_suite(reanudado.trenes[0].fase), 0)
-        llegada = ejecutar(reanudar, reanudado, obs, git, self.adaptador)
+        llegada = esperar_resultado(ejecutar, reanudar, reanudado, obs, git, self.adaptador)
         self.assertTrue(llegada.completo)
         pausado, _ = paso(reanudado, llegada.observacion)
         self.assertEqual(pausado.pausa, pausa)
@@ -1107,7 +1148,7 @@ class JaleTests(Aislado):
         self.assertEqual(intento_suite(fase), 1)
         self.assertEqual((fase.reenganches, fase.reanudaciones), (0, 0))
         self.assertEqual(reintentar.tipo, 'reanudar-suite')
-        llegada = ejecutar(reintentar, absuelto, obs, git, self.adaptador)
+        llegada = esperar_resultado(ejecutar, reintentar, absuelto, obs, git, self.adaptador)
         final, _ = paso(absuelto, llegada.observacion)
         self.assertIsInstance(final.trenes[0].fase, Certificado)
         tercera, = self.invocaciones()[3:]
@@ -1208,7 +1249,7 @@ class JaleTests(Aislado):
         obs = observacion(ci_candidato='verde')
         git = object()
         efecto = Efecto(clave('suite', tren.id), 'iniciar-suite', (tren.id,))
-        llegada = ejecutar(efecto, inicial, obs, git, self.adaptador)
+        llegada = esperar_resultado(ejecutar, efecto, inicial, obs, git, self.adaptador)
         self.assertTrue(llegada.completo)
         pausado, efectos = paso(inicial, llegada.observacion)
         primera = next(i for i in self.invocaciones() if i['modo'] == 'contract')
@@ -1225,7 +1266,7 @@ class JaleTests(Aislado):
         fase = reanudado.trenes[0].fase
         self.assertEqual(intento_suite(fase), 1)
         self.assertEqual((fase.reenganches, fase.reanudaciones), (0, 0))
-        llegada = ejecutar(reanudar, reanudado, obs, git, self.adaptador)
+        llegada = esperar_resultado(ejecutar, reanudar, reanudado, obs, git, self.adaptador)
         final, _ = paso(reanudado, llegada.observacion)
         self.assertIsInstance(final.trenes[0].fase, Certificado)
         segunda, = [i for i in self.invocaciones()[2:] if i['modo'] == 'contract']
@@ -1259,12 +1300,15 @@ class JaleTests(Aislado):
         raiz = self.adaptador.estado / clave('suite', 'lote')
         registro = raiz / 'e2e' / '0'
 
-        def esperar_sin_codigo_de_e2e(proceso):
-            proceso.wait()
-            if proceso.args[-1] == str(registro):
-                (registro / 'codigo.json').unlink()
+        recoger = self.adaptador.recoger
 
-        with patch.object(self.adaptador, 'esperar', side_effect=esperar_sin_codigo_de_e2e):
+        def recoger_sin_codigo_de_e2e(ruta, proceso, *args):
+            if ruta == registro:
+                proceso.wait(timeout=10)
+                (registro / 'codigo.json').unlink()
+            return recoger(ruta, proceso, *args)
+
+        with patch.object(self.adaptador, 'recoger', side_effect=recoger_sin_codigo_de_e2e):
             with self.assertRaises(ResultadoInvalido) as contexto:
                 self.suite()
         self.assertEqual(contexto.exception.resultado.codigo, 'corrida-interrumpida')
@@ -1295,7 +1339,7 @@ Jale({str(self.lanzador)!r}, host='boat').suite(Candidato({B!r}, (), {C!r}, 'd' 
         try:
             juntos = [self.raiz / ('cruzado-' + modo) for modo in ('contract', 'e2e')]
             limite = time.monotonic() + 10
-            while not all(r.exists() for r in juntos) and proceso.poll() is None and time.monotonic() < limite:
+            while not all(r.exists() for r in juntos) and time.monotonic() < limite:
                 time.sleep(.02)
             self.assertTrue(all(r.exists() for r in juntos))
             procesos = self.invocaciones()
@@ -1412,7 +1456,7 @@ Jale({str(self.lanzador)!r}, host='boat').suite(Candidato({B!r}, (), {C!r}, 'd' 
                             'host': 'auto', 'modos': ['e2e']}, git)
         self.assertIsInstance(jale, self.Jale)
         self.assertEqual(jale.modos, ('e2e',))
-        self.assertEqual(jale.suite(CANDIDATO, 'config')[1].costo_s, 4)
+        self.assertEqual(esperar_resultado(jale.suite, CANDIDATO, 'config')[1].costo_s, 4)
         self.assertIsNone(seleccionar({}, git))
         for config in ({'adaptador': 'otro'}, {'adaptador': 'jale'},
                        {'adaptador': 'jale', 'lanzador': 'relativo'},
@@ -1439,5 +1483,5 @@ Jale({str(self.lanzador)!r}, host='boat').suite(Candidato({B!r}, (), {C!r}, 'd' 
         obs = observacion(ci_candidato='verde')
         self.plan([{'cambiar': {'sha': B}}])
         with self.assertRaises(EfectoFallido) as contexto:
-            ejecutar(efecto, inicial, obs, object(), adaptador=self.adaptador)
+            esperar_resultado(ejecutar, efecto, inicial, obs, object(), adaptador=self.adaptador)
         self.assertEqual(contexto.exception.resultado.codigo, 'sha-no-corresponde')

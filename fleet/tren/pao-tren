@@ -287,7 +287,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
 
 
 TICK_EN_CURSO = "pao-tren: tick en curso"
-# Un tick sin suite tarda de 20 a 60 s; la suite retiene el candado de 25 a 90 min.
+# El candado cubre el tick y sus llamadas de IO. Los coordinadores de Jale siguen fuera del tick.
 PLAZO_CANDADO_S = 90
 
 

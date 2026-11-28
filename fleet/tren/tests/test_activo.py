@@ -23,6 +23,7 @@ from dominio import (Armado, Candidato, Certificado, Congelado,
                      Corriendo, Efecto, Entrada, EsperandoCI, Promoviendo, Retenido,
                      Terminal, clave, datos, desde_datos)
 from adaptadores.hasito import Hasito
+from coordinadores import ejecutar_tick
 from git_ops import GitTren
 from feedback import EscritorGitHub
 from ledger import Ledger
@@ -187,8 +188,8 @@ class Contexto:
 
     def tick(self, ahora=100, frontera=None):
         args = cli.parser().parse_args(["tick", "--repo", REPO])
-        return cli.ejecutar(args, self.observador, ahora, self.git, self.hasito, frontera,
-                            self.escritor)
+        return ejecutar_tick(cli.ejecutar, args, self.observador, ahora, self.git,
+                             adaptador=self.hasito, frontera=frontera, escritor=self.escritor)
 
 
 class ActivoTests(unittest.TestCase):

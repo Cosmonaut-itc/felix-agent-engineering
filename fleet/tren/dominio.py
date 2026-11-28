@@ -462,6 +462,8 @@ class Observacion:
     repeticiones_en_paralelo: bool = False
     # El efecto iniciar-suite del tren activo ya empezó su IO en algún tick.
     suite_iniciada: bool = False
+    # Ese IO empezó con la solicitud de CI vigente: su plazo ya no aplica.
+    suite_de_ci_vigente: bool = False
 
 
 @dataclass(frozen=True)
@@ -650,7 +652,8 @@ def avanzar_ci(estado, tren, observacion):
         return replace(estado, entradas=tuple(
             replace(e, terminal=Terminal("DEVUELTO")) if e == entrada else e
             for e in estado.entradas)), (efecto,)
-    if salida == "esperar" and observacion.ahora - fase.desde >= PLAZO_CI:
+    if (salida == "esperar" and not observacion.suite_de_ci_vigente and
+            observacion.ahora - fase.desde >= PLAZO_CI):
         return replace(estado, pausa=Pausa("infraestructura", detalle="ci-sin-resultado")), ()
     return estado, ()
 
