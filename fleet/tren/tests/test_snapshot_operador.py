@@ -16,7 +16,7 @@ from test_jale import FALLO, PRODUCTOR, esperar_resultado
 import test_juicio as juicio_fixtures
 from adaptadores import seleccionar
 from adaptadores.jale import EN_CURSO
-from coordinadores import coordinadores_pendientes
+from coordinadores import coordinadores_pendientes, esperar_coordinadores
 from dominio import (PLAZO_CI, Certificado, Congelado, Corriendo, Diagnosticando, Efecto, EsperandoCI,
                      Motivo, Pausa, Promoviendo, Reproduccion, ResultadoCI, Retenido, Terminal,
                      clave, desde_datos, recibo_ci)
@@ -52,6 +52,8 @@ class SnapshotTests(unittest.TestCase):
         self.config.update(checkout_operador=str(self.operador), adaptador='jale',
                            lanzador=str(self.operador / 'jale.sh'), modos=['contract'])
         self.contexto.hasito = seleccionar(self.config, self.contexto.git)
+        # Las limpiezas de cada caso sueltan seguir antes de borrar los snapshots.
+        self.addCleanup(esperar_coordinadores, self.contexto.hasito.estado)
 
     def plan(self, filas):
         (self.raiz / 'plan.json').write_text(json.dumps(filas))
